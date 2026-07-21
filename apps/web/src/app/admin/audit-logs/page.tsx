@@ -6,10 +6,12 @@ import { PageHeader } from "@/components/ui/page-header";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { FilterBar } from "@/components/ui/filter-bar";
 import { Button } from "@/components/ui/button";
-import { auditLog, type AuditEntry } from "@/lib/modules";
+import { type AuditEntry } from "@/lib/modules";
+import { useAuditLog } from "@/hooks/use-modules";
 
 export default function AuditLogsPage() {
   const [search, setSearch] = useState("");
+  const { data: auditLog } = useAuditLog();
 
   const filtered = useMemo(
     () =>
@@ -26,7 +28,7 @@ export default function AuditLogsPage() {
         }
         return true;
       }),
-    [search],
+    [auditLog, search],
   );
 
   const columns: Column<AuditEntry>[] = [

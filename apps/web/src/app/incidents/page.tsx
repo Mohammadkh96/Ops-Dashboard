@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { Plus } from "lucide-react";
 
@@ -11,7 +11,8 @@ import { Drawer } from "@/components/ui/drawer";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { staggerContainer, fadeUp } from "@/lib/motion";
-import { incidents, type Incident, type IncidentSeverity } from "@/lib/modules";
+import { type Incident, type IncidentSeverity } from "@/lib/modules";
+import { useIncidents } from "@/hooks/use-modules";
 
 const SEVERITY: Record<IncidentSeverity, { color: string; label: string }> = {
   critical: { color: "var(--accent-red)", label: "SEV-1 Critical" },
@@ -22,17 +23,21 @@ const SEVERITY: Record<IncidentSeverity, { color: string; label: string }> = {
 
 const isActive = (i: Incident) => i.status === "open" || i.status === "investigating";
 
-const stats: Stat[] = [
-  { label: "Active incidents", value: String(incidents.filter(isActive).length), tone: "red" },
-  { label: "Critical (SEV-1)", value: String(incidents.filter((i) => i.severity === "critical").length), tone: "orange" },
-  { label: "Investigating", value: String(incidents.filter((i) => i.status === "investigating").length), tone: "blue" },
-  { label: "Resolved today", value: String(incidents.filter((i) => i.status === "resolved").length), tone: "green" },
-];
-
 export default function IncidentsPage() {
   const [selected, setSelected] = useState<Incident | null>(null);
+  const { data: incidents } = useIncidents();
   const sev = selected ? SEVERITY[selected.severity] : null;
   const resolved = selected?.status === "resolved" || selected?.status === "closed";
+
+  const stats: Stat[] = useMemo(
+    () => [
+      { label: "Active incidents", value: String(incidents.filter(isActive).length), tone: "red" },
+      { label: "Critical (SEV-1)", value: String(incidents.filter((i) => i.severity === "critical").length), tone: "orange" },
+      { label: "Investigating", value: String(incidents.filter((i) => i.status === "investigating").length), tone: "blue" },
+      { label: "Resolved today", value: String(incidents.filter((i) => i.status === "resolved").length), tone: "green" },
+    ],
+    [incidents],
+  );
 
   return (
     <div className="flex flex-col gap-6">

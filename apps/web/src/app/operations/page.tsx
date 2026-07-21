@@ -14,14 +14,9 @@ import { LiveDot } from "@/components/ui/live-dot";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { staggerContainer, fadeUp } from "@/lib/motion";
 import { cn } from "@/lib/utils";
-import {
-  tickets,
-  type Ticket,
-  operators,
-  type TicketPriority,
-  type Presence,
-  shiftChecklist,
-} from "@/lib/modules";
+import { useMemo } from "react";
+import { type Ticket, type TicketPriority, type Presence } from "@/lib/modules";
+import { useOperations } from "@/hooks/use-modules";
 
 const priorityVariant: Record<TicketPriority, "red" | "orange" | "blue" | "default"> = {
   urgent: "red",
@@ -35,19 +30,6 @@ const presenceDot: Record<Presence, string> = {
   away: "bg-accent-orange",
   offline: "bg-muted",
 };
-
-const openTickets = tickets.filter((t) => t.status === "open" || t.status === "in_progress" || t.status === "escalated").length;
-const slaBreaches = tickets.filter((t) => t.slaBreached).length;
-const onlineCount = operators.filter((o) => o.presence === "online").length;
-const avgHandle = operators.reduce((sum, o) => sum + o.avgHandleMin, 0) / operators.length;
-const doneCount = shiftChecklist.filter((i) => i.done).length;
-
-const stats: Stat[] = [
-  { label: "Open tickets", value: String(openTickets), tone: "blue", spark: [7, 6, 8, 9, 7, 6, 5, openTickets] },
-  { label: "SLA breaches", value: String(slaBreaches), tone: "red", delta: { text: "needs attention", positive: false } },
-  { label: "Operators online", value: `${onlineCount} / ${operators.length}`, tone: "green", spark: [2, 3, 3, 4, 3, 3, 4, onlineCount] },
-  { label: "Avg handle time", value: `${avgHandle.toFixed(1)}m`, tone: "purple", spark: [8.1, 7.6, 7.2, 7.0, 6.8, 7.1, 6.9, avgHandle] },
-];
 
 const columns: Column<Ticket>[] = [
   { key: "id", header: "ID", render: (t) => <span className="font-mono text-xs text-muted-foreground">{t.id}</span> },
@@ -91,6 +73,25 @@ const columns: Column<Ticket>[] = [
 ];
 
 export default function OperationsPage() {
+  const { data } = useOperations();
+  const { tickets, team: operators, shiftChecklist } = data;
+  const doneCount = shiftChecklist.filter((i) => i.done).length;
+
+  const stats: Stat[] = useMemo(() => {
+    const openTickets = tickets.filter(
+      (t) => t.status === "open" || t.status === "in_progress" || t.status === "escalated",
+    ).length;
+    const slaBreaches = tickets.filter((t) => t.slaBreached).length;
+    const onlineCount = operators.filter((o) => o.presence === "online").length;
+    const avgHandle = operators.reduce((sum, o) => sum + o.avgHandleMin, 0) / (operators.length || 1);
+    return [
+      { label: "Open tickets", value: String(openTickets), tone: "blue", spark: [7, 6, 8, 9, 7, 6, 5, openTickets] },
+      { label: "SLA breaches", value: String(slaBreaches), tone: "red", delta: { text: "needs attention", positive: false } },
+      { label: "Operators online", value: `${onlineCount} / ${operators.length}`, tone: "green", spark: [2, 3, 3, 4, 3, 3, 4, onlineCount] },
+      { label: "Avg handle time", value: `${avgHandle.toFixed(1)}m`, tone: "purple", spark: [8.1, 7.6, 7.2, 7.0, 6.8, 7.1, 6.9, avgHandle] },
+    ];
+  }, [tickets, operators]);
+
   return (
     <div className="flex flex-col gap-6">
       <PageHeader

@@ -9,7 +9,8 @@ import { FilterBar } from "@/components/ui/filter-bar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { opsUsers, type OpsUser, type UserRole, type UserStatus } from "@/lib/modules";
+import { type OpsUser, type UserRole, type UserStatus } from "@/lib/modules";
+import { useUsers } from "@/hooks/use-modules";
 
 const ROLES: UserRole[] = [
   "Admin",
@@ -25,13 +26,6 @@ const ROLES: UserRole[] = [
 
 const STATUSES: UserStatus[] = ["active", "invited", "suspended"];
 
-const stats: Stat[] = [
-  { label: "Total users", value: String(opsUsers.length), tone: "blue" },
-  { label: "Active", value: String(opsUsers.filter((u) => u.status === "active").length), tone: "green" },
-  { label: "Invited", value: String(opsUsers.filter((u) => u.status === "invited").length), tone: "purple" },
-  { label: "Suspended", value: String(opsUsers.filter((u) => u.status === "suspended").length), tone: "orange" },
-];
-
 const roleVariant = (role: UserRole) =>
   role === "Admin" ? "purple" : role === "Compliance" ? "blue" : "default";
 
@@ -42,6 +36,17 @@ export default function AdminUsersPage() {
   const [search, setSearch] = useState("");
   const [role, setRole] = useState("");
   const [status, setStatus] = useState("");
+  const { data: opsUsers } = useUsers();
+
+  const stats: Stat[] = useMemo(
+    () => [
+      { label: "Total users", value: String(opsUsers.length), tone: "blue" },
+      { label: "Active", value: String(opsUsers.filter((u) => u.status === "active").length), tone: "green" },
+      { label: "Invited", value: String(opsUsers.filter((u) => u.status === "invited").length), tone: "purple" },
+      { label: "Suspended", value: String(opsUsers.filter((u) => u.status === "suspended").length), tone: "orange" },
+    ],
+    [opsUsers],
+  );
 
   const filtered = useMemo(
     () =>
@@ -54,7 +59,7 @@ export default function AdminUsersPage() {
         }
         return true;
       }),
-    [search, role, status],
+    [opsUsers, search, role, status],
   );
 
   const columns: Column<OpsUser>[] = [

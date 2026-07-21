@@ -4,7 +4,8 @@ import { motion } from "framer-motion";
 
 import { Card, CardContent } from "@/components/ui/card";
 import { Sparkline } from "@/components/ui/sparkline";
-import { gateways, fmtMoney, type Gateway } from "@/lib/modules";
+import { fmtMoney, type Gateway } from "@/lib/modules";
+import { useGateways } from "@/hooks/use-modules";
 import { staggerContainer, fadeUp } from "@/lib/motion";
 
 const statusMeta: Record<Gateway["status"], { dot: string; text: string; label: string; stroke: string }> = {
@@ -14,6 +15,7 @@ const statusMeta: Record<Gateway["status"], { dot: string; text: string; label: 
 };
 
 export function GatewayGrid() {
+  const { data: gateways } = useGateways();
   return (
     <motion.div
       variants={staggerContainer}

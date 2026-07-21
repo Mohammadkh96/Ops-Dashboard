@@ -10,7 +10,8 @@ import { FilterBar } from "@/components/ui/filter-bar";
 import { StatusBadge, RiskBadge } from "@/components/ui/status-badge";
 import { Drawer } from "@/components/ui/drawer";
 import { Button } from "@/components/ui/button";
-import { kycCases, type KycCase } from "@/lib/modules";
+import { type KycCase } from "@/lib/modules";
+import { useKycCases } from "@/hooks/use-modules";
 
 const STATUS_OPTIONS: { label: string; value: KycCase["status"] }[] = [
   { label: "Pending", value: "pending" },
@@ -58,13 +59,14 @@ export default function CompliancePage() {
   const [status, setStatus] = useState("");
   const [risk, setRisk] = useState("");
   const [selected, setSelected] = useState<KycCase | null>(null);
+  const { data: kycCases } = useKycCases();
 
   const stats: Stat[] = useMemo(() => {
     const pending = kycCases.filter((c) => c.status === "pending").length;
     const inReview = kycCases.filter((c) => c.status === "in_review").length;
     const edd = kycCases.filter((c) => c.status === "edd_required").length;
     const avg = Math.round(
-      kycCases.reduce((sum, c) => sum + c.riskScore, 0) / kycCases.length,
+      kycCases.reduce((sum, c) => sum + c.riskScore, 0) / (kycCases.length || 1),
     );
     return [
       { label: "Pending KYC", value: String(pending), tone: "blue", spark: [1, 2, 1, 3, 2, 2, pending] },
@@ -72,7 +74,7 @@ export default function CompliancePage() {
       { label: "EDD required", value: String(edd), tone: "orange", spark: [0, 1, 1, 2, 1, 1, edd] },
       { label: "Avg risk score", value: String(avg), tone: "red", delta: { text: `${kycCases.length} open cases`, positive: false } },
     ];
-  }, []);
+  }, [kycCases]);
 
   const filtered = useMemo(
     () =>
@@ -85,7 +87,7 @@ export default function CompliancePage() {
         }
         return true;
       }),
-    [search, status, risk],
+    [kycCases, search, status, risk],
   );
 
   const columns: Column<KycCase>[] = [

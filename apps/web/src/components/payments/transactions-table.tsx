@@ -7,7 +7,8 @@ import { FilterBar } from "@/components/ui/filter-bar";
 import { StatusBadge, RiskBadge } from "@/components/ui/status-badge";
 import { Drawer } from "@/components/ui/drawer";
 import { Button } from "@/components/ui/button";
-import { transactions, type Transaction } from "@/lib/modules";
+import { type Transaction } from "@/lib/modules";
+import { useTransactions } from "@/hooks/use-modules";
 
 const money = (t: Transaction) => {
   const sign = t.type === "Withdrawal" ? "−" : "+";
@@ -21,10 +22,11 @@ export function TransactionsTable({ fixedType }: { fixedType?: "Deposit" | "With
   const [method, setMethod] = useState("");
   const [gateway, setGateway] = useState("");
   const [selected, setSelected] = useState<Transaction | null>(null);
+  const { data: transactions } = useTransactions();
 
   const base = useMemo(
     () => (fixedType ? transactions.filter((t) => t.type === fixedType) : transactions),
-    [fixedType],
+    [fixedType, transactions],
   );
 
   const filtered = useMemo(

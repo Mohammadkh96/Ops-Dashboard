@@ -12,13 +12,12 @@ import { DataTable, type Column } from "@/components/ui/data-table";
 import { cn } from "@/lib/utils";
 import { staggerContainer, fadeUp } from "@/lib/motion";
 import {
-  reportTemplates,
   type ReportFormat,
-  generatedReports,
+  type ReportTemplate,
   type GeneratedReport,
-  scheduledReports,
   type ScheduledReport,
 } from "@/lib/modules";
+import { useReports } from "@/hooks/use-modules";
 
 const TABS = [
   { key: "templates", label: "Templates" },
@@ -31,7 +30,7 @@ const formatIcon: Record<ReportFormat, typeof FileText> = {
   Excel: Sheet,
 };
 
-function TemplatesGrid() {
+function TemplatesGrid({ templates }: { templates: ReportTemplate[] }) {
   return (
     <motion.div
       variants={staggerContainer}
@@ -39,7 +38,7 @@ function TemplatesGrid() {
       animate="show"
       className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3"
     >
-      {reportTemplates.map((t) => (
+      {templates.map((t) => (
         <motion.div key={t.id} variants={fadeUp}>
           <Card className="glass card-seam h-full transition-colors hover:border-border-strong">
             <CardContent className="flex h-full flex-col gap-4 pt-5">
@@ -68,7 +67,7 @@ function TemplatesGrid() {
   );
 }
 
-function GeneratedTable() {
+function GeneratedTable({ reports }: { reports: GeneratedReport[] }) {
   const columns: Column<GeneratedReport>[] = [
     { key: "name", header: "Name", render: (r) => <span className="font-medium">{r.name}</span> },
     {
@@ -96,14 +95,14 @@ function GeneratedTable() {
   return (
     <DataTable
       columns={columns}
-      rows={generatedReports}
+      rows={reports}
       getRowKey={(r) => r.id}
       empty="No reports generated yet."
     />
   );
 }
 
-function ScheduledTable() {
+function ScheduledTable({ reports }: { reports: ScheduledReport[] }) {
   const columns: Column<ScheduledReport>[] = [
     { key: "name", header: "Name", render: (r) => <span className="font-medium">{r.name}</span> },
     { key: "cadence", header: "Cadence", render: (r) => <span className="text-muted-foreground">{r.cadence}</span> },
@@ -130,7 +129,7 @@ function ScheduledTable() {
     <div className="flex flex-col gap-3">
       <DataTable
         columns={columns}
-        rows={scheduledReports}
+        rows={reports}
         getRowKey={(r) => r.id}
         empty="No scheduled reports."
       />
@@ -143,6 +142,7 @@ function ScheduledTable() {
 
 export default function ReportsPage() {
   const [tab, setTab] = useState<(typeof TABS)[number]["key"]>("templates");
+  const { data } = useReports();
 
   return (
     <div className="flex flex-col gap-6">
@@ -174,9 +174,9 @@ export default function ReportsPage() {
         ))}
       </div>
 
-      {tab === "templates" ? <TemplatesGrid /> : null}
-      {tab === "generated" ? <GeneratedTable /> : null}
-      {tab === "scheduled" ? <ScheduledTable /> : null}
+      {tab === "templates" ? <TemplatesGrid templates={data.templates} /> : null}
+      {tab === "generated" ? <GeneratedTable reports={data.generated} /> : null}
+      {tab === "scheduled" ? <ScheduledTable reports={data.scheduled} /> : null}
     </div>
   );
 }
