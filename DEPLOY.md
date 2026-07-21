@@ -13,22 +13,26 @@ The frontend renders the full dashboard with bundled demo data when no API is
 configured. It's built as a **fully static site**, so it deploys to any static
 host with zero configuration.
 
-### Vercel — zero config (recommended)
+### Vercel (recommended)
 
-A root [`vercel.json`](./vercel.json) is committed, so Vercel needs **no
-settings at all**:
+This is a monorepo, so Vercel needs to know the app lives in `apps/web`. That is
+the **one** setting to get right — then Vercel builds the Next.js app natively.
 
 1. In Vercel → **Add New Project** → import this repo.
-2. **Deploy.** (Don't set a Root Directory, don't change build settings — the
-   committed `vercel.json` builds `apps/web` as a static export to `apps/web/out`.)
-3. You get a `https://<project>.vercel.app` URL showing the dashboard.
+2. **Root Directory** → **`apps/web`** (Edit → select the folder). This is the
+   critical step; without it Vercel builds the empty repo root and serves a 404.
+3. Leave **Framework Preset = Next.js** and **Build/Output/Install on their
+   defaults** (do not override them — no `vercel.json` is needed).
+4. **Environment variables:** leave `NEXT_PUBLIC_API_URL` unset for a demo
+   preview, or set it to `https://<your-api>/api` for live data.
+5. **Deploy** → `https://<project>.vercel.app`.
 
-To go live with real data later, add an env var `NEXT_PUBLIC_API_URL` =
-`https://<your-api>/api` and redeploy. Until then a "Demo data" badge shows.
+> Already imported and seeing a 404? Go to **Settings → Build & Deployment**,
+> set **Root Directory** to `apps/web`, clear any custom Build Command / Output
+> Directory (back to defaults), then **Deployments → Redeploy**.
 
-> Why static export? The frontend is a client-side SPA that talks to the API
-> over HTTP — no server-side rendering is needed — so a static build is simpler
-> and hosts anywhere. `vercel.json` runs `STATIC_EXPORT=1 npm run build:web`.
+The dashboard shows a "Demo data" badge until `NEXT_PUBLIC_API_URL` points at a
+reachable API.
 
 ### Any other static host (Netlify, Cloudflare Pages, S3, GitHub Pages)
 
