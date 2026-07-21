@@ -10,28 +10,40 @@ live data automatically once you point it at a running API.
 ## Fastest path to a live URL (frontend only, demo mode)
 
 The frontend renders the full dashboard with bundled demo data when no API is
-configured. Deploy just `apps/web` and you get a shareable URL in ~1 minute.
+configured. It's built as a **fully static site**, so it deploys to any static
+host with zero configuration.
 
-### Vercel (recommended)
+### Vercel — zero config (recommended)
 
-1. Push this repo to GitHub (already done on your branch).
-2. In Vercel → **Add New Project** → import the repo.
-3. Set **Root Directory** to `apps/web`.
-4. Framework preset: **Next.js** (auto-detected). Leave build/output defaults.
-5. **Environment variables:** leave `NEXT_PUBLIC_API_URL` **unset** for a demo
-   preview, or set it to your API URL (e.g. `https://api.example.com/api`) to
-   go live with real data.
-6. **Deploy.** You'll get a `https://<project>.vercel.app` URL.
+A root [`vercel.json`](./vercel.json) is committed, so Vercel needs **no
+settings at all**:
 
-> The dashboard shows a "Demo data" badge until `NEXT_PUBLIC_API_URL` points at
-> a reachable API.
+1. In Vercel → **Add New Project** → import this repo.
+2. **Deploy.** (Don't set a Root Directory, don't change build settings — the
+   committed `vercel.json` builds `apps/web` as a static export to `apps/web/out`.)
+3. You get a `https://<project>.vercel.app` URL showing the dashboard.
 
-### Any static/Node host
+To go live with real data later, add an env var `NEXT_PUBLIC_API_URL` =
+`https://<your-api>/api` and redeploy. Until then a "Demo data" badge shows.
+
+> Why static export? The frontend is a client-side SPA that talks to the API
+> over HTTP — no server-side rendering is needed — so a static build is simpler
+> and hosts anywhere. `vercel.json` runs `STATIC_EXPORT=1 npm run build:web`.
+
+### Any other static host (Netlify, Cloudflare Pages, S3, GitHub Pages)
+
+```bash
+npm install
+npm run build:static      # outputs apps/web/out/
+# then serve/upload the apps/web/out directory
+```
+
+### Node host (SSR-style, if you prefer)
 
 ```bash
 cd apps/web
 npm install
-npm run build      # produces .next
+npm run build      # normal Next build (no STATIC_EXPORT)
 npm run start      # serves on $PORT (default 3000)
 ```
 
