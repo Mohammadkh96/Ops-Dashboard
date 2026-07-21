@@ -9,7 +9,7 @@ const statusStyles: Record<SystemStatus, { dot: string; label: string; text: str
 
 export function SystemStatusCard() {
   return (
-    <Card className="glass">
+    <Card className="glass card-seam h-full">
       <CardHeader>
         <CardTitle>System Status</CardTitle>
       </CardHeader>

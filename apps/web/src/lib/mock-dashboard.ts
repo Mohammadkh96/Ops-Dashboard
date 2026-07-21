@@ -6,11 +6,53 @@ export const operationalHealth = {
   trend: +3,
 };
 
-export const todayMetrics = [
-  { label: "Total Volume", value: "$4.82M", change: "+8.4%", positive: true },
-  { label: "Deposits", value: "$2.91M", change: "+12.1%", positive: true },
-  { label: "Withdrawals", value: "$1.91M", change: "-3.2%", positive: false },
-  { label: "Revenue", value: "$186.4K", change: "+5.6%", positive: true },
+export type TodayMetric = {
+  label: string;
+  value: number;
+  format: "currency" | "currency-k";
+  change: string;
+  positive: boolean;
+  tone: "blue" | "green" | "magenta" | "purple";
+  spark: number[];
+};
+
+export const todayMetrics: TodayMetric[] = [
+  {
+    label: "Total Volume",
+    value: 4.82,
+    format: "currency",
+    change: "+8.4%",
+    positive: true,
+    tone: "blue",
+    spark: [3.1, 3.4, 3.2, 3.9, 4.1, 4.0, 4.5, 4.82],
+  },
+  {
+    label: "Deposits",
+    value: 2.91,
+    format: "currency",
+    change: "+12.1%",
+    positive: true,
+    tone: "green",
+    spark: [1.8, 2.0, 2.1, 2.4, 2.3, 2.6, 2.8, 2.91],
+  },
+  {
+    label: "Withdrawals",
+    value: 1.91,
+    format: "currency",
+    change: "-3.2%",
+    positive: false,
+    tone: "magenta",
+    spark: [2.1, 2.0, 2.05, 1.95, 1.98, 1.9, 1.93, 1.91],
+  },
+  {
+    label: "Revenue",
+    value: 186.4,
+    format: "currency-k",
+    change: "+5.6%",
+    positive: true,
+    tone: "purple",
+    spark: [140, 150, 148, 162, 170, 168, 180, 186.4],
+  },
 ];
 
 export const performanceMetrics = [

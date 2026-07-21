@@ -29,6 +29,11 @@ The skeleton everything else hangs off, plus the homepage that answers
 - ✅ Health endpoint with DB connectivity check
 - ✅ Docker Compose (Postgres 16 + Redis 7) + initial SQL migration
 - ✅ Seed script (admin user + 7 payment gateways)
+- ✅ Design-system pass: motion (Framer Motion), animated count-up KPIs, inline
+  sparklines, live pulse indicators, refined glass/typography/gradients
+- ✅ ⌘K command palette (cmdk) — quick actions + jump-to navigation
+- ✅ Data-viz correctness: validated CVD-safe categorical chart pair
+  (blue / magenta), legend + crosshair tooltip
 - ⬜ Wire the Dashboard to live API data (replace mock module)
 - ⬜ Real-time transport (SSE or WebSocket gateway) for live updates
 - ⬜ React Query + API client layer on the frontend
@@ -82,6 +87,12 @@ The skeleton everything else hangs off, plus the homepage that answers
 - Prisma is on **v7** — it uses the `prisma-client` generator with an explicit
   output path (`apps/api/generated/prisma`) and the `@prisma/adapter-pg` driver
   adapter. See `apps/api/.claude/skills/prisma-upgrade-v7/` for the conventions.
+- **`@types/react` is pinned to `19.2.9`** via a root `overrides` block (and in
+  `apps/web` devDependencies). `@types/react@19.2.17` has a regression that
+  breaks Radix UI's `ComponentPropsWithoutRef<typeof Primitive.span>` typing
+  (every Radix component loses `className`/`children`). Keep a single, pinned
+  copy across the workspace — do not let a second `@types/react` version get
+  installed, or you'll hit "two different types with this name" ref errors.
 - Docker image pulls may be blocked in restricted network sandboxes; the
   `docker-compose.yml` and the committed initial migration are valid and run in
   a normal environment.

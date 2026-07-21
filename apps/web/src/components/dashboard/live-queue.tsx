@@ -1,5 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { LiveDot } from "@/components/ui/live-dot";
 import { liveQueue } from "@/lib/mock-dashboard";
 
 const statusBadge = {
@@ -11,11 +12,11 @@ const statusBadge = {
 
 export function LiveQueueCard() {
   return (
-    <Card className="glass">
+    <Card className="glass card-seam h-full">
       <CardHeader className="flex-row items-center justify-between">
         <CardTitle>Live Queue</CardTitle>
         <span className="flex items-center gap-1.5 text-xs text-accent-green">
-          <span className="size-1.5 animate-pulse rounded-full bg-accent-green" />
+          <LiveDot tone="green" />
           Live
         </span>
       </CardHeader>

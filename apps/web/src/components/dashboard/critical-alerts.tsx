@@ -12,7 +12,7 @@ const severityConfig = {
 
 export function CriticalAlertsCard() {
   return (
-    <Card className="glass">
+    <Card className="glass card-seam h-full">
       <CardHeader className="flex-row items-center justify-between">
         <CardTitle>Critical Alerts</CardTitle>
         <Badge variant="red">{criticalAlerts.length} active</Badge>

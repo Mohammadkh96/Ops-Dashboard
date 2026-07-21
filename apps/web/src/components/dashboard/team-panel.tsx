@@ -4,7 +4,7 @@ import { onlineEmployees } from "@/lib/mock-dashboard";
 
 export function TeamPanelCard() {
   return (
-    <Card className="glass">
+    <Card className="glass card-seam h-full">
       <CardHeader className="flex-row items-center justify-between">
         <CardTitle>Team Online</CardTitle>
         <span className="text-xs text-muted-foreground">{onlineEmployees.length} online</span>

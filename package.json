@@ -19,5 +19,9 @@
     "db:generate": "npm --workspace apps/api exec prisma generate",
     "db:migrate": "npm --workspace apps/api exec prisma migrate dev",
     "db:seed": "npm --workspace apps/api exec prisma db seed"
+  },
+  "overrides": {
+    "@types/react": "19.2.9",
+    "@types/react-dom": "19.2.3"
   }
 }

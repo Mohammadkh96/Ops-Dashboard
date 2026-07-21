@@ -6,46 +6,62 @@ import { SystemStatusCard } from "@/components/dashboard/system-status";
 import { VolumeChartCard } from "@/components/dashboard/volume-chart";
 import { LiveQueueCard } from "@/components/dashboard/live-queue";
 import { TeamPanelCard } from "@/components/dashboard/team-panel";
+import { Reveal } from "@/components/ui/reveal";
+import { LiveDot } from "@/components/ui/live-dot";
 
 export default function DashboardPage() {
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-col gap-1">
-        <h1 className="text-xl font-semibold tracking-tight">Dashboard</h1>
-        <p className="text-sm text-muted-foreground">
-          How healthy is Operations right now — and what needs your attention.
-        </p>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="flex flex-col gap-1">
+          <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
+          <p className="text-sm text-muted-foreground">
+            How healthy is Operations right now — and what needs your attention.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 rounded-full border border-border bg-card/60 px-3 py-1.5">
+          <LiveDot tone="green" />
+          <span className="text-xs text-muted-foreground">Live · updated just now</span>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[22rem_1fr]">
-        <HealthScoreCard />
+        <Reveal className="h-full">
+          <HealthScoreCard />
+        </Reveal>
         <TodayMetricCards />
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <CriticalAlertsCard />
-        <PendingWorkCard />
+        <Reveal>
+          <CriticalAlertsCard />
+        </Reveal>
+        <Reveal>
+          <PendingWorkCard />
+        </Reveal>
       </div>
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-        <div className="xl:col-span-2">
+        <Reveal className="xl:col-span-2">
           <VolumeChartCard />
-        </div>
-        <PerformanceMetrics />
+        </Reveal>
+        <Reveal className="h-full">
+          <PerformanceMetrics />
+        </Reveal>
       </div>
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-        <div className="xl:col-span-2">
+        <Reveal className="xl:col-span-2">
           <LiveQueueCard />
-        </div>
-        <div className="flex flex-col gap-4">
+        </Reveal>
+        <Reveal>
           <SystemStatusCard />
-        </div>
+        </Reveal>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <Reveal>
         <TeamPanelCard />
-      </div>
+      </Reveal>
     </div>
   );
 }

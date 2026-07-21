@@ -14,7 +14,7 @@ const toneClasses: Record<string, string> = {
 
 export function PendingWorkCard() {
   return (
-    <Card className="glass">
+    <Card className="glass card-seam h-full">
       <CardHeader>
         <CardTitle>Pending Work</CardTitle>
       </CardHeader>
