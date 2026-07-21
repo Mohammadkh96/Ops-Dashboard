@@ -1,16 +1,16 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { onlineEmployees } from "@/lib/mock-dashboard";
+import type { DashboardSummary } from "@/lib/dashboard";
 
-export function TeamPanelCard() {
+export function TeamPanelCard({ team }: { team: DashboardSummary["team"] }) {
   return (
     <Card className="glass card-seam h-full">
       <CardHeader className="flex-row items-center justify-between">
         <CardTitle>Team Online</CardTitle>
-        <span className="text-xs text-muted-foreground">{onlineEmployees.length} online</span>
+        <span className="text-xs text-muted-foreground">{team.online} online</span>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
-        {onlineEmployees.map((employee) => (
+        {team.members.map((employee) => (
           <div key={employee.name} className="flex items-center gap-3">
             <div className="relative">
               <Avatar>

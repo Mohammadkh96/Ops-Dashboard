@@ -11,7 +11,7 @@ import {
 } from "recharts";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { volumeSeries } from "@/lib/mock-dashboard";
+import type { VolumePoint } from "@/lib/dashboard";
 
 const SERIES = [
   { key: "deposits", label: "Deposits", color: "var(--accent-blue)" },
@@ -42,7 +42,7 @@ function ChartTooltip({
   );
 }
 
-export function VolumeChartCard() {
+export function VolumeChartCard({ series }: { series: VolumePoint[] }) {
   return (
     <Card className="glass card-seam h-full">
       <CardHeader className="flex-row items-center justify-between">
@@ -58,7 +58,7 @@ export function VolumeChartCard() {
       </CardHeader>
       <CardContent className="h-72 pt-2">
         <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={volumeSeries} margin={{ top: 4, right: 8, left: -12, bottom: 0 }}>
+          <AreaChart data={series} margin={{ top: 4, right: 8, left: -12, bottom: 0 }}>
             <defs>
               <linearGradient id="fill-deposits" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stopColor="var(--accent-blue)" stopOpacity={0.32} />

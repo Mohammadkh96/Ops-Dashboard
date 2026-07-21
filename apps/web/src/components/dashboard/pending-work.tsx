@@ -2,7 +2,7 @@ import Link from "next/link";
 import { ChevronRight } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { pendingWork } from "@/lib/mock-dashboard";
+import type { PendingItem } from "@/lib/dashboard";
 import { cn } from "@/lib/utils";
 
 const toneClasses: Record<string, string> = {
@@ -12,14 +12,14 @@ const toneClasses: Record<string, string> = {
   orange: "text-accent-orange bg-accent-orange-soft",
 };
 
-export function PendingWorkCard() {
+export function PendingWorkCard({ items }: { items: PendingItem[] }) {
   return (
     <Card className="glass card-seam h-full">
       <CardHeader>
         <CardTitle>Pending Work</CardTitle>
       </CardHeader>
       <CardContent className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-        {pendingWork.map((item) => (
+        {items.map((item) => (
           <Link
             key={item.label}
             href={item.href}

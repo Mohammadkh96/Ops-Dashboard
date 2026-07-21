@@ -1,7 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { LiveDot } from "@/components/ui/live-dot";
-import { liveQueue } from "@/lib/mock-dashboard";
+import type { QueueItem } from "@/lib/dashboard";
 
 const statusBadge = {
   review: { variant: "orange" as const, label: "Review" },
@@ -10,7 +10,7 @@ const statusBadge = {
   escalated: { variant: "red" as const, label: "Escalated" },
 };
 
-export function LiveQueueCard() {
+export function LiveQueueCard({ rows }: { rows: QueueItem[] }) {
   return (
     <Card className="glass card-seam h-full">
       <CardHeader className="flex-row items-center justify-between">
@@ -32,7 +32,7 @@ export function LiveQueueCard() {
             </tr>
           </thead>
           <tbody>
-            {liveQueue.map((item) => (
+            {rows.map((item) => (
               <tr key={item.id} className="border-b border-border/60 last:border-0">
                 <td className="py-2.5 font-mono text-xs text-muted-foreground">{item.id}</td>
                 <td className="py-2.5 text-foreground">{item.type}</td>

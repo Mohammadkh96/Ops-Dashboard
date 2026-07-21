@@ -1,20 +1,20 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { systemStatus, type SystemStatus } from "@/lib/mock-dashboard";
+import type { SystemState, SystemStatusItem } from "@/lib/dashboard";
 
-const statusStyles: Record<SystemStatus, { dot: string; label: string; text: string }> = {
+const statusStyles: Record<SystemState, { dot: string; label: string; text: string }> = {
   operational: { dot: "bg-accent-green", label: "Operational", text: "text-accent-green" },
   degraded: { dot: "bg-accent-orange", label: "Degraded", text: "text-accent-orange" },
   down: { dot: "bg-accent-red", label: "Down", text: "text-accent-red" },
 };
 
-export function SystemStatusCard() {
+export function SystemStatusCard({ items }: { items: SystemStatusItem[] }) {
   return (
     <Card className="glass card-seam h-full">
       <CardHeader>
         <CardTitle>System Status</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
-        {systemStatus.map((system) => {
+        {items.map((system) => {
           const style = statusStyles[system.status];
           return (
             <div key={system.name} className="flex items-center justify-between text-sm">

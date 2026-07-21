@@ -8,6 +8,7 @@ import { Separator } from "@/components/ui/separator";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { LiveDot } from "@/components/ui/live-dot";
 import { openCommandPalette } from "@/components/command-palette";
+import { useAuth } from "@/lib/auth";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -17,8 +18,18 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
+function initials(email: string) {
+  const name = email.split("@")[0].replace(/[._-]+/g, " ").trim();
+  const parts = name.split(" ");
+  return ((parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? "")).toUpperCase() || "OP";
+}
+
 export function TopBar() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const { user, isDemo, logout } = useAuth();
+
+  const email = user?.email ?? "mohammad@tradin.com";
+  const role = user?.role ? user.role.replace(/_/g, " ").toLowerCase() : "Operations Manager";
 
   return (
     <header className="glass-surface sticky top-0 z-30 flex h-16 items-center gap-4 px-5 lg:px-8">
@@ -61,17 +72,17 @@ export function TopBar() {
         <DropdownMenuTrigger asChild>
           <button className="flex items-center gap-2 rounded-lg py-1 pl-1 pr-2 transition-colors hover:bg-card">
             <Avatar className="size-8">
-              <AvatarFallback>MK</AvatarFallback>
+              <AvatarFallback>{initials(email)}</AvatarFallback>
             </Avatar>
             <div className="hidden flex-col items-start leading-none xl:flex">
-              <span className="text-xs font-medium">Mohammad K.</span>
-              <span className="text-[11px] text-muted">Operations Manager</span>
+              <span className="text-xs font-medium">{email.split("@")[0]}</span>
+              <span className="text-[11px] capitalize text-muted">{role}</span>
             </div>
             <ChevronDown className="size-3.5 text-muted" />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <DropdownMenuLabel>mohammad@tradin.com</DropdownMenuLabel>
+          <DropdownMenuLabel>{email}</DropdownMenuLabel>
           <DropdownMenuSeparator />
           <DropdownMenuItem>
             <UserCog className="size-4" /> Profile settings
@@ -80,7 +91,12 @@ export function TopBar() {
             <Timer className="size-4" /> End shift
           </DropdownMenuItem>
           <DropdownMenuSeparator />
-          <DropdownMenuItem className="text-accent-red">
+          <DropdownMenuItem
+            className="text-accent-red"
+            onSelect={() => {
+              if (!isDemo) logout();
+            }}
+          >
             <LogOut className="size-4" /> Sign out
           </DropdownMenuItem>
         </DropdownMenuContent>

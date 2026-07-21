@@ -7,24 +7,19 @@ import { Card, CardContent } from "@/components/ui/card";
 import { AnimatedNumber } from "@/components/ui/animated-number";
 import { Sparkline } from "@/components/ui/sparkline";
 import { Progress } from "@/components/ui/progress";
-import { todayMetrics, performanceMetrics, type TodayMetric } from "@/lib/mock-dashboard";
+import { formatKpi, type KpiMetric, type PerfMetric, type Tone } from "@/lib/dashboard";
 import { staggerContainer, fadeUp } from "@/lib/motion";
 
-const toneVar: Record<TodayMetric["tone"], string> = {
+const toneVar: Record<Tone, string> = {
   blue: "var(--accent-blue)",
   green: "var(--accent-green)",
   magenta: "var(--accent-magenta)",
   purple: "var(--accent-purple)",
+  red: "var(--accent-red)",
+  orange: "var(--accent-orange)",
 };
 
-function formatMetric(m: TodayMetric) {
-  return (n: number) =>
-    m.format === "currency"
-      ? `$${n.toFixed(2)}M`
-      : `$${n.toFixed(1)}K`;
-}
-
-export function TodayMetricCards() {
+export function TodayMetricCards({ metrics }: { metrics: KpiMetric[] }) {
   return (
     <motion.div
       variants={staggerContainer}
@@ -32,23 +27,19 @@ export function TodayMetricCards() {
       animate="show"
       className="grid h-full grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4"
     >
-      {todayMetrics.map((m) => (
-        <motion.div key={m.label} variants={fadeUp}>
+      {metrics.map((m) => (
+        <motion.div key={m.key} variants={fadeUp}>
           <Card className="glass card-seam group h-full transition-colors hover:border-border-strong">
             <CardContent className="flex flex-col gap-3 pt-5">
               <div className="flex items-start justify-between">
                 <span className="text-xs font-medium uppercase tracking-wider text-muted">
                   {m.label}
                 </span>
-                <Sparkline
-                  data={m.spark}
-                  stroke={toneVar[m.tone]}
-                  fill={toneVar[m.tone]}
-                />
+                <Sparkline data={m.spark} stroke={toneVar[m.tone]} fill={toneVar[m.tone]} />
               </div>
               <AnimatedNumber
                 value={m.value}
-                format={formatMetric(m)}
+                format={formatKpi(m)}
                 className="tnum text-2xl font-semibold tracking-tight"
               />
               <div
@@ -77,7 +68,7 @@ const perfTone = (label: string) =>
     ? "bg-accent-orange"
     : "bg-accent-green";
 
-export function PerformanceMetrics() {
+export function PerformanceMetrics({ metrics }: { metrics: PerfMetric[] }) {
   return (
     <Card className="glass card-seam h-full">
       <CardContent className="flex flex-col gap-5 pt-5">
@@ -85,13 +76,13 @@ export function PerformanceMetrics() {
           Today&apos;s Performance
         </span>
         <div className="flex flex-col gap-4">
-          {performanceMetrics.map((m) => (
+          {metrics.map((m) => (
             <div key={m.label} className="flex flex-col gap-1.5">
               <div className="flex items-center justify-between text-sm">
                 <span className="text-muted-foreground">{m.label}</span>
                 <AnimatedNumber
                   value={m.value}
-                  format={(n) => `${n.toFixed(1)}${m.suffix}`}
+                  format={(n) => `${n.toFixed(1)}%`}
                   className="tnum font-medium text-foreground"
                 />
               </div>

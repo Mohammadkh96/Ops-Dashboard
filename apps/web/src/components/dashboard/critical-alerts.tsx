@@ -2,7 +2,7 @@ import { AlertTriangle, AlertOctagon, Info } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { criticalAlerts } from "@/lib/mock-dashboard";
+import type { AlertItem } from "@/lib/dashboard";
 
 const severityConfig = {
   critical: { icon: AlertOctagon, badge: "red" as const, label: "Critical" },
@@ -10,15 +10,15 @@ const severityConfig = {
   info: { icon: Info, badge: "blue" as const, label: "Info" },
 };
 
-export function CriticalAlertsCard() {
+export function CriticalAlertsCard({ alerts }: { alerts: AlertItem[] }) {
   return (
     <Card className="glass card-seam h-full">
       <CardHeader className="flex-row items-center justify-between">
         <CardTitle>Critical Alerts</CardTitle>
-        <Badge variant="red">{criticalAlerts.length} active</Badge>
+        <Badge variant="red">{alerts.length} active</Badge>
       </CardHeader>
       <CardContent className="flex flex-col gap-2.5">
-        {criticalAlerts.map((alert) => {
+        {alerts.map((alert) => {
           const config = severityConfig[alert.severity];
           const Icon = config.icon;
           return (

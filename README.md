@@ -112,12 +112,23 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ---
 
+## Demo mode & live data
+
+The frontend reads the dashboard from `GET /api/dashboard/summary` via React
+Query. When `NEXT_PUBLIC_API_URL` is **unset**, it runs in **demo mode**: no
+requests are made and the UI renders bundled demo data (shown by a "Demo data"
+badge). Point `NEXT_PUBLIC_API_URL` at a running API and it switches to live
+data and requires login at `/login`. This means you can deploy the frontend
+alone for a shareable preview URL — see [`DEPLOY.md`](./DEPLOY.md).
+
 ## Current status
 
-**Phase 1 (foundation) — in progress.** The app shell, design system, and a
-fully-designed Dashboard homepage (with representative mock data) are built.
-The backend has auth (JWT + RBAC scaffolding), a health endpoint, the full
-Prisma data model for core entities, and Swagger docs. Remaining modules are
-scaffolded as "coming soon" pages and tracked in the roadmap.
+**Phase 1 (foundation) — largely complete.** The app shell, design system,
+motion, ⌘K command palette, and a fully-designed Dashboard are built. The
+dashboard is wired to a live API endpoint with automatic demo-mode fallback,
+and there's a working login flow (JWT + auth guard). The backend has auth,
+health, the dashboard summary endpoint, the full Prisma data model, and Swagger
+docs. Other modules are scaffolded as "coming soon" pages.
 
-See [`ROADMAP.md`](./ROADMAP.md) for the detailed build plan.
+See [`ROADMAP.md`](./ROADMAP.md) for the detailed build plan and
+[`DEPLOY.md`](./DEPLOY.md) for deployment.

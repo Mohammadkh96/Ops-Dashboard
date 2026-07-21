@@ -5,11 +5,11 @@ import { TrendingUp } from "lucide-react";
 
 import { Card, CardContent } from "@/components/ui/card";
 import { AnimatedNumber } from "@/components/ui/animated-number";
-import { operationalHealth } from "@/lib/mock-dashboard";
+import type { DashboardSummary } from "@/lib/dashboard";
 import { easeOut } from "@/lib/motion";
 
-export function HealthScoreCard() {
-  const { score, label, trend } = operationalHealth;
+export function HealthScoreCard({ health }: { health: DashboardSummary["health"] }) {
+  const { score, label, trend } = health;
   const radius = 42;
   const circumference = 2 * Math.PI * radius;
   const offset = circumference - (score / 100) * circumference;

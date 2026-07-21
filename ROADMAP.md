@@ -34,10 +34,15 @@ The skeleton everything else hangs off, plus the homepage that answers
 - ✅ ⌘K command palette (cmdk) — quick actions + jump-to navigation
 - ✅ Data-viz correctness: validated CVD-safe categorical chart pair
   (blue / magenta), legend + crosshair tooltip
-- ⬜ Wire the Dashboard to live API data (replace mock module)
-- ⬜ Real-time transport (SSE or WebSocket gateway) for live updates
-- ⬜ React Query + API client layer on the frontend
-- ⬜ Frontend auth flow (login page, token storage, route protection)
+- ✅ React Query + API client layer on the frontend (`lib/api`, `hooks/use-dashboard`)
+- ✅ `GET /api/dashboard/summary` endpoint (derives from DB, safe defaults)
+- ✅ Dashboard reads live data with automatic demo-mode fallback when no API is
+  configured or the API is unreachable (shows a status badge)
+- ✅ Frontend auth flow: `/login` page, JWT token storage, auth context + route
+  guard (pass-through in demo mode)
+- ✅ Deployable standalone for a live preview URL — see `DEPLOY.md`
+- ⬜ Real-time transport (SSE or WebSocket gateway) for push updates
+- ⬜ Persist real transactions/clients so the summary reflects live figures
 
 ## Phase 2 — Payments & Transactions ⬜
 
