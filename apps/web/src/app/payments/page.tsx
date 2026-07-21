@@ -1,14 +1,63 @@
-import { CreditCard } from "lucide-react";
+"use client";
 
-import { ComingSoon } from "@/components/shell/coming-soon";
+import { useState } from "react";
+import { Download } from "lucide-react";
+
+import { PageHeader } from "@/components/ui/page-header";
+import { StatTileRow, type Stat } from "@/components/ui/stat-tile";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+import { TransactionsTable } from "@/components/payments/transactions-table";
+import { GatewayGrid } from "@/components/payments/gateway-grid";
+
+const stats: Stat[] = [
+  { label: "Today's Volume", value: "$4.82M", delta: { text: "+8.4% vs yesterday", positive: true }, tone: "blue", spark: [3.1, 3.4, 3.2, 3.9, 4.1, 4.0, 4.5, 4.82] },
+  { label: "Success Rate", value: "97.8%", delta: { text: "+0.6 pts", positive: true }, tone: "green", spark: [96, 97, 97, 98, 97, 98, 98, 97.8] },
+  { label: "Failed Payments", value: "19", delta: { text: "+7 vs yesterday", positive: false }, tone: "orange", spark: [8, 10, 9, 12, 14, 16, 18, 19] },
+  { label: "Pending Refunds", value: "5", delta: { text: "$18.4K held", positive: false }, tone: "magenta", spark: [2, 3, 3, 4, 4, 5, 5, 5] },
+];
+
+const TABS = [
+  { key: "transactions", label: "Transactions" },
+  { key: "gateways", label: "Payment Gateways" },
+] as const;
 
 export default function PaymentsPage() {
+  const [tab, setTab] = useState<(typeof TABS)[number]["key"]>("transactions");
+
   return (
-    <ComingSoon
-      title="Payments"
-      description="Every transaction, PSP monitoring, gateway health, and reconciliation."
-      icon={CreditCard}
-      phase="Phase 2"
-    />
+    <div className="flex flex-col gap-6">
+      <PageHeader
+        title="Payments"
+        description="Every transaction and PSP, monitored in real time."
+        actions={
+          <Button variant="secondary" size="sm">
+            <Download className="size-4" /> Export
+          </Button>
+        }
+      />
+
+      <StatTileRow stats={stats} />
+
+      <div className="flex items-center gap-1 border-b border-border">
+        {TABS.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className={cn(
+              "relative px-3 py-2.5 text-sm font-medium transition-colors",
+              tab === t.key ? "text-foreground" : "text-muted hover:text-muted-foreground",
+            )}
+          >
+            {t.label}
+            {tab === t.key ? (
+              <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-accent-blue" />
+            ) : null}
+          </button>
+        ))}
+      </div>
+
+      {tab === "transactions" ? <TransactionsTable /> : <GatewayGrid />}
+    </div>
   );
 }

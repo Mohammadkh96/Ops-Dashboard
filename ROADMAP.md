@@ -44,26 +44,32 @@ The skeleton everything else hangs off, plus the homepage that answers
 - ⬜ Real-time transport (SSE or WebSocket gateway) for push updates
 - ⬜ Persist real transactions/clients so the summary reflects live figures
 
-## Phase 2 — Payments & Transactions ⬜
+## Phase 2 — Payments & Transactions 🚧
 
-- ⬜ Transactions module: virtualized table with filters (client, country, PSP, currency, gateway, status, time, risk, method)
-- ⬜ Transaction detail page (timeline, logs, risk, API response, webhook, notes, files, history)
-- ⬜ Payment Gateway monitoring: per-PSP pages (success rate, failures, latency, downtime, webhook failures, volume, revenue)
-- ⬜ Deposits & Withdrawals module views
-- ⬜ Withdrawal approval workflow
-- ⬜ Live Alerts engine (gateway offline, decline/refund spikes, large withdrawal, AML flag, etc.)
+- ✅ Transactions module: filterable table (search, status, method, PSP) with
+  row → detail drawer (amount, fields, risk, timeline)
+- ✅ Payment Gateway monitoring grid (success rate, latency, volume, webhook
+  failures, live status, sparklines) — tabbed with Transactions
+- ✅ Deposits & Withdrawals module views (reuse the transactions table, typed)
+- ✅ Shared module primitives: PageHeader, StatTileRow, DataTable, FilterBar,
+  Drawer, StatusBadge/RiskBadge
+- ⬜ Transaction detail as full page (API response, webhook payload, files, notes)
+- ⬜ Withdrawal approval workflow (server-side)
+- ⬜ Live Alerts engine (gateway offline, decline/refund spikes, large withdrawal…)
 
-## Phase 3 — Compliance, Incidents & Operations ⬜
+## Phase 3 — Compliance, Incidents & Operations 🚧
 
-- ⬜ Compliance module (KYC/AML/EDD, sanctions/PEP, risk score, documents, approvals, escalations, audit trail)
-- ⬜ Incident management (severity, root cause, timeline, impact, owner, resolution, preventive actions, linked entities)
-- ⬜ Shift management (start/resume/end, checklist, carry-forward, handover, daily notes, performance)
-- ⬜ Team dashboard (who's online, workload, tickets, investigations, handling time, leaderboard)
+- ✅ Compliance / KYC module (queue table, risk score, filters, case drawer with
+  sanctions/PEP/AML/EDD screening checklist)
+- ✅ Incident management (severity stripes, status, impact, owner, timeline drawer)
+- ⬜ Shift management (start/resume/end, checklist, carry-forward, handover)
+- ⬜ Team dashboard (workload, tickets, investigations, leaderboard)
 - ⬜ Ticketing + SLA monitoring
 
-## Phase 4 — Analytics, Reports & Search ⬜
+## Phase 4 — Analytics, Reports & Search 🚧
 
-- ⬜ Analytics (payment success, gateway/country/currency performance, risk/client/volume trends, time granularities)
+- ✅ Analytics module (payment success, approvals vs declines, gateway & country
+  performance) with validated CVD-safe chart colors + time-range selector
 - ⬜ Reports (generate/schedule/email PDF & Excel)
 - ⬜ Global search across clients, transactions, tickets, cases, KYC, incidents, gateways, users
 - ⬜ Notification center (mentions, assignment, escalation, system events)

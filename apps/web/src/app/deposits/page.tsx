@@ -1,14 +1,20 @@
-import { ArrowDownToLine } from "lucide-react";
+import { PageHeader } from "@/components/ui/page-header";
+import { StatTileRow, type Stat } from "@/components/ui/stat-tile";
+import { TransactionsTable } from "@/components/payments/transactions-table";
 
-import { ComingSoon } from "@/components/shell/coming-soon";
+const stats: Stat[] = [
+  { label: "Today's Deposits", value: "$2.91M", delta: { text: "+12.1% vs yesterday", positive: true }, tone: "green", spark: [1.8, 2.0, 2.1, 2.4, 2.3, 2.6, 2.8, 2.91] },
+  { label: "Avg Deposit", value: "$1,240", delta: { text: "+3.2%", positive: true }, tone: "blue", spark: [1.1, 1.15, 1.2, 1.18, 1.22, 1.2, 1.23, 1.24] },
+  { label: "Approval Rate", value: "94.2%", delta: { text: "−0.4 pts", positive: false }, tone: "orange", spark: [95, 95, 94, 95, 94, 94, 94, 94.2] },
+  { label: "Avg Processing", value: "38s", delta: { text: "−6s vs yesterday", positive: true }, tone: "purple", spark: [52, 48, 45, 44, 42, 40, 39, 38] },
+];
 
 export default function DepositsPage() {
   return (
-    <ComingSoon
-      title="Deposits"
-      description="Live deposit transactions filtered by client, country, PSP, and status."
-      icon={ArrowDownToLine}
-      phase="Phase 2"
-    />
+    <div className="flex flex-col gap-6">
+      <PageHeader title="Deposits" description="Incoming transactions across every gateway." />
+      <StatTileRow stats={stats} />
+      <TransactionsTable fixedType="Deposit" />
+    </div>
   );
 }
