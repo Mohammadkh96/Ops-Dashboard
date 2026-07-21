@@ -176,3 +176,134 @@ export const fmtMoney = (n: number, ccy = "USD") =>
   n >= 1000
     ? `${ccy === "USD" ? "$" : ""}${(n / 1000).toFixed(n >= 100000 ? 0 : 1)}K`
     : `${ccy === "USD" ? "$" : ""}${n.toLocaleString()}`;
+
+// ---------- Operations: tickets, team, shift ----------
+
+export type TicketStatus = "open" | "in_progress" | "escalated" | "resolved" | "closed";
+export type TicketPriority = "low" | "medium" | "high" | "urgent";
+export type Ticket = {
+  id: string;
+  subject: string;
+  client: string;
+  assignee: string;
+  status: TicketStatus;
+  priority: TicketPriority;
+  slaRemaining: string;
+  slaBreached: boolean;
+  updatedAt: string;
+};
+
+export const tickets: Ticket[] = [
+  { id: "TC-9931", subject: "Withdrawal stuck in review", client: "Client #77120", assignee: "Fatima Noor", status: "escalated", priority: "urgent", slaRemaining: "12m", slaBreached: false, updatedAt: "3m ago" },
+  { id: "TC-9930", subject: "KYC document rejected — appeal", client: "Client #30918", assignee: "David Chen", status: "in_progress", priority: "high", slaRemaining: "48m", slaBreached: false, updatedAt: "14m ago" },
+  { id: "TC-9929", subject: "Deposit not credited (crypto)", client: "Client #10042", assignee: "Sara Ahmed", status: "in_progress", priority: "high", slaRemaining: "1h 20m", slaBreached: false, updatedAt: "22m ago" },
+  { id: "TC-9928", subject: "Duplicate charge dispute", client: "Client #22981", assignee: "Unassigned", status: "open", priority: "medium", slaRemaining: "Overdue 18m", slaBreached: true, updatedAt: "31m ago" },
+  { id: "TC-9927", subject: "Card payment declined repeatedly", client: "Client #55210", assignee: "Yusuf Ali", status: "open", priority: "medium", slaRemaining: "2h 05m", slaBreached: false, updatedAt: "44m ago" },
+  { id: "TC-9926", subject: "Account statement request", client: "Client #66203", assignee: "Fatima Noor", status: "resolved", priority: "low", slaRemaining: "—", slaBreached: false, updatedAt: "1h ago" },
+];
+
+export type Presence = "online" | "away" | "offline";
+export type Operator = {
+  name: string;
+  role: string;
+  presence: Presence;
+  active: number;
+  handledToday: number;
+  avgHandleMin: number;
+  initials: string;
+};
+
+export const operators: Operator[] = [
+  { name: "Sara Ahmed", role: "Operations", presence: "online", active: 4, handledToday: 37, avgHandleMin: 6.2, initials: "SA" },
+  { name: "David Chen", role: "Compliance", presence: "online", active: 7, handledToday: 21, avgHandleMin: 11.4, initials: "DC" },
+  { name: "Fatima Noor", role: "Support", presence: "online", active: 2, handledToday: 44, avgHandleMin: 4.1, initials: "FN" },
+  { name: "Yusuf Ali", role: "Operations", presence: "away", active: 5, handledToday: 29, avgHandleMin: 7.8, initials: "YA" },
+  { name: "Lina Park", role: "Support", presence: "offline", active: 0, handledToday: 33, avgHandleMin: 5.0, initials: "LP" },
+];
+
+export type ChecklistItem = { label: string; done: boolean };
+export const shiftChecklist: ChecklistItem[] = [
+  { label: "Review overnight alerts", done: true },
+  { label: "Clear escalated tickets queue", done: true },
+  { label: "Reconcile PSP settlements", done: false },
+  { label: "Approve pending large withdrawals", done: false },
+  { label: "Post handover notes", done: false },
+];
+
+// ---------- Reports ----------
+
+export type ReportFormat = "PDF" | "Excel";
+export type ReportTemplate = { id: string; name: string; description: string; formats: ReportFormat[] };
+export const reportTemplates: ReportTemplate[] = [
+  { id: "r1", name: "Daily Operations Summary", description: "Volume, success rate, incidents and pending work for the day.", formats: ["PDF", "Excel"] },
+  { id: "r2", name: "PSP Performance", description: "Per-gateway success, latency, downtime and webhook failures.", formats: ["PDF", "Excel"] },
+  { id: "r3", name: "Compliance & KYC", description: "KYC throughput, EDD cases, sanctions/PEP screening outcomes.", formats: ["PDF"] },
+  { id: "r4", name: "Financial Reconciliation", description: "Deposits, withdrawals, refunds and settlement reconciliation.", formats: ["Excel"] },
+  { id: "r5", name: "Executive Overview", description: "KPIs, trends and risk posture for leadership.", formats: ["PDF"] },
+  { id: "r6", name: "Incident Report", description: "Timeline, impact, root cause and preventive actions.", formats: ["PDF"] },
+];
+
+export type GeneratedReport = { id: string; name: string; format: ReportFormat; size: string; by: string; at: string };
+export const generatedReports: GeneratedReport[] = [
+  { id: "gr1", name: "Daily Operations Summary — Jul 21", format: "PDF", size: "1.2 MB", by: "Mohammad K.", at: "08:12" },
+  { id: "gr2", name: "PSP Performance — Jul 20", format: "Excel", size: "486 KB", by: "Sara Ahmed", at: "Yesterday" },
+  { id: "gr3", name: "Financial Reconciliation — Jul 20", format: "Excel", size: "912 KB", by: "Finance bot", at: "Yesterday" },
+  { id: "gr4", name: "Executive Overview — Week 29", format: "PDF", size: "2.4 MB", by: "Mohammad K.", at: "Mon" },
+];
+
+export type ScheduledReport = { id: string; name: string; cadence: string; nextRun: string; recipients: number };
+export const scheduledReports: ScheduledReport[] = [
+  { id: "sr1", name: "Daily Operations Summary", cadence: "Daily · 08:00", nextRun: "Tomorrow 08:00", recipients: 6 },
+  { id: "sr2", name: "PSP Performance", cadence: "Weekly · Mon", nextRun: "Mon 07:00", recipients: 3 },
+  { id: "sr3", name: "Executive Overview", cadence: "Weekly · Mon", nextRun: "Mon 07:00", recipients: 4 },
+];
+
+// ---------- Admin: users & audit ----------
+
+export type UserRole =
+  | "Admin" | "Operations Manager" | "Operations" | "Compliance"
+  | "Support" | "Finance" | "Executive" | "Auditor" | "Read Only";
+export type UserStatus = "active" | "invited" | "suspended";
+export type OpsUser = {
+  id: string;
+  name: string;
+  email: string;
+  role: UserRole;
+  status: UserStatus;
+  lastActive: string;
+  initials: string;
+};
+
+export const opsUsers: OpsUser[] = [
+  { id: "u1", name: "Mohammad K.", email: "mohammad@tradin.com", role: "Admin", status: "active", lastActive: "now", initials: "MK" },
+  { id: "u2", name: "Sara Ahmed", email: "sara@tradin.com", role: "Operations", status: "active", lastActive: "2m ago", initials: "SA" },
+  { id: "u3", name: "David Chen", email: "david@tradin.com", role: "Compliance", status: "active", lastActive: "5m ago", initials: "DC" },
+  { id: "u4", name: "Fatima Noor", email: "fatima@tradin.com", role: "Support", status: "active", lastActive: "1m ago", initials: "FN" },
+  { id: "u5", name: "Yusuf Ali", email: "yusuf@tradin.com", role: "Operations", status: "active", lastActive: "18m ago", initials: "YA" },
+  { id: "u6", name: "Lina Park", email: "lina@tradin.com", role: "Support", status: "active", lastActive: "3h ago", initials: "LP" },
+  { id: "u7", name: "Omar Haddad", email: "omar@tradin.com", role: "Finance", status: "active", lastActive: "1d ago", initials: "OH" },
+  { id: "u8", name: "Priya Rao", email: "priya@tradin.com", role: "Executive", status: "active", lastActive: "2d ago", initials: "PR" },
+  { id: "u9", name: "New Analyst", email: "analyst@tradin.com", role: "Read Only", status: "invited", lastActive: "—", initials: "NA" },
+  { id: "u10", name: "Contractor X", email: "contractor@ext.com", role: "Auditor", status: "suspended", lastActive: "12d ago", initials: "CX" },
+];
+
+export type AuditEntry = {
+  id: string;
+  user: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  ip: string;
+  at: string;
+};
+
+export const auditLog: AuditEntry[] = [
+  { id: "a1", user: "Sara Ahmed", action: "Approved withdrawal", entityType: "Transaction", entityId: "TX-88175", ip: "10.2.4.11", at: "14:22:07" },
+  { id: "a2", user: "David Chen", action: "Escalated KYC case", entityType: "KycCase", entityId: "k3", ip: "10.2.4.31", at: "14:18:42" },
+  { id: "a3", user: "Mohammad K.", action: "Changed user role", entityType: "User", entityId: "u9", ip: "10.2.4.2", at: "14:05:19" },
+  { id: "a4", user: "Fatima Noor", action: "Resolved ticket", entityType: "Ticket", entityId: "TC-9926", ip: "10.2.4.22", at: "13:58:03" },
+  { id: "a5", user: "System", action: "Auto-voided duplicate", entityType: "Transaction", entityId: "TX-88101", ip: "—", at: "13:40:55" },
+  { id: "a6", user: "Yusuf Ali", action: "Declared incident", entityType: "Incident", entityId: "INC-104", ip: "10.2.4.19", at: "14:02:11" },
+  { id: "a7", user: "Mohammad K.", action: "Suspended user", entityType: "User", entityId: "u10", ip: "10.2.4.2", at: "12:31:44" },
+  { id: "a8", user: "Sara Ahmed", action: "Added internal note", entityType: "Transaction", entityId: "TX-88160", ip: "10.2.4.11", at: "12:15:30" },
+];
