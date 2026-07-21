@@ -1,0 +1,276 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------- Enums ----------
+
+enum Role {
+  ADMIN
+  OPERATIONS_MANAGER
+  OPERATIONS
+  COMPLIANCE
+  SUPPORT
+  FINANCE
+  EXECUTIVE
+  AUDITOR
+  READ_ONLY
+}
+
+enum TransactionType {
+  DEPOSIT
+  WITHDRAWAL
+}
+
+enum TransactionStatus {
+  PENDING
+  PROCESSING
+  APPROVED
+  DECLINED
+  FAILED
+  REFUNDED
+  REVIEW
+}
+
+enum PaymentMethod {
+  CARD
+  CRYPTO
+  BANK
+  LOCAL_PAYMENT
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum GatewayStatus {
+  OPERATIONAL
+  DEGRADED
+  DOWN
+}
+
+enum KycStatus {
+  NOT_STARTED
+  PENDING
+  IN_REVIEW
+  APPROVED
+  REJECTED
+  EDD_REQUIRED
+}
+
+enum IncidentSeverity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum IncidentStatus {
+  OPEN
+  INVESTIGATING
+  RESOLVED
+  CLOSED
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  ESCALATED
+  RESOLVED
+  CLOSED
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum ShiftStatus {
+  ACTIVE
+  ENDED
+}
+
+// ---------- Core identity ----------
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  firstName    String
+  lastName     String
+  role         Role     @default(OPERATIONS)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  shifts            Shift[]
+  auditLogs         AuditLog[]
+  assignedTickets   Ticket[]   @relation("TicketAssignee")
+  assignedIncidents Incident[] @relation("IncidentOwner")
+  assignedKycCases  KycCase[]  @relation("KycAssignee")
+
+  @@index([role])
+}
+
+model Shift {
+  id        String      @id @default(cuid())
+  user      User        @relation(fields: [userId], references: [id])
+  userId    String
+  status    ShiftStatus @default(ACTIVE)
+  startedAt DateTime    @default(now())
+  endedAt   DateTime?
+  notes     String?
+
+  @@index([userId, status])
+}
+
+// ---------- Clients & compliance ----------
+
+model Client {
+  id         String    @id @default(cuid())
+  externalId String?   @unique
+  fullName   String
+  email      String?
+  country    String?
+  riskLevel  RiskLevel @default(LOW)
+  riskScore  Int       @default(0)
+  kycStatus  KycStatus @default(NOT_STARTED)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  transactions Transaction[]
+  kycCases     KycCase[]
+  tickets      Ticket[]
+  incidents    Incident[]
+
+  @@index([riskLevel])
+  @@index([kycStatus])
+}
+
+model KycCase {
+  id           String    @id @default(cuid())
+  client       Client    @relation(fields: [clientId], references: [id])
+  clientId     String
+  status       KycStatus @default(PENDING)
+  riskScore    Int       @default(0)
+  assignedTo   User?     @relation("KycAssignee", fields: [assignedToId], references: [id])
+  assignedToId String?
+  submittedAt  DateTime  @default(now())
+  reviewedAt   DateTime?
+  notes        String?
+
+  @@index([status])
+  @@index([clientId])
+}
+
+// ---------- Payments ----------
+
+model PaymentGateway {
+  id            String        @id @default(cuid())
+  name          String        @unique
+  provider      String
+  status        GatewayStatus @default(OPERATIONAL)
+  successRate   Float         @default(100)
+  avgLatencyMs  Int           @default(0)
+  todayVolume   Decimal       @default(0) @db.Decimal(18, 2)
+  lastCheckedAt DateTime      @default(now())
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  transactions Transaction[]
+
+  @@index([status])
+}
+
+model Transaction {
+  id        String            @id @default(cuid())
+  reference String            @unique
+  client    Client            @relation(fields: [clientId], references: [id])
+  clientId  String
+  gateway   PaymentGateway?   @relation(fields: [gatewayId], references: [id])
+  gatewayId String?
+  type      TransactionType
+  method    PaymentMethod
+  currency  String
+  amount    Decimal           @db.Decimal(18, 2)
+  status    TransactionStatus @default(PENDING)
+  riskLevel RiskLevel         @default(LOW)
+  country   String?
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+
+  @@index([status])
+  @@index([type])
+  @@index([clientId])
+  @@index([gatewayId])
+  @@index([createdAt])
+}
+
+// ---------- Support & incidents ----------
+
+model Ticket {
+  id           String         @id @default(cuid())
+  subject      String
+  client       Client?        @relation(fields: [clientId], references: [id])
+  clientId     String?
+  assignedTo   User?          @relation("TicketAssignee", fields: [assignedToId], references: [id])
+  assignedToId String?
+  status       TicketStatus   @default(OPEN)
+  priority     TicketPriority @default(MEDIUM)
+  slaDueAt     DateTime?
+  createdAt    DateTime       @default(now())
+  resolvedAt   DateTime?
+
+  @@index([status])
+  @@index([assignedToId])
+}
+
+model Incident {
+  id          String           @id @default(cuid())
+  title       String
+  description String
+  severity    IncidentSeverity @default(MEDIUM)
+  status      IncidentStatus   @default(OPEN)
+  owner       User?            @relation("IncidentOwner", fields: [ownerId], references: [id])
+  ownerId     String?
+  client      Client?          @relation(fields: [clientId], references: [id])
+  clientId    String?
+  rootCause   String?
+  impact      String?
+  resolution  String?
+  createdAt   DateTime         @default(now())
+  resolvedAt  DateTime?
+
+  @@index([status])
+  @@index([severity])
+}
+
+// ---------- Audit ----------
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  user       User?    @relation(fields: [userId], references: [id])
+  userId     String?
+  action     String
+  entityType String
+  entityId   String
+  oldValue   Json?
+  newValue   Json?
+  reason     String?
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([userId])
+  @@index([createdAt])
+}

@@ -1,0 +1,23 @@
+{
+  "name": "opsos",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Operations OS — real-time operational command center for online brokerage operations.",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "echo \"Run 'npm run dev' inside apps/web and apps/api separately, or use two terminals.\"",
+    "dev:web": "npm --workspace apps/web run dev",
+    "dev:api": "npm --workspace apps/api run start:dev",
+    "build": "npm --workspace apps/web run build && npm --workspace apps/api run build",
+    "build:web": "npm --workspace apps/web run build",
+    "build:api": "npm --workspace apps/api run build",
+    "lint": "npm --workspace apps/web run lint && npm --workspace apps/api run lint",
+    "infra:up": "docker compose up -d",
+    "infra:down": "docker compose down",
+    "db:generate": "npm --workspace apps/api exec prisma generate",
+    "db:migrate": "npm --workspace apps/api exec prisma migrate dev",
+    "db:seed": "npm --workspace apps/api exec prisma db seed"
+  }
+}
