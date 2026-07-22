@@ -1,6 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
+import { Inbox } from "lucide-react";
 
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
@@ -49,8 +50,13 @@ export function DataTable<T>({
           <tbody>
             {rows.length === 0 ? (
               <tr>
-                <td colSpan={columns.length} className="px-5 py-12 text-center text-sm text-muted">
-                  {empty}
+                <td colSpan={columns.length} className="px-5 py-16">
+                  <div className="flex flex-col items-center justify-center gap-3 text-center">
+                    <span className="flex size-11 items-center justify-center rounded-xl border border-border bg-card text-muted">
+                      <Inbox className="size-5" />
+                    </span>
+                    <span className="text-sm text-muted-foreground">{empty}</span>
+                  </div>
                 </td>
               </tr>
             ) : (

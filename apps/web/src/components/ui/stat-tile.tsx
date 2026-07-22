@@ -36,7 +36,14 @@ export function StatTileRow({ stats, className }: { stats: Stat[]; className?: s
     >
       {stats.map((s) => (
         <motion.div key={s.label} variants={fadeUp}>
-          <Card className="glass card-seam hover-lift h-full">
+          <Card className="glass hover-lift relative h-full overflow-hidden">
+            <span
+              className="absolute inset-x-0 top-0 h-0.5"
+              style={{
+                background: `linear-gradient(90deg, transparent, ${toneVar[s.tone ?? "blue"]}, transparent)`,
+                opacity: 0.7,
+              }}
+            />
             <CardContent className="flex flex-col gap-3 pt-5">
               <div className="flex items-start justify-between">
                 <span className="text-xs font-medium uppercase tracking-wider text-muted">
