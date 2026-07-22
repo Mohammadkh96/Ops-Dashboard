@@ -5,8 +5,43 @@ import { motion } from "framer-motion";
 
 import { Card, CardContent } from "@/components/ui/card";
 import { Sparkline } from "@/components/ui/sparkline";
+import { AnimatedNumber } from "@/components/ui/animated-number";
 import { staggerContainer, fadeUp } from "@/lib/motion";
 import { cn } from "@/lib/utils";
+
+/**
+ * Splits a formatted stat like "$4.82M" or "5 / 6" into a leading prefix,
+ * the first numeric run, and a trailing suffix so the number can count up
+ * while the surrounding text stays fixed. Returns null when there's no number.
+ */
+function StatValue({ value }: { value: string }) {
+  const match = value.match(/[\d,]*\.?\d+/);
+  if (!match || match.index === undefined) {
+    return <span className="tnum text-2xl font-semibold tracking-tight">{value}</span>;
+  }
+  const raw = match[0];
+  const num = parseFloat(raw.replace(/,/g, ""));
+  const decimals = raw.includes(".") ? raw.split(".")[1].length : 0;
+  const hasThousands = raw.includes(",");
+  const prefix = value.slice(0, match.index);
+  const suffix = value.slice(match.index + raw.length);
+  return (
+    <span className="tnum text-2xl font-semibold tracking-tight">
+      {prefix}
+      <AnimatedNumber
+        value={num}
+        format={(n) =>
+          n.toLocaleString(undefined, {
+            minimumFractionDigits: decimals,
+            maximumFractionDigits: decimals,
+            useGrouping: hasThousands,
+          })
+        }
+      />
+      {suffix}
+    </span>
+  );
+}
 
 export type Stat = {
   label: string;
@@ -55,7 +90,7 @@ export function StatTileRow({ stats, className }: { stats: Stat[]; className?: s
                   <span className="text-muted">{s.icon}</span>
                 ) : null}
               </div>
-              <span className="tnum text-2xl font-semibold tracking-tight">{s.value}</span>
+              <StatValue value={s.value} />
               {s.delta ? (
                 <span
                   className={cn(
