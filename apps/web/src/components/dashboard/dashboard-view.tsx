@@ -11,6 +11,7 @@ import { TeamPanelCard } from "@/components/dashboard/team-panel";
 import { Reveal } from "@/components/ui/reveal";
 import { LiveDot } from "@/components/ui/live-dot";
 import { useDashboardSummary } from "@/hooks/use-dashboard";
+import { useLiveFeed } from "@/hooks/use-live-feed";
 import { useAuth } from "@/lib/auth";
 
 function greeting(hour: number) {
@@ -19,8 +20,17 @@ function greeting(hour: number) {
   return "Good evening";
 }
 
+function tickTime(iso: string) {
+  return new Date(iso).toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
 export function DashboardView() {
   const { data, isDemo, isError } = useDashboardSummary();
+  const { items: liveItems, lastTick, connected } = useLiveFeed();
   const { user } = useAuth();
 
   const now = new Date();
@@ -32,11 +42,17 @@ export function DashboardView() {
     day: "numeric",
   });
 
-  const statusLabel = isDemo
-    ? "Demo data"
-    : isError
-      ? "API unreachable — showing demo data"
-      : "Live · updated just now";
+  const statusLabel = isError
+    ? "API unreachable — showing demo data"
+    : lastTick
+      ? `${isDemo ? "Demo" : "Live"} · updated ${tickTime(lastTick.ts)}`
+      : isDemo
+        ? "Demo data"
+        : "Live · connecting…";
+
+  // Live items stream in ahead of the seeded queue; cap the visible rows.
+  const queueRows = [...liveItems, ...data.liveQueue].slice(0, 6);
+  const feedOnline = connected && !isError;
 
   return (
     <div className="flex flex-col gap-6">
@@ -58,7 +74,7 @@ export function DashboardView() {
             </p>
           </div>
           <span className="flex items-center gap-2 rounded-full border border-border bg-card/70 px-3 py-1.5 backdrop-blur">
-            <LiveDot tone={isDemo || isError ? "orange" : "green"} />
+            <LiveDot tone={isError ? "orange" : feedOnline ? "green" : "blue"} />
             <span className="text-xs text-muted-foreground">{statusLabel}</span>
           </span>
         </div>
@@ -91,7 +107,7 @@ export function DashboardView() {
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
         <Reveal className="xl:col-span-2">
-          <LiveQueueCard rows={data.liveQueue} />
+          <LiveQueueCard rows={queueRows} newestId={lastTick?.queueItem.id} />
         </Reveal>
         <Reveal>
           <SystemStatusCard items={data.systemStatus} />

@@ -1,3 +1,7 @@
+"use client";
+
+import { AnimatePresence, motion } from "framer-motion";
+
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { LiveDot } from "@/components/ui/live-dot";
@@ -10,7 +14,7 @@ const statusBadge = {
   escalated: { variant: "red" as const, label: "Escalated" },
 };
 
-export function LiveQueueCard({ rows }: { rows: QueueItem[] }) {
+export function LiveQueueCard({ rows, newestId }: { rows: QueueItem[]; newestId?: string }) {
   return (
     <Card className="glass card-seam h-full">
       <CardHeader className="flex-row items-center justify-between">
@@ -32,19 +36,34 @@ export function LiveQueueCard({ rows }: { rows: QueueItem[] }) {
             </tr>
           </thead>
           <tbody>
-            {rows.map((item) => (
-              <tr key={item.id} className="border-b border-border/60 last:border-0">
-                <td className="py-2.5 font-mono text-xs text-muted-foreground">{item.id}</td>
-                <td className="py-2.5 text-foreground">{item.type}</td>
-                <td className="py-2.5 text-muted-foreground">{item.client}</td>
-                <td className="py-2.5 text-foreground">{item.amount}</td>
-                <td className="py-2.5">
-                  <Badge variant={statusBadge[item.status].variant}>
-                    {statusBadge[item.status].label}
-                  </Badge>
-                </td>
-              </tr>
-            ))}
+            <AnimatePresence initial={false}>
+              {rows.map((item) => (
+                <motion.tr
+                  key={item.id}
+                  layout
+                  initial={{ opacity: 0, backgroundColor: "var(--accent-blue-soft)" }}
+                  animate={{ opacity: 1, backgroundColor: "rgba(0,0,0,0)" }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
+                  className="border-b border-border/60 last:border-0"
+                >
+                  <td className="py-2.5 font-mono text-xs text-muted-foreground">
+                    <span className="flex items-center gap-1.5">
+                      {item.id === newestId ? <LiveDot tone="blue" /> : null}
+                      {item.id}
+                    </span>
+                  </td>
+                  <td className="py-2.5 text-foreground">{item.type}</td>
+                  <td className="py-2.5 text-muted-foreground">{item.client}</td>
+                  <td className="py-2.5 text-foreground">{item.amount}</td>
+                  <td className="py-2.5">
+                    <Badge variant={statusBadge[item.status].variant}>
+                      {statusBadge[item.status].label}
+                    </Badge>
+                  </td>
+                </motion.tr>
+              ))}
+            </AnimatePresence>
           </tbody>
         </table>
       </CardContent>

@@ -1,6 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, MessageEvent } from '@nestjs/common';
+import { interval, map, Observable } from 'rxjs';
 
 import { PrismaService } from '../prisma/prisma.service';
+
+const LIVE_TYPES = ['Deposit', 'Withdrawal', 'KYC Review', 'Ticket'] as const;
 
 /**
  * Builds the dashboard summary. Where the database has data it is used;
@@ -111,6 +114,45 @@ export class DashboardService {
           { name: 'Fatima Noor', role: 'Support', workload: 2, initials: 'FN' },
           { name: 'Yusuf Ali', role: 'Operations', workload: 5, initials: 'YA' },
         ],
+      },
+    };
+  }
+
+  /**
+   * Server-Sent Events stream of live operational ticks (a new queue item plus
+   * jittered metrics) emitted every 4s. Consumed by the dashboard's live feed.
+   */
+  liveStream(): Observable<MessageEvent> {
+    return interval(4000).pipe(map((seq): MessageEvent => ({ data: this.makeTick(seq) })));
+  }
+
+  private makeTick(seq: number) {
+    const type = LIVE_TYPES[seq % LIVE_TYPES.length];
+    const isMoney = type === 'Deposit' || type === 'Withdrawal';
+    const prefix = type === 'KYC Review' ? 'KYC' : type === 'Ticket' ? 'TC' : 'TX';
+    const status =
+      type === 'Ticket'
+        ? 'escalated'
+        : type === 'KYC Review'
+          ? 'pending'
+          : isMoney && Math.random() > 0.7
+            ? 'review'
+            : 'processing';
+    return {
+      ts: new Date().toISOString(),
+      seq,
+      queueItem: {
+        id: `${prefix}-${88000 + Math.floor(Math.random() * 9999)}`,
+        type,
+        client: `Client #${10000 + Math.floor(Math.random() * 89999)}`,
+        amount: isMoney
+          ? `$${(Math.floor(Math.random() * 90) * 100 + 200).toLocaleString()}`
+          : '—',
+        status,
+      },
+      metrics: {
+        successRate: Number((97.8 + (Math.random() - 0.5) * 0.6).toFixed(1)),
+        volumeDelta: Number((Math.random() * 0.04).toFixed(3)),
       },
     };
   }
