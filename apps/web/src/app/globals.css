@@ -31,6 +31,49 @@
   --radius: 0.875rem;
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.02) inset;
   --shadow-pop: 0 16px 48px -12px rgba(0, 0, 0, 0.65);
+
+  /* Aurora background layers — overridden per theme */
+  --aurora-1: rgba(59, 130, 246, 0.1);
+  --aurora-2: rgba(167, 139, 250, 0.09);
+  --aurora-3: rgba(52, 211, 153, 0.05);
+  --grain-opacity: 0.025;
+  --seam-color: rgba(255, 255, 255, 0.08);
+}
+
+/* Light theme — same semantic hues, inverted surface system */
+:root[data-theme="light"] {
+  --background: #f5f7fb;
+  --background-elevated: #ffffff;
+  --surface: #ffffff;
+  --card: #ffffff;
+  --card-hover: #f2f5fa;
+  --border: #e5e9f2;
+  --border-strong: #cfd7e6;
+  --foreground: #0d1424;
+  --muted: #64748b;
+  --muted-foreground: #47536a;
+
+  --accent-blue: #2563eb;
+  --accent-blue-soft: #e7f0fe;
+  --accent-green: #059669;
+  --accent-green-soft: #e2f6ee;
+  --accent-red: #dc2626;
+  --accent-red-soft: #fdecec;
+  --accent-orange: #ea580c;
+  --accent-orange-soft: #fdf0e5;
+  --accent-purple: #7c3aed;
+  --accent-purple-soft: #f0ebfe;
+  --accent-magenta: #db2777;
+  --accent-magenta-soft: #fce7f1;
+
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.06), 0 0 0 1px rgba(15, 23, 42, 0.02) inset;
+  --shadow-pop: 0 16px 48px -14px rgba(15, 23, 42, 0.22);
+
+  --aurora-1: rgba(37, 99, 235, 0.08);
+  --aurora-2: rgba(124, 58, 237, 0.06);
+  --aurora-3: rgba(5, 150, 105, 0.05);
+  --grain-opacity: 0.014;
+  --seam-color: rgba(15, 23, 42, 0.06);
 }
 
 @theme inline {
@@ -70,19 +113,23 @@
 html {
   color-scheme: dark;
 }
+html[data-theme="light"] {
+  color-scheme: light;
+}
 
 body {
   position: relative;
   background:
-    radial-gradient(80% 55% at 12% -8%, rgba(59, 130, 246, 0.10), transparent 60%),
-    radial-gradient(70% 55% at 98% 4%, rgba(167, 139, 250, 0.09), transparent 58%),
-    radial-gradient(90% 60% at 60% 108%, rgba(52, 211, 153, 0.05), transparent 60%),
+    radial-gradient(80% 55% at 12% -8%, var(--aurora-1), transparent 60%),
+    radial-gradient(70% 55% at 98% 4%, var(--aurora-2), transparent 58%),
+    radial-gradient(90% 60% at 60% 108%, var(--aurora-3), transparent 60%),
     var(--background);
   background-attachment: fixed;
   color: var(--foreground);
   font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01";
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  transition: background-color 0.3s ease, color 0.3s ease;
 }
 
 /* Faint film grain over the aurora so the gradients read as texture, not banding. */
@@ -92,7 +139,7 @@ body::before {
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  opacity: 0.025;
+  opacity: var(--grain-opacity);
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 body > * {
@@ -137,7 +184,7 @@ body > * {
   background: linear-gradient(
     90deg,
     transparent,
-    rgba(255, 255, 255, 0.08),
+    var(--seam-color),
     transparent
   );
 }

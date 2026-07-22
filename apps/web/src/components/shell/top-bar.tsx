@@ -14,7 +14,6 @@ import {
   ShieldCheck,
   ArrowUpFromLine,
 } from "lucide-react";
-import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -23,6 +22,7 @@ import { LiveDot } from "@/components/ui/live-dot";
 import { openCommandPalette } from "@/components/command-palette";
 import { MobileNav } from "@/components/shell/mobile-nav";
 import { useAuth } from "@/lib/auth";
+import { useTheme } from "@/lib/theme";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -45,7 +45,7 @@ const notifications = [
 ];
 
 export function TopBar() {
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const { theme, toggle } = useTheme();
   const { user, isDemo, logout } = useAuth();
 
   const email = user?.email ?? "mohammad@tradin.com";
@@ -78,8 +78,8 @@ export function TopBar() {
       <Button
         variant="ghost"
         size="icon"
-        onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
-        aria-label="Toggle theme"
+        onClick={toggle}
+        aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
       >
         {theme === "dark" ? <Moon className="size-4" /> : <Sun className="size-4" />}
       </Button>

@@ -20,6 +20,9 @@ export const metadata: Metadata = {
   description: "Real-time operational command center for brokerage operations.",
 };
 
+// Applies the stored theme (default dark) before first paint to avoid a flash.
+const themeScript = `(function(){try{var t=localStorage.getItem("opsos-theme");if(t!=="light"&&t!=="dark")t="dark";document.documentElement.setAttribute("data-theme",t);}catch(e){document.documentElement.setAttribute("data-theme","dark");}})();`;
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -28,8 +31,12 @@ export default function RootLayout({
   return (
     <html
       lang="en"
+      data-theme="dark"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+      </head>
       <body className="min-h-full">
         <Providers>
           <AppShell>{children}</AppShell>
