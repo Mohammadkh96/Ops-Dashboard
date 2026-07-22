@@ -6,6 +6,7 @@ import { motion } from "framer-motion";
 import { Radar } from "lucide-react";
 
 import { primaryNav, secondaryNav, type NavItem } from "@/config/nav";
+import { LiveDot } from "@/components/ui/live-dot";
 import { cn } from "@/lib/utils";
 
 function isActive(pathname: string, href: string) {
@@ -77,6 +78,16 @@ export function Sidebar() {
           ))}
         </div>
       </nav>
+
+      <div className="border-t border-border p-3">
+        <div className="flex items-center gap-2.5 rounded-lg border border-border bg-card/50 px-3 py-2.5">
+          <LiveDot tone="green" />
+          <div className="flex flex-col leading-tight">
+            <span className="text-xs font-medium text-foreground">All systems operational</span>
+            <span className="text-[11px] text-muted">API · CRM · MT5 online</span>
+          </div>
+        </div>
+      </div>
     </aside>
   );
 }

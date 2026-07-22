@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { Copy } from "lucide-react";
 
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { FilterBar } from "@/components/ui/filter-bar";
@@ -97,7 +98,26 @@ export function TransactionsTable({ fixedType }: { fixedType?: "Deposit" | "With
       <Drawer
         open={selected !== null}
         onOpenChange={(o) => !o && setSelected(null)}
-        title={selected?.reference ?? ""}
+        title={
+          selected ? (
+            <span className="flex items-center gap-2">
+              {selected.reference}
+              <button
+                type="button"
+                aria-label="Copy reference"
+                onClick={() => {
+                  navigator.clipboard?.writeText(selected.reference);
+                  toast({ kind: "info", title: "Reference copied", description: selected.reference });
+                }}
+                className="text-muted transition-colors hover:text-foreground"
+              >
+                <Copy className="size-3.5" />
+              </button>
+            </span>
+          ) : (
+            ""
+          )
+        }
         subtitle={selected ? `${selected.type} · ${selected.gateway}` : ""}
         footer={
           selected ? (
