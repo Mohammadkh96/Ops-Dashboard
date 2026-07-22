@@ -1,6 +1,19 @@
 "use client";
 
-import { Bell, Search, Command, Sun, Moon, ChevronDown, LogOut, UserCog, Timer } from "lucide-react";
+import {
+  Bell,
+  Search,
+  Command,
+  Sun,
+  Moon,
+  ChevronDown,
+  LogOut,
+  UserCog,
+  Timer,
+  AlertOctagon,
+  ShieldCheck,
+  ArrowUpFromLine,
+} from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -8,6 +21,7 @@ import { Separator } from "@/components/ui/separator";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { LiveDot } from "@/components/ui/live-dot";
 import { openCommandPalette } from "@/components/command-palette";
+import { MobileNav } from "@/components/shell/mobile-nav";
 import { useAuth } from "@/lib/auth";
 import {
   DropdownMenu,
@@ -24,6 +38,12 @@ function initials(email: string) {
   return ((parts[0]?.[0] ?? "") + (parts[1]?.[0] ?? "")).toUpperCase() || "OP";
 }
 
+const notifications = [
+  { icon: AlertOctagon, tone: "text-accent-red", title: "ForumPay gateway offline", time: "2m ago" },
+  { icon: ArrowUpFromLine, tone: "text-accent-orange", title: "Large withdrawal needs approval", time: "26m ago" },
+  { icon: ShieldCheck, tone: "text-accent-green", title: "KYC completed — Client #66203", time: "1h ago" },
+];
+
 export function TopBar() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const { user, isDemo, logout } = useAuth();
@@ -33,6 +53,7 @@ export function TopBar() {
 
   return (
     <header className="glass-surface sticky top-0 z-30 flex h-16 items-center gap-4 px-5 lg:px-8">
+      <MobileNav />
       <button
         type="button"
         onClick={openCommandPalette}
@@ -63,10 +84,41 @@ export function TopBar() {
         {theme === "dark" ? <Moon className="size-4" /> : <Sun className="size-4" />}
       </Button>
 
-      <Button variant="ghost" size="icon" className="relative" aria-label="Notifications">
-        <Bell className="size-4" />
-        <span className="absolute right-1.5 top-1.5 flex size-2 rounded-full bg-accent-red" />
-      </Button>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            className="relative flex size-9 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-card hover:text-foreground"
+            aria-label="Notifications"
+          >
+            <Bell className="size-4" />
+            <span className="absolute right-1.5 top-1.5 flex size-2 rounded-full bg-accent-red" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-80">
+          <div className="flex items-center justify-between px-2.5 py-1.5">
+            <span className="text-xs font-medium uppercase tracking-wider text-muted">
+              Notifications
+            </span>
+            <span className="rounded-full bg-accent-red-soft px-1.5 py-0.5 text-[10px] font-semibold text-accent-red">
+              {notifications.length} new
+            </span>
+          </div>
+          <DropdownMenuSeparator />
+          {notifications.map((n) => (
+            <DropdownMenuItem key={n.title} className="items-start gap-3 py-2.5">
+              <n.icon className={`mt-0.5 size-4 shrink-0 ${n.tone}`} />
+              <div className="flex flex-1 flex-col gap-0.5">
+                <span className="text-sm text-foreground">{n.title}</span>
+                <span className="text-[11px] text-muted">{n.time}</span>
+              </div>
+            </DropdownMenuItem>
+          ))}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem className="justify-center text-xs text-muted-foreground">
+            View all notifications
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
 
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
