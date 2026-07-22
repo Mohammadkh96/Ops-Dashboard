@@ -1,7 +1,7 @@
 "use client";
 
-import type { ReactNode } from "react";
-import { Inbox } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { ChevronLeft, ChevronRight, Inbox } from "lucide-react";
 
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
@@ -20,19 +20,30 @@ export function DataTable<T>({
   getRowKey,
   onRowClick,
   empty = "No records found.",
+  pageSize,
 }: {
   columns: Column<T>[];
   rows: T[];
   getRowKey: (row: T, index: number) => string;
   onRowClick?: (row: T) => void;
   empty?: string;
+  pageSize?: number;
 }) {
+  const [page, setPage] = useState(0);
+
+  const paginated = pageSize != null && rows.length > pageSize;
+  const pageCount = paginated ? Math.ceil(rows.length / pageSize) : 1;
+  const current = Math.min(page, pageCount - 1); // clamp during render (survives filtering)
+  const visible = paginated ? rows.slice(current * pageSize, current * pageSize + pageSize) : rows;
+  const from = rows.length === 0 ? 0 : current * (pageSize ?? rows.length) + 1;
+  const to = paginated ? Math.min(rows.length, from + pageSize - 1) : rows.length;
+
   return (
     <Card className="glass card-seam overflow-hidden">
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-border">
+            <tr className="border-b border-border bg-surface/40">
               {columns.map((c) => (
                 <th
                   key={c.key}
@@ -60,7 +71,7 @@ export function DataTable<T>({
                 </td>
               </tr>
             ) : (
-              rows.map((row, i) => (
+              visible.map((row, i) => (
                 <tr
                   key={getRowKey(row, i)}
                   onClick={onRowClick ? () => onRowClick(row) : undefined}
@@ -87,6 +98,37 @@ export function DataTable<T>({
           </tbody>
         </table>
       </div>
+
+      {paginated ? (
+        <div className="flex items-center justify-between border-t border-border px-5 py-3">
+          <span className="tnum text-xs text-muted">
+            {from}–{to} of {rows.length}
+          </span>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setPage(Math.max(0, current - 1))}
+              disabled={current === 0}
+              className="flex size-8 items-center justify-center rounded-lg border border-border text-muted-foreground transition-colors hover:bg-card-hover disabled:pointer-events-none disabled:opacity-40"
+              aria-label="Previous page"
+            >
+              <ChevronLeft className="size-4" />
+            </button>
+            <span className="tnum px-2 text-xs text-muted-foreground">
+              {current + 1} / {pageCount}
+            </span>
+            <button
+              type="button"
+              onClick={() => setPage(Math.min(pageCount - 1, current + 1))}
+              disabled={current >= pageCount - 1}
+              className="flex size-8 items-center justify-center rounded-lg border border-border text-muted-foreground transition-colors hover:bg-card-hover disabled:pointer-events-none disabled:opacity-40"
+              aria-label="Next page"
+            >
+              <ChevronRight className="size-4" />
+            </button>
+          </div>
+        </div>
+      ) : null}
     </Card>
   );
 }

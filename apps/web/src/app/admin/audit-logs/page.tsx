@@ -90,6 +90,7 @@ export default function AuditLogsPage() {
           columns={columns}
           rows={filtered}
           getRowKey={(e) => e.id}
+          pageSize={8}
           empty="No audit entries match this search."
         />
       </div>

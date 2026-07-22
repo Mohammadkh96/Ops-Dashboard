@@ -88,6 +88,7 @@ export function TransactionsTable({ fixedType }: { fixedType?: "Deposit" | "With
         rows={filtered}
         getRowKey={(t) => t.id}
         onRowClick={setSelected}
+        pageSize={9}
         empty="No transactions match these filters."
       />
 
