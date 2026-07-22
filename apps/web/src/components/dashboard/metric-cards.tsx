@@ -29,7 +29,7 @@ export function TodayMetricCards({ metrics }: { metrics: KpiMetric[] }) {
     >
       {metrics.map((m) => (
         <motion.div key={m.key} variants={fadeUp}>
-          <Card className="glass card-seam group h-full transition-colors hover:border-border-strong">
+          <Card className="glass card-seam hover-lift group h-full">
             <CardContent className="flex flex-col gap-3 pt-5">
               <div className="flex items-start justify-between">
                 <span className="text-xs font-medium uppercase tracking-wider text-muted">

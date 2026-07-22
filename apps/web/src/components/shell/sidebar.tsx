@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { motion } from "framer-motion";
 import { Radar } from "lucide-react";
 
 import { primaryNav, secondaryNav, type NavItem } from "@/config/nav";
@@ -18,21 +19,26 @@ function NavLink({ item, active }: { item: NavItem; active: boolean }) {
     <Link
       href={item.href}
       className={cn(
-        "group flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-        active
-          ? "bg-accent-blue-soft text-accent-blue"
-          : "text-muted-foreground hover:bg-card hover:text-foreground",
+        "group relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+        active ? "text-accent-blue" : "text-muted-foreground hover:bg-card hover:text-foreground",
       )}
     >
+      {active ? (
+        <motion.span
+          layoutId="nav-active"
+          transition={{ type: "spring", stiffness: 420, damping: 34 }}
+          className="absolute inset-0 rounded-lg border border-accent-blue/20 bg-accent-blue-soft"
+        />
+      ) : null}
       <Icon
         className={cn(
-          "size-4 shrink-0",
+          "relative z-10 size-4 shrink-0",
           active ? "text-accent-blue" : "text-muted group-hover:text-foreground",
         )}
       />
-      <span className="truncate">{item.label}</span>
+      <span className="relative z-10 truncate">{item.label}</span>
       {item.badge ? (
-        <span className="ml-auto rounded-full bg-accent-red-soft px-1.5 py-0.5 text-[10px] font-semibold text-accent-red">
+        <span className="relative z-10 ml-auto rounded-full bg-accent-red-soft px-1.5 py-0.5 text-[10px] font-semibold text-accent-red">
           {item.badge}
         </span>
       ) : null}
@@ -44,9 +50,9 @@ export function Sidebar() {
   const pathname = usePathname();
 
   return (
-    <aside className="fixed inset-y-0 left-0 z-40 hidden w-64 flex-col border-r border-border bg-surface lg:flex">
+    <aside className="fixed inset-y-0 left-0 z-40 hidden w-64 flex-col border-r border-border bg-surface/80 backdrop-blur-xl lg:flex">
       <div className="flex h-16 items-center gap-2.5 border-b border-border px-5">
-        <div className="flex size-8 items-center justify-center rounded-lg bg-accent-blue-soft">
+        <div className="flex size-8 items-center justify-center rounded-lg bg-accent-blue-soft ring-1 ring-accent-blue/20">
           <Radar className="size-4 text-accent-blue" />
         </div>
         <div className="flex flex-col leading-none">

@@ -72,15 +72,32 @@ html {
 }
 
 body {
+  position: relative;
   background:
-    radial-gradient(120% 80% at 15% -10%, rgba(59, 130, 246, 0.06), transparent 60%),
-    radial-gradient(100% 70% at 100% 0%, rgba(167, 139, 250, 0.05), transparent 55%),
+    radial-gradient(80% 55% at 12% -8%, rgba(59, 130, 246, 0.10), transparent 60%),
+    radial-gradient(70% 55% at 98% 4%, rgba(167, 139, 250, 0.09), transparent 58%),
+    radial-gradient(90% 60% at 60% 108%, rgba(52, 211, 153, 0.05), transparent 60%),
     var(--background);
   background-attachment: fixed;
   color: var(--foreground);
   font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01";
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+/* Faint film grain over the aurora so the gradients read as texture, not banding. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.025;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+body > * {
+  position: relative;
+  z-index: 1;
 }
 
 /* Tabular figures for all numeric / metric text */
@@ -123,6 +140,42 @@ body {
     rgba(255, 255, 255, 0.08),
     transparent
   );
+}
+
+/* Hover elevation for interactive cards */
+.hover-lift {
+  transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 0.22s ease, box-shadow 0.22s ease;
+  will-change: transform;
+}
+.hover-lift:hover {
+  transform: translateY(-2px);
+  border-color: var(--border-strong);
+  box-shadow: 0 12px 32px -16px rgba(0, 0, 0, 0.7);
+}
+
+/* Consistent keyboard focus ring */
+:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-blue) 65%, transparent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* Skeleton loading block */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--card) 90%, transparent) 25%,
+    color-mix(in srgb, var(--border-strong) 40%, transparent) 37%,
+    color-mix(in srgb, var(--card) 90%, transparent) 63%
+  );
+  background-size: 400% 100%;
+  animation: opsos-skel 1.4s ease infinite;
+  border-radius: 6px;
+}
+@keyframes opsos-skel {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
 }
 
 /* Live pulse dot */

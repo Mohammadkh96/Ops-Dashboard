@@ -40,7 +40,7 @@ function TemplatesGrid({ templates }: { templates: ReportTemplate[] }) {
     >
       {templates.map((t) => (
         <motion.div key={t.id} variants={fadeUp}>
-          <Card className="glass card-seam h-full transition-colors hover:border-border-strong">
+          <Card className="glass card-seam hover-lift h-full">
             <CardContent className="flex h-full flex-col gap-4 pt-5">
               <div className="flex size-10 items-center justify-center rounded-lg bg-accent-blue-soft text-accent-blue">
                 <FileText className="size-5" />

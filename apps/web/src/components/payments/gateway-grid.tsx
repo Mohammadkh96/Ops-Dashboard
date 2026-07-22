@@ -27,7 +27,7 @@ export function GatewayGrid() {
         const m = statusMeta[g.status];
         return (
           <motion.div key={g.id} variants={fadeUp}>
-            <Card className="glass card-seam h-full transition-colors hover:border-border-strong">
+            <Card className="glass card-seam hover-lift h-full">
               <CardContent className="flex flex-col gap-4 pt-5">
                 <div className="flex items-center justify-between">
                   <div className="flex flex-col">

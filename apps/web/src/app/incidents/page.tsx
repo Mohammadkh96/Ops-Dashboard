@@ -65,7 +65,7 @@ export default function IncidentsPage() {
             <motion.div key={incident.id} variants={fadeUp}>
               <Card
                 onClick={() => setSelected(incident)}
-                className="cursor-pointer overflow-hidden transition-colors hover:border-border-strong"
+                className="hover-lift cursor-pointer overflow-hidden"
               >
                 <CardContent className="flex items-center gap-4 py-4 pl-0">
                   <span
