@@ -11,9 +11,26 @@ import { TeamPanelCard } from "@/components/dashboard/team-panel";
 import { Reveal } from "@/components/ui/reveal";
 import { LiveDot } from "@/components/ui/live-dot";
 import { useDashboardSummary } from "@/hooks/use-dashboard";
+import { useAuth } from "@/lib/auth";
+
+function greeting(hour: number) {
+  if (hour < 12) return "Good morning";
+  if (hour < 18) return "Good afternoon";
+  return "Good evening";
+}
 
 export function DashboardView() {
   const { data, isDemo, isError } = useDashboardSummary();
+  const { user } = useAuth();
+
+  const now = new Date();
+  const rawName = (user?.email ?? "mohammad@tradin.com").split("@")[0].split(/[._-]/)[0];
+  const displayName = rawName.charAt(0).toUpperCase() + rawName.slice(1);
+  const dateLabel = now.toLocaleDateString(undefined, {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  });
 
   const statusLabel = isDemo
     ? "Demo data"
@@ -23,17 +40,28 @@ export function DashboardView() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="flex flex-col gap-1">
-          <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
-          <p className="text-sm text-muted-foreground">
-            How healthy is Operations right now — and what needs your attention.
-          </p>
+      <div className="relative overflow-hidden rounded-2xl border border-border bg-gradient-to-br from-accent-blue-soft/50 via-card/40 to-card/20 px-6 py-5">
+        <div
+          className="pointer-events-none absolute -right-16 -top-16 size-56 rounded-full opacity-40 blur-3xl"
+          style={{ background: "radial-gradient(circle, var(--accent-blue), transparent 70%)" }}
+        />
+        <div className="relative flex flex-wrap items-end justify-between gap-3">
+          <div className="flex flex-col gap-1.5">
+            <span className="text-[11px] font-medium uppercase tracking-wider text-muted">
+              {dateLabel}
+            </span>
+            <h1 className="text-2xl font-semibold tracking-tight">
+              {greeting(now.getHours())}, {displayName}
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              How healthy is Operations right now — and what needs your attention.
+            </p>
+          </div>
+          <span className="flex items-center gap-2 rounded-full border border-border bg-card/70 px-3 py-1.5 backdrop-blur">
+            <LiveDot tone={isDemo || isError ? "orange" : "green"} />
+            <span className="text-xs text-muted-foreground">{statusLabel}</span>
+          </span>
         </div>
-        <span className="flex items-center gap-2 rounded-full border border-border bg-card/60 px-3 py-1.5">
-          <LiveDot tone={isDemo || isError ? "orange" : "green"} />
-          <span className="text-xs text-muted-foreground">{statusLabel}</span>
-        </span>
       </div>
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[22rem_1fr]">
