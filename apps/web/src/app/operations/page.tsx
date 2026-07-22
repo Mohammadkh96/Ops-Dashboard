@@ -73,7 +73,7 @@ const columns: Column<Ticket>[] = [
 ];
 
 export default function OperationsPage() {
-  const { data } = useOperations();
+  const { data, isLoading } = useOperations();
   const { tickets, team: operators, shiftChecklist } = data;
   const doneCount = shiftChecklist.filter((i) => i.done).length;
 
@@ -111,6 +111,7 @@ export default function OperationsPage() {
             columns={columns}
             rows={tickets}
             getRowKey={(t) => t.id}
+            loading={isLoading}
             empty="No tickets in the queue."
           />
         </div>

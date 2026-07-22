@@ -11,7 +11,7 @@ import { useAuditLog } from "@/hooks/use-modules";
 
 export default function AuditLogsPage() {
   const [search, setSearch] = useState("");
-  const { data: auditLog } = useAuditLog();
+  const { data: auditLog, isLoading } = useAuditLog();
 
   const filtered = useMemo(
     () =>
@@ -91,6 +91,7 @@ export default function AuditLogsPage() {
           rows={filtered}
           getRowKey={(e) => e.id}
           pageSize={8}
+          loading={isLoading}
           empty="No audit entries match this search."
         />
       </div>

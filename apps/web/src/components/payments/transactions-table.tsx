@@ -24,7 +24,7 @@ export function TransactionsTable({ fixedType }: { fixedType?: "Deposit" | "With
   const [method, setMethod] = useState("");
   const [gateway, setGateway] = useState("");
   const [selected, setSelected] = useState<Transaction | null>(null);
-  const { data: transactions } = useTransactions();
+  const { data: transactions, isLoading } = useTransactions();
   const { toast } = useToast();
 
   const base = useMemo(
@@ -92,6 +92,7 @@ export function TransactionsTable({ fixedType }: { fixedType?: "Deposit" | "With
         getRowKey={(t) => t.id}
         onRowClick={setSelected}
         pageSize={9}
+        loading={isLoading}
         empty="No transactions match these filters."
       />
 

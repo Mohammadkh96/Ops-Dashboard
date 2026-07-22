@@ -21,6 +21,7 @@ export function DataTable<T>({
   onRowClick,
   empty = "No records found.",
   pageSize,
+  loading = false,
 }: {
   columns: Column<T>[];
   rows: T[];
@@ -28,6 +29,7 @@ export function DataTable<T>({
   onRowClick?: (row: T) => void;
   empty?: string;
   pageSize?: number;
+  loading?: boolean;
 }) {
   const [page, setPage] = useState(0);
 
@@ -59,7 +61,26 @@ export function DataTable<T>({
             </tr>
           </thead>
           <tbody>
-            {rows.length === 0 ? (
+            {loading ? (
+              Array.from({ length: pageSize ?? 6 }).map((_, r) => (
+                <tr key={`sk-${r}`} className="border-b border-border/50 last:border-0">
+                  {columns.map((c) => (
+                    <td
+                      key={c.key}
+                      className={cn("px-5 py-3.5", c.align === "right" ? "text-right" : "text-left")}
+                    >
+                      <span
+                        className={cn(
+                          "skeleton block h-3.5 rounded",
+                          c.align === "right" ? "ml-auto" : "",
+                        )}
+                        style={{ width: `${45 + ((r * 7 + c.key.length * 11) % 45)}%` }}
+                      />
+                    </td>
+                  ))}
+                </tr>
+              ))
+            ) : rows.length === 0 ? (
               <tr>
                 <td colSpan={columns.length} className="px-5 py-16">
                   <div className="flex flex-col items-center justify-center gap-3 text-center">

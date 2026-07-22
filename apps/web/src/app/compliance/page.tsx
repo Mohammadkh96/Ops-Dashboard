@@ -59,7 +59,7 @@ export default function CompliancePage() {
   const [status, setStatus] = useState("");
   const [risk, setRisk] = useState("");
   const [selected, setSelected] = useState<KycCase | null>(null);
-  const { data: kycCases } = useKycCases();
+  const { data: kycCases, isLoading } = useKycCases();
 
   const stats: Stat[] = useMemo(() => {
     const pending = kycCases.filter((c) => c.status === "pending").length;
@@ -137,6 +137,7 @@ export default function CompliancePage() {
           rows={filtered}
           getRowKey={(c) => c.id}
           onRowClick={setSelected}
+          loading={isLoading}
           empty="No KYC cases match these filters."
         />
       </div>

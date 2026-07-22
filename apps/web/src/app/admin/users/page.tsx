@@ -36,7 +36,7 @@ export default function AdminUsersPage() {
   const [search, setSearch] = useState("");
   const [role, setRole] = useState("");
   const [status, setStatus] = useState("");
-  const { data: opsUsers } = useUsers();
+  const { data: opsUsers, isLoading } = useUsers();
 
   const stats: Stat[] = useMemo(
     () => [
@@ -148,6 +148,7 @@ export default function AdminUsersPage() {
           columns={columns}
           rows={filtered}
           getRowKey={(u) => u.id}
+          loading={isLoading}
           empty="No users match these filters."
         />
       </div>
