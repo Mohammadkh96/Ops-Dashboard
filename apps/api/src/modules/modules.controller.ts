@@ -47,4 +47,5 @@ export class ModulesController {
   auditLogs() {
     return this.modules.auditLog();
   }
+  // (all handlers return promises where DB-backed; Nest awaits them.)
 }

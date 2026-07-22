@@ -72,11 +72,14 @@ cp apps/web/.env.example apps/web/.env.local
 ### 4. Set up the database
 
 ```bash
-npm run db:migrate     # applies prisma/migrations
-npm run db:seed        # seeds an admin user + payment gateways
+npm run db:generate    # generate the Prisma client
+npm run db:push        # sync the schema to the database (or db:migrate)
+npm run db:seed        # seed users, clients, gateways, transactions,
+                       # KYC cases, tickets, incidents and audit logs
 ```
 
-The seed creates an admin login:
+The seed populates a full operational dataset (10 users, 10 clients, 7 PSPs,
+42 transactions, KYC cases, tickets, incidents, audit logs) and an admin login:
 
 - **Email:** `mohammad@tradin.com`
 - **Password:** `OpsOS!2026`
@@ -107,8 +110,9 @@ Open [http://localhost:3000](http://localhost:3000).
 | `npm run lint`      | Lint both apps                               |
 | `npm run infra:up`  | Start Postgres + Redis via Docker Compose    |
 | `npm run infra:down`| Stop the infra containers                    |
+| `npm run db:push`   | Sync the Prisma schema to the database       |
 | `npm run db:migrate`| Run Prisma migrations                        |
-| `npm run db:seed`   | Seed baseline data                           |
+| `npm run db:seed`   | Seed the full operational dataset            |
 
 ---
 

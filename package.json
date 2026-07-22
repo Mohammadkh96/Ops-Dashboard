@@ -18,6 +18,7 @@
     "infra:up": "docker compose up -d",
     "infra:down": "docker compose down",
     "db:generate": "npm --workspace apps/api exec prisma generate",
+    "db:push": "npm --workspace apps/api exec prisma db push",
     "db:migrate": "npm --workspace apps/api exec prisma migrate dev",
     "db:seed": "npm --workspace apps/api exec prisma db seed"
   },
