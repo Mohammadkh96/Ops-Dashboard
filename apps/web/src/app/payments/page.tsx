@@ -6,6 +6,7 @@ import { Download } from "lucide-react";
 import { PageHeader } from "@/components/ui/page-header";
 import { StatTileRow, type Stat } from "@/components/ui/stat-tile";
 import { Button } from "@/components/ui/button";
+import { useToast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 import { TransactionsTable } from "@/components/payments/transactions-table";
 import { GatewayGrid } from "@/components/payments/gateway-grid";
@@ -24,6 +25,7 @@ const TABS = [
 
 export default function PaymentsPage() {
   const [tab, setTab] = useState<(typeof TABS)[number]["key"]>("transactions");
+  const { toast } = useToast();
 
   return (
     <div className="flex flex-col gap-6">
@@ -31,7 +33,13 @@ export default function PaymentsPage() {
         title="Payments"
         description="Every transaction and PSP, monitored in real time."
         actions={
-          <Button variant="secondary" size="sm">
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() =>
+              toast({ title: "Export started", description: "Your CSV will download shortly." })
+            }
+          >
             <Download className="size-4" /> Export
           </Button>
         }

@@ -7,6 +7,7 @@ import { FilterBar } from "@/components/ui/filter-bar";
 import { StatusBadge, RiskBadge } from "@/components/ui/status-badge";
 import { Drawer } from "@/components/ui/drawer";
 import { Button } from "@/components/ui/button";
+import { useToast } from "@/components/ui/toast";
 import { type Transaction } from "@/lib/modules";
 import { useTransactions } from "@/hooks/use-modules";
 
@@ -23,6 +24,7 @@ export function TransactionsTable({ fixedType }: { fixedType?: "Deposit" | "With
   const [gateway, setGateway] = useState("");
   const [selected, setSelected] = useState<Transaction | null>(null);
   const { data: transactions } = useTransactions();
+  const { toast } = useToast();
 
   const base = useMemo(
     () => (fixedType ? transactions.filter((t) => t.type === fixedType) : transactions),
@@ -100,9 +102,25 @@ export function TransactionsTable({ fixedType }: { fixedType?: "Deposit" | "With
         footer={
           selected ? (
             <div className="flex gap-2">
-              <Button variant="secondary" className="flex-1">Add note</Button>
+              <Button
+                variant="secondary"
+                className="flex-1"
+                onClick={() =>
+                  toast({ kind: "info", title: "Note added", description: `${selected.reference} updated.` })
+                }
+              >
+                Add note
+              </Button>
               {selected.status === "review" ? (
-                <Button className="flex-1">Approve</Button>
+                <Button
+                  className="flex-1"
+                  onClick={() => {
+                    toast({ title: "Transaction approved", description: `${selected.reference} released.` });
+                    setSelected(null);
+                  }}
+                >
+                  Approve
+                </Button>
               ) : (
                 <Button variant="outline" className="flex-1">View client</Button>
               )}
