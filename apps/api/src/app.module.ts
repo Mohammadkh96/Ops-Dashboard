@@ -8,6 +8,7 @@ import { DashboardModule } from './dashboard/dashboard.module';
 import { HealthModule } from './health/health.module';
 import { ModulesModule } from './modules/modules.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { ReconModule } from './recon/recon.module';
 import { UsersModule } from './users/users.module';
 
 @Module({
@@ -19,6 +20,7 @@ import { UsersModule } from './users/users.module';
     UsersModule,
     DashboardModule,
     ModulesModule,
+    ReconModule,
   ],
   controllers: [AppController],
   providers: [AppService],

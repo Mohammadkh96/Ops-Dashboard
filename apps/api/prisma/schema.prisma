@@ -255,6 +255,36 @@ model Incident {
   @@index([severity])
 }
 
+// ---------- Reconciliation (config-driven) ----------
+
+// Persisted PSP definitions — the config-driven registry. One row per PSP;
+// the whole `config` object is stored as JSON so adding/removing/editing a PSP
+// never requires a schema or code change.
+model ReconPspConfig {
+  id        String   @id // PSP slug (e.g. "paystrax")
+  label     String
+  config    Json
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+}
+
+// A saved reconciliation run — summary metrics plus the exceptions payload so
+// the team can review history without re-uploading files.
+model ReconRun {
+  id             String   @id @default(cuid())
+  ranAt          DateTime @default(now())
+  ranBy          String?
+  layer1Matched  Int      @default(0)
+  layer1Total    Int      @default(0)
+  layer2Matched  Int      @default(0)
+  layer2Total    Int      @default(0)
+  exceptionCount Int      @default(0)
+  exposure       Float    @default(0)
+  summary        Json
+
+  @@index([ranAt])
+}
+
 // ---------- Audit ----------
 
 model AuditLog {

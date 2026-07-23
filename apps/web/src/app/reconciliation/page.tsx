@@ -28,8 +28,10 @@ import { parseFile } from "@/lib/recon/parse";
 import { loadPsps, savePsps, resetPsps, DEFAULT_PSPS, emptyPsp, missingColumns, CRM_MAP, CASHIER_MAP } from "@/lib/recon/registry";
 import { runReconciliation } from "@/lib/recon/engine";
 import { reconRowsToCsv, downloadText } from "@/lib/recon/export";
+import { loadPspsRemote, savePspsRemote, saveRunRemote, listRunsRemote, type RunSummaryRow } from "@/lib/recon/api";
 import type { Dataset, PspConfig, ReconResult, ReconRow } from "@/lib/recon/types";
 import { sampleCrm, sampleCashier, samplePaystrax, sampleForumpay } from "@/lib/recon/sample";
+import { useAuth } from "@/lib/auth";
 
 const RESULT_KEY = "opsos.recon.result";
 
@@ -58,17 +60,19 @@ const money = (n: number | null) =>
 
 export default function ReconciliationPage() {
   const { toast } = useToast();
+  const { user } = useAuth();
   const [tab, setTab] = useState<TabKey>("sources");
   const [psps, setPsps] = useState<PspConfig[]>([]);
   const [datasets, setDatasets] = useState<Record<string, Dataset>>({});
   const [result, setResult] = useState<ReconResult | null>(null);
   const [editing, setEditing] = useState<PspConfig | null>(null);
   const [warnings, setWarnings] = useState<Record<string, string[]>>({});
+  const [runs, setRuns] = useState<RunSummaryRow[]>([]);
 
   useEffect(() => {
     setPsps(loadPsps());
     let active = true;
-    void Promise.resolve().then(() => {
+    void Promise.resolve().then(async () => {
       if (!active) return;
       try {
         const raw = window.localStorage.getItem(RESULT_KEY);
@@ -76,6 +80,14 @@ export default function ReconciliationPage() {
       } catch {
         /* ignore */
       }
+      // Live mode: prefer the shared server-side registry + run history.
+      const remote = await loadPspsRemote();
+      if (active && remote) {
+        setPsps(remote);
+        savePsps(remote);
+      }
+      const history = await listRunsRemote();
+      if (active && history.length) setRuns(history);
     });
     return () => {
       active = false;
@@ -104,6 +116,7 @@ export default function ReconciliationPage() {
   const persist = (next: PspConfig[]) => {
     setPsps(next);
     savePsps(next);
+    void savePspsRemote(next);
   };
 
   const setData = (key: string, ds: Dataset) => setDatasets((d) => ({ ...d, [key]: ds }));
@@ -169,6 +182,10 @@ export default function ReconciliationPage() {
     }
     setTab("results");
     toast({ title: "Reconciliation complete", description: `${res.exceptions.length} exception(s) found.` });
+    // Live mode: persist the run server-side and refresh shared history.
+    void saveRunRemote(res, user?.email).then(() => listRunsRemote()).then((h) => {
+      if (h.length) setRuns(h);
+    });
   };
 
   const removePsp = (id: string) => {
@@ -243,7 +260,7 @@ export default function ReconciliationPage() {
           onRestore={restore}
         />
       ) : (
-        <ResultsTab result={result} />
+        <ResultsTab result={result} runs={runs} />
       )}
 
       {editing ? (
@@ -612,7 +629,47 @@ function Fld({ label: l, children }: { label: string; children: React.ReactNode 
 
 /* ─────────────── Results ─────────────── */
 
-function ResultsTab({ result }: { result: ReconResult | null }) {
+function RunHistory({ runs }: { runs: RunSummaryRow[] }) {
+  if (!runs.length) return null;
+  const rate = (m: number, t: number) => (t > 0 ? Math.round((m / t) * 100) : 0);
+  return (
+    <div className="flex flex-col gap-2">
+      <h3 className="text-xs font-medium uppercase tracking-wider text-muted">
+        Run history — saved to the shared database
+      </h3>
+      <Card className="glass card-seam overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border bg-surface/40 text-left text-xs uppercase tracking-wider text-muted">
+                <th className="px-5 py-3 font-medium">When</th>
+                <th className="px-5 py-3 font-medium">By</th>
+                <th className="px-5 py-3 text-right font-medium">L1</th>
+                <th className="px-5 py-3 text-right font-medium">L2</th>
+                <th className="px-5 py-3 text-right font-medium">Exceptions</th>
+                <th className="px-5 py-3 text-right font-medium">Exposure</th>
+              </tr>
+            </thead>
+            <tbody>
+              {runs.map((r) => (
+                <tr key={r.id} className="border-b border-border/50 last:border-0">
+                  <td className="px-5 py-3 text-muted-foreground">{new Date(r.ranAt).toLocaleString()}</td>
+                  <td className="px-5 py-3 text-muted-foreground">{r.ranBy || "—"}</td>
+                  <td className="px-5 py-3 text-right tnum">{rate(r.layer1Matched, r.layer1Total)}%</td>
+                  <td className="px-5 py-3 text-right tnum">{rate(r.layer2Matched, r.layer2Total)}%</td>
+                  <td className="px-5 py-3 text-right tnum text-accent-red">{r.exceptionCount}</td>
+                  <td className="px-5 py-3 text-right tnum">${money(r.exposure)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function ResultsTab({ result, runs }: { result: ReconResult | null; runs: RunSummaryRow[] }) {
   const columns: Column<ReconRow>[] = useMemo(
     () => [
       { key: "status", header: "Status", render: (r) => <Badge variant={STATUS_META[r.status].variant}>{STATUS_META[r.status].label}</Badge> },
@@ -630,17 +687,20 @@ function ResultsTab({ result }: { result: ReconResult | null }) {
 
   if (!result) {
     return (
-      <Card className="glass card-seam">
-        <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
-          <span className="flex size-11 items-center justify-center rounded-xl border border-border bg-card text-muted">
-            <Play className="size-5" />
-          </span>
-          <span className="text-sm text-muted-foreground">
-            Upload CRM + Cashier (and any PSP files), then run the reconciliation.
-          </span>
-          <span className="text-xs text-muted">Tip: use “Load sample” to see it end-to-end.</span>
-        </CardContent>
-      </Card>
+      <div className="flex flex-col gap-5">
+        <Card className="glass card-seam">
+          <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
+            <span className="flex size-11 items-center justify-center rounded-xl border border-border bg-card text-muted">
+              <Play className="size-5" />
+            </span>
+            <span className="text-sm text-muted-foreground">
+              Upload CRM + Cashier (and any PSP files), then run the reconciliation.
+            </span>
+            <span className="text-xs text-muted">Tip: use “Load sample” to see it end-to-end.</span>
+          </CardContent>
+        </Card>
+        <RunHistory runs={runs} />
+      </div>
     );
   }
 
@@ -672,6 +732,7 @@ function ResultsTab({ result }: { result: ReconResult | null }) {
       </div>
 
       <ExceptionsSection columns={columns} exceptions={exceptions} />
+      <RunHistory runs={runs} />
     </div>
   );
 }
