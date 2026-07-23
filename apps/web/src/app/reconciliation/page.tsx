@@ -29,8 +29,8 @@ import { loadPsps, savePsps, resetPsps, DEFAULT_PSPS, emptyPsp, missingColumns, 
 import { runReconciliation } from "@/lib/recon/engine";
 import { reconRowsToCsv, downloadText } from "@/lib/recon/export";
 import { loadPspsRemote, savePspsRemote, saveRunRemote, listRunsRemote, type RunSummaryRow } from "@/lib/recon/api";
-import type { Dataset, PspConfig, ReconResult, ReconRow } from "@/lib/recon/types";
-import { sampleCrm, sampleCashier, samplePaystrax, sampleForumpay } from "@/lib/recon/sample";
+import type { Breakdown, Dataset, PspConfig, ReconMatrix, ReconResult, ReconRow } from "@/lib/recon/types";
+import { sampleCrm, sampleCashier, samplePaystrax, sampleForumpay, sampleMatch2pay, sampleRapyd } from "@/lib/recon/sample";
 import { useAuth } from "@/lib/auth";
 
 const RESULT_KEY = "opsos.recon.result";
@@ -43,6 +43,7 @@ const TABS = [
   { key: "sources", label: "Sources" },
   { key: "psps", label: "PSP Registry" },
   { key: "results", label: "Results" },
+  { key: "analytics", label: "Analytics" },
 ] as const;
 type TabKey = (typeof TABS)[number]["key"];
 
@@ -159,9 +160,11 @@ export default function ReconciliationPage() {
       cashier: sampleCashier(),
       paystrax: samplePaystrax(),
       forumpay: sampleForumpay(),
+      match2pay: sampleMatch2pay(),
+      rapyd: sampleRapyd(),
     });
     setWarnings({});
-    toast({ title: "Sample data loaded", description: "CRM, Cashier, Paystrax and ForumPay populated." });
+    toast({ title: "Sample data loaded", description: "CRM, Cashier and 4 PSPs across 4 brands." });
   };
 
   const run = () => {
@@ -259,6 +262,8 @@ export default function ReconciliationPage() {
           onRemove={removePsp}
           onRestore={restore}
         />
+      ) : tab === "analytics" ? (
+        <AnalyticsTab result={result} />
       ) : (
         <ResultsTab result={result} runs={runs} />
       )}
@@ -674,6 +679,7 @@ function ResultsTab({ result, runs }: { result: ReconResult | null; runs: RunSum
     () => [
       { key: "status", header: "Status", render: (r) => <Badge variant={STATUS_META[r.status].variant}>{STATUS_META[r.status].label}</Badge> },
       { key: "src", header: "Source", render: (r) => <span className="text-muted-foreground">{r.psp ?? "CRM ↔ Cashier"}</span> },
+      { key: "brand", header: "Brand", render: (r) => <span className="text-muted-foreground">{r.brand || "—"}</span> },
       { key: "entity", header: "Entity", render: (r) => <span className="text-muted-foreground">{r.entity || "—"}</span> },
       { key: "left", header: "Left ID", render: (r) => <span className="font-mono text-xs">{r.leftId || "—"}</span> },
       { key: "leftAmt", header: "Left Amt", align: "right", render: (r) => <span className="tnum">{money(r.leftAmount)}</span> },
@@ -713,7 +719,7 @@ function ResultsTab({ result, runs }: { result: ReconResult | null; runs: RunSum
   ];
 
   const pspColumns: Column<(typeof byPsp)[number]>[] = [
-    { key: "psp", header: "PSP", render: (b) => <span className="font-medium">{b.psp}</span> },
+    { key: "psp", header: "PSP", render: (b) => <span className="font-medium">{b.key}</span> },
     { key: "matched", header: "Matched", align: "right", render: (b) => <span className="tnum text-accent-green">{b.matched}</span> },
     { key: "amount", header: "Amount", align: "right", render: (b) => <span className="tnum text-accent-orange">{b.amount}</span> },
     { key: "status", header: "Status", align: "right", render: (b) => <span className="tnum text-accent-red">{b.status}</span> },
@@ -728,11 +734,152 @@ function ResultsTab({ result, runs }: { result: ReconResult | null; runs: RunSum
 
       <div className="flex flex-col gap-2">
         <h3 className="text-xs font-medium uppercase tracking-wider text-muted">Breakdown by PSP — Layer 2</h3>
-        <DataTable columns={pspColumns} rows={byPsp} getRowKey={(b) => b.psp} empty="No PSP rows matched." />
+        <DataTable columns={pspColumns} rows={byPsp} getRowKey={(b) => b.key} empty="No PSP rows matched." />
       </div>
 
       <ExceptionsSection columns={columns} exceptions={exceptions} />
       <RunHistory runs={runs} />
+    </div>
+  );
+}
+
+/* ─────────────── Analytics (per brand / per PSP / per cashier) ─────────────── */
+
+function rateTone(rate: number) {
+  if (rate >= 90) return { bg: "bg-accent-green-soft", fg: "text-accent-green", bar: "bg-accent-green" };
+  if (rate >= 70) return { bg: "bg-accent-orange-soft", fg: "text-accent-orange", bar: "bg-accent-orange" };
+  return { bg: "bg-accent-red-soft", fg: "text-accent-red", bar: "bg-accent-red" };
+}
+
+function BrandCard({ b }: { b: Breakdown }) {
+  const tone = rateTone(b.matchRate);
+  const issues = b.amount + b.status + b.unmatched;
+  const cell = (n: string | number, l: string, c: string) => (
+    <div className="flex flex-col">
+      <span className={cn("tnum text-sm font-semibold", c)}>{n}</span>
+      <span className="text-[10px] uppercase tracking-wide text-muted">{l}</span>
+    </div>
+  );
+  return (
+    <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4 hover-lift">
+      <div className="flex items-center justify-between gap-2">
+        <span className="truncate text-sm font-medium">{b.key}</span>
+        <span className={cn("rounded-full px-2 py-0.5 text-xs font-semibold", tone.bg, tone.fg)}>{b.matchRate}%</span>
+      </div>
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface">
+        <div className={cn("h-full rounded-full", tone.bar)} style={{ width: `${b.matchRate}%` }} />
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        {cell(b.matched, "Matched", "text-accent-green")}
+        {cell(issues, "Issues", "text-accent-orange")}
+        {cell(`$${money(b.exposure)}`, "Exposure", "text-foreground")}
+      </div>
+    </div>
+  );
+}
+
+function MatrixHeatmap({ matrix }: { matrix: ReconMatrix }) {
+  if (!matrix.brands.length) {
+    return <p className="text-sm text-muted">No Layer 2 rows to chart yet.</p>;
+  }
+  return (
+    <Card className="glass card-seam overflow-hidden">
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-border bg-surface/40">
+              <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted">
+                Brand \ PSP
+              </th>
+              {matrix.psps.map((p) => (
+                <th key={p} className="px-3 py-3 text-center text-xs font-medium uppercase tracking-wider text-muted">
+                  {p}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {matrix.brands.map((brand) => (
+              <tr key={brand} className="border-b border-border/50 last:border-0">
+                <td className="px-4 py-2.5 font-medium">{brand}</td>
+                {matrix.psps.map((psp) => {
+                  const c = matrix.cells[brand]?.[psp];
+                  if (!c) {
+                    return (
+                      <td key={psp} className="px-3 py-2.5 text-center text-muted">
+                        —
+                      </td>
+                    );
+                  }
+                  const tone = rateTone(c.rate);
+                  return (
+                    <td key={psp} className="px-2 py-2 text-center">
+                      <span
+                        className={cn("inline-flex min-w-14 flex-col rounded-lg px-2 py-1", tone.bg, tone.fg)}
+                        title={`${c.matched}/${c.total} matched${c.exposure ? ` · $${money(c.exposure)} exposure` : ""}`}
+                      >
+                        <span className="tnum text-sm font-semibold">{c.rate}%</span>
+                        <span className="tnum text-[10px] opacity-80">
+                          {c.matched}/{c.total}
+                        </span>
+                      </span>
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  );
+}
+
+function AnalyticsTab({ result }: { result: ReconResult | null }) {
+  if (!result) {
+    return (
+      <Card className="glass card-seam">
+        <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
+          <span className="flex size-11 items-center justify-center rounded-xl border border-border bg-card text-muted">
+            <Play className="size-5" />
+          </span>
+          <span className="text-sm text-muted-foreground">Run a reconciliation to unlock per-brand analytics.</span>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const entityCols: Column<Breakdown>[] = [
+    { key: "k", header: "Cashier entity", render: (b) => <span className="font-medium">{b.key}</span> },
+    { key: "m", header: "Matched", align: "right", render: (b) => <span className="tnum text-accent-green">{b.matched}</span> },
+    { key: "i", header: "Issues", align: "right", render: (b) => <span className="tnum text-accent-orange">{b.amount + b.status + b.unmatched}</span> },
+    { key: "t", header: "Total", align: "right", render: (b) => <span className="tnum">{b.total}</span> },
+    { key: "e", header: "Exposure", align: "right", render: (b) => <span className="tnum">${money(b.exposure)}</span> },
+    { key: "r", header: "Match %", align: "right", render: (b) => <span className={cn("tnum", rateTone(b.matchRate).fg)}>{b.matchRate}%</span> },
+  ];
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-col gap-2">
+        <h3 className="text-xs font-medium uppercase tracking-wider text-muted">Per-brand health</h3>
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {result.byBrand.map((b) => (
+            <BrandCard key={b.key} b={b} />
+          ))}
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <h3 className="text-xs font-medium uppercase tracking-wider text-muted">
+          Brand × PSP match-rate matrix — where money slips between brand and processor
+        </h3>
+        <MatrixHeatmap matrix={result.matrix} />
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <h3 className="text-xs font-medium uppercase tracking-wider text-muted">Per-cashier entity</h3>
+        <DataTable columns={entityCols} rows={result.byEntity} getRowKey={(b) => b.key} empty="No rows." />
+      </div>
     </div>
   );
 }

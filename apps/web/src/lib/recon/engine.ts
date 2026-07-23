@@ -1,10 +1,12 @@
 import { CASHIER_MAP, CRM_MAP } from "./registry";
 import type {
+  Breakdown,
   Dataset,
   FieldMap,
   LayerStats,
-  PspBreakdown,
+  MatrixCell,
   PspConfig,
+  ReconMatrix,
   ReconResult,
   ReconRow,
   Row,
@@ -393,25 +395,94 @@ function mkRow(
   rightId: string, rightAmount: number | null, rightCurrency: string, rightStatus: string,
   diff: number | null, note: string,
 ): ReconRow {
-  return { status, entity, psp, matchKey, leftId, leftAmount, leftCurrency, leftStatus,
+  return { status, entity, brand: "", psp, matchKey, leftId, leftAmount, leftCurrency, leftStatus,
     rightId, rightAmount, rightCurrency, rightStatus, diff, note };
 }
 
-function breakdownByPsp(rows: ReconRow[]): PspBreakdown[] {
-  const m = new Map<string, PspBreakdown>();
+/** Generic dimensional breakdown (PSP, brand, entity — driven by the key fn). */
+function groupBy(rows: ReconRow[], keyOf: (r: ReconRow) => string): Breakdown[] {
+  const m = new Map<string, Breakdown>();
   rows.forEach((r) => {
-    const key = r.psp || "Unrouted";
-    const b = m.get(key) ?? { psp: key, matched: 0, amount: 0, status: 0, unmatched: 0, total: 0, matchRate: 0 };
+    const key = keyOf(r) || "—";
+    const b =
+      m.get(key) ??
+      { key, matched: 0, amount: 0, status: 0, unmatched: 0, total: 0, matchRate: 0, exposure: 0 };
     b.total++;
     if (r.status === "matched") b.matched++;
-    else if (r.status === "amount") b.amount++;
-    else if (r.status === "status") b.status++;
+    else if (r.status === "amount") {
+      b.amount++;
+      b.exposure += Math.abs(r.diff ?? 0);
+    } else if (r.status === "status") b.status++;
     else b.unmatched++;
     m.set(key, b);
   });
   const out = Array.from(m.values());
-  out.forEach((b) => (b.matchRate = b.total > 0 ? Math.round((b.matched / b.total) * 100) : 0));
+  out.forEach((b) => {
+    b.matchRate = b.total > 0 ? Math.round((b.matched / b.total) * 100) : 0;
+    b.exposure = round(b.exposure);
+  });
   return out.sort((a, b) => b.total - a.total);
+}
+
+/** Brand × PSP health grid from Layer 2 rows. */
+function buildMatrix(rows: ReconRow[]): ReconMatrix {
+  const brands = new Set<string>();
+  const psps = new Set<string>();
+  const cells: Record<string, Record<string, MatrixCell>> = {};
+  rows.forEach((r) => {
+    const brand = r.brand || "—";
+    const psp = r.psp || "Unrouted";
+    brands.add(brand);
+    psps.add(psp);
+    cells[brand] = cells[brand] ?? {};
+    const c = cells[brand][psp] ?? { matched: 0, total: 0, rate: 0, exposure: 0 };
+    c.total++;
+    if (r.status === "matched") c.matched++;
+    if (r.status === "amount") c.exposure += Math.abs(r.diff ?? 0);
+    cells[brand][psp] = c;
+  });
+  Object.values(cells).forEach((row) =>
+    Object.values(row).forEach((c) => {
+      c.rate = c.total > 0 ? Math.round((c.matched / c.total) * 100) : 0;
+      c.exposure = round(c.exposure);
+    }),
+  );
+  return { brands: Array.from(brands).sort(), psps: Array.from(psps).sort(), cells };
+}
+
+/**
+ * Enriches every row with its brand. Brand lives in the CRM (Brand Title); it is
+ * propagated to Layer-2 (cashier↔PSP) rows through the cashier reference so the
+ * whole result can be sliced per brand. This does NOT alter any matching.
+ */
+function enrichBrands(
+  crm: Dataset | null,
+  cashier: Dataset | null,
+  l1: ReconRow[],
+  l2: ReconRow[],
+) {
+  const brandByCrmKey = new Map<string, string>();
+  crm?.rows.forEach((cr) => {
+    const brand = firstVal(cr, [CRM_MAP.entityCol]);
+    if (!brand) return;
+    CRM_MAP.idCols.forEach((col) => {
+      const k = norm(firstVal(cr, [col]));
+      if (k && !brandByCrmKey.has(k)) brandByCrmKey.set(k, brand);
+    });
+  });
+  const brandByCashId = new Map<string, string>();
+  cashier?.rows.forEach((c) => {
+    const id = firstVal(c, ["ID"]);
+    const ref = norm(firstVal(c, ["Reference ID"]));
+    const brand = ref ? brandByCrmKey.get(ref) : undefined;
+    if (id && brand) brandByCashId.set(id, brand);
+  });
+  l1.forEach((r) => {
+    r.brand = brandByCrmKey.get(norm(r.leftId)) || r.entity || "—";
+  });
+  l2.forEach((r) => {
+    r.brand = brandByCashId.get(r.leftId) || r.entity || "—";
+  });
 }
 
 export function runReconciliation(
@@ -423,16 +494,21 @@ export function runReconciliation(
 ): ReconResult {
   const l1Rows = crm && cashier ? reconcileLayer1(crm, cashier) : [];
   const l2Rows = cashier ? reconcileLayer2(cashier, psps, pspData) : [];
+  enrichBrands(crm, cashier, l1Rows, l2Rows);
   const severity = (s: ReconRow["status"]) =>
     s === "status" ? 0 : s.startsWith("unmatched") ? 1 : s === "amount" ? 2 : 5;
   const sorter = (a: ReconRow, b: ReconRow) => severity(a.status) - severity(b.status);
   l1Rows.sort(sorter);
   l2Rows.sort(sorter);
-  const exceptions = [...l1Rows, ...l2Rows].filter((r) => r.status !== "matched");
+  const all = [...l1Rows, ...l2Rows];
+  const exceptions = all.filter((r) => r.status !== "matched");
   return {
     layer1: { rows: l1Rows, stats: computeStats(l1Rows) },
     layer2: { rows: l2Rows, stats: computeStats(l2Rows) },
-    byPsp: breakdownByPsp(l2Rows),
+    byPsp: groupBy(l2Rows, (r) => r.psp || "Unrouted"),
+    byBrand: groupBy(all, (r) => r.brand),
+    byEntity: groupBy(all, (r) => r.entity),
+    matrix: buildMatrix(l2Rows),
     exceptions,
     ranAt: nowIso,
   };

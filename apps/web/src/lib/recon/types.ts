@@ -58,6 +58,7 @@ export type MatchStatus =
 export type ReconRow = {
   status: MatchStatus;
   entity: string;
+  brand: string;
   psp?: string;
   matchKey: string;
   leftId: string; // CRM ref (L1) or cashier id (L2)
@@ -83,20 +84,34 @@ export type LayerStats = {
   exposure: number;
 };
 
-export type PspBreakdown = {
-  psp: string;
+/** A grouped breakdown along any dimension (PSP, brand, entity/cashier). */
+export type Breakdown = {
+  key: string;
   matched: number;
   amount: number;
   status: number;
   unmatched: number;
   total: number;
   matchRate: number;
+  exposure: number;
+};
+
+export type MatrixCell = { matched: number; total: number; rate: number; exposure: number };
+
+/** Brand × PSP grid of match health (Layer 2). */
+export type ReconMatrix = {
+  brands: string[];
+  psps: string[];
+  cells: Record<string, Record<string, MatrixCell>>;
 };
 
 export type ReconResult = {
   layer1: { rows: ReconRow[]; stats: LayerStats };
   layer2: { rows: ReconRow[]; stats: LayerStats };
-  byPsp: PspBreakdown[];
+  byPsp: Breakdown[];
+  byBrand: Breakdown[];
+  byEntity: Breakdown[];
+  matrix: ReconMatrix;
   exceptions: ReconRow[];
   ranAt: string;
 };
