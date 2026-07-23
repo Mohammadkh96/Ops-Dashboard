@@ -42,6 +42,7 @@ export const secondaryNav: NavItem[] = [
     children: [
       { label: "Users", href: "/admin/users" },
       { label: "Audit Logs", href: "/admin/audit-logs" },
+      { label: "API Keys", href: "/admin/api-keys" },
     ],
   },
 ];
