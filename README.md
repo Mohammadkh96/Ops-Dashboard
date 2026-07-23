@@ -125,6 +125,34 @@ badge). Point `NEXT_PUBLIC_API_URL` at a running API and it switches to live
 data and requires login at `/login`. This means you can deploy the frontend
 alone for a shareable preview URL — see [`DEPLOY.md`](./DEPLOY.md).
 
+## Reconciliation (config-driven)
+
+The **Reconciliation** module matches transactions across three layers — CRM,
+Cashier/Paymaxis and every PSP — entirely in the browser (files are parsed
+locally and never uploaded). Its defining feature is that **PSPs are
+configuration, not code**:
+
+- A **PSP registry** where each PSP is a config (column mappings, status
+  synonyms, match keys, amount tolerance, time window, deposit/withdrawal type
+  values). Add, edit or remove a PSP in the UI — its upload slot and matching
+  behaviour follow automatically, with no engine changes.
+- Uploads accept **CSV, TSV, XLS and XLSX**; headers are validated against the
+  active config.
+- A generic two-layer engine (CRM↔Cashier by reference, Cashier↔PSPs by
+  configurable exact keys + amount/time fuzzy fallback) surfaces status
+  mismatches, amount mismatches and unmatched records, with per-PSP breakdowns,
+  filters and CSV export.
+- In **demo mode** the registry and last run persist to `localStorage`; in
+  **live mode** they sync to the API (shared across the team) via:
+
+  | Method & path            | Purpose                                  |
+  | ------------------------ | ---------------------------------------- |
+  | `GET /api/recon/psps`    | Load the shared PSP registry             |
+  | `PUT /api/recon/psps`    | Replace the registry (bulk upsert+prune) |
+  | `POST /api/recon/runs`   | Save a run summary                       |
+  | `GET /api/recon/runs`    | Recent run history                       |
+  | `GET /api/recon/runs/:id`| A run with its exceptions payload        |
+
 ## Current status
 
 **Phase 1 (foundation) — largely complete.** The app shell, design system,
