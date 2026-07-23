@@ -9,6 +9,7 @@ import {
   AlertTriangle,
   BarChart3,
   FileText,
+  Scale,
   Settings,
   Users,
 } from "lucide-react";
@@ -28,6 +29,7 @@ export const primaryNav: NavItem[] = [
   { label: "Deposits", href: "/deposits", icon: ArrowDownToLine },
   { label: "Withdrawals", href: "/withdrawals", icon: ArrowUpFromLine },
   { label: "Compliance", href: "/compliance", icon: ShieldCheck },
+  { label: "Reconciliation", href: "/reconciliation", icon: Scale },
   { label: "Incidents", href: "/incidents", icon: AlertTriangle },
   { label: "Analytics", href: "/analytics", icon: BarChart3 },
   { label: "Reports", href: "/reports", icon: FileText },
