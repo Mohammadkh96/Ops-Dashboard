@@ -10,6 +10,8 @@ import {
   FileSpreadsheet,
   RotateCcw,
   Database,
+  Download,
+  AlertTriangle,
   X,
 } from "lucide-react";
 
@@ -22,11 +24,14 @@ import { DataTable, type Column } from "@/components/ui/data-table";
 import { useToast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 
-import { parseCsv } from "@/lib/recon/csv";
-import { loadPsps, savePsps, resetPsps, DEFAULT_PSPS, emptyPsp } from "@/lib/recon/registry";
+import { parseFile } from "@/lib/recon/parse";
+import { loadPsps, savePsps, resetPsps, DEFAULT_PSPS, emptyPsp, missingColumns, CRM_MAP, CASHIER_MAP } from "@/lib/recon/registry";
 import { runReconciliation } from "@/lib/recon/engine";
+import { reconRowsToCsv, downloadText } from "@/lib/recon/export";
 import type { Dataset, PspConfig, ReconResult, ReconRow } from "@/lib/recon/types";
 import { sampleCrm, sampleCashier, samplePaystrax, sampleForumpay } from "@/lib/recon/sample";
+
+const RESULT_KEY = "opsos.recon.result";
 
 const input =
   "h-9 w-full rounded-lg border border-border bg-card px-3 text-sm outline-none transition-colors focus:border-border-strong";
@@ -58,10 +63,43 @@ export default function ReconciliationPage() {
   const [datasets, setDatasets] = useState<Record<string, Dataset>>({});
   const [result, setResult] = useState<ReconResult | null>(null);
   const [editing, setEditing] = useState<PspConfig | null>(null);
+  const [warnings, setWarnings] = useState<Record<string, string[]>>({});
 
   useEffect(() => {
     setPsps(loadPsps());
+    let active = true;
+    void Promise.resolve().then(() => {
+      if (!active) return;
+      try {
+        const raw = window.localStorage.getItem(RESULT_KEY);
+        if (raw) setResult(JSON.parse(raw) as ReconResult);
+      } catch {
+        /* ignore */
+      }
+    });
+    return () => {
+      active = false;
+    };
   }, []);
+
+  const validateSource = (key: string, headers: string[]): string[] => {
+    const have = new Set(headers.map((h) => h.toLowerCase().trim()));
+    const anyOf = (cols: string[]) => cols.some((c) => have.has(c.toLowerCase()));
+    if (key === "crm") {
+      const miss: string[] = [];
+      if (!anyOf(CRM_MAP.idCols)) miss.push("reference/id");
+      if (!have.has(CRM_MAP.amountCol.toLowerCase())) miss.push("amount");
+      return miss;
+    }
+    if (key === "cashier") {
+      const miss: string[] = [];
+      if (!anyOf(CASHIER_MAP.idCols)) miss.push("id");
+      if (!CASHIER_MAP.amountCol.split(",").some((c) => have.has(c.trim().toLowerCase()))) miss.push("amount");
+      return miss;
+    }
+    const cfg = psps.find((p) => p.id === key);
+    return cfg ? missingColumns(cfg, headers) : [];
+  };
 
   const persist = (next: PspConfig[]) => {
     setPsps(next);
@@ -69,26 +107,36 @@ export default function ReconciliationPage() {
   };
 
   const setData = (key: string, ds: Dataset) => setDatasets((d) => ({ ...d, [key]: ds }));
-  const clearData = (key: string) =>
+  const clearData = (key: string) => {
     setDatasets((d) => {
       const next = { ...d };
       delete next[key];
       return next;
     });
+    setWarnings((w) => {
+      const next = { ...w };
+      delete next[key];
+      return next;
+    });
+  };
 
   const readFile = async (key: string, file: File) => {
     try {
-      const text = await file.text();
-      const ds = parseCsv(text);
-      ds.fileName = file.name;
+      const ds = await parseFile(file);
       if (ds.rows.length === 0) {
         toast({ kind: "warning", title: "Empty file", description: "No data rows found." });
         return;
       }
       setData(key, ds);
-      toast({ title: `${file.name} loaded`, description: `${ds.rows.length} rows, ${ds.headers.length} columns.` });
+      const miss = validateSource(key, ds.headers);
+      setWarnings((w) => ({ ...w, [key]: miss }));
+      if (miss.length) {
+        toast({ kind: "warning", title: `${file.name}: column check`, description: `Missing/renamed: ${miss.join(", ")}. Loaded anyway.` });
+      } else {
+        toast({ title: `${file.name} loaded`, description: `${ds.rows.length} rows, ${ds.headers.length} columns.` });
+      }
     } catch {
-      toast({ kind: "warning", title: "Could not read file", description: "Use CSV, TSV, or plain-text export." });
+      toast({ kind: "warning", title: "Could not read file", description: "Use CSV, TSV, XLS or XLSX." });
     }
   };
 
@@ -99,6 +147,7 @@ export default function ReconciliationPage() {
       paystrax: samplePaystrax(),
       forumpay: sampleForumpay(),
     });
+    setWarnings({});
     toast({ title: "Sample data loaded", description: "CRM, Cashier, Paystrax and ForumPay populated." });
   };
 
@@ -113,6 +162,11 @@ export default function ReconciliationPage() {
     });
     const res = runReconciliation(datasets.crm, datasets.cashier, psps, pspData, new Date().toISOString());
     setResult(res);
+    try {
+      window.localStorage.setItem(RESULT_KEY, JSON.stringify(res));
+    } catch {
+      /* result too large to persist — keep in memory only */
+    }
     setTab("results");
     toast({ title: "Reconciliation complete", description: `${res.exceptions.length} exception(s) found.` });
   };
@@ -179,7 +233,7 @@ export default function ReconciliationPage() {
       </div>
 
       {tab === "sources" ? (
-        <SourcesTab psps={psps} datasets={datasets} onFile={readFile} onClear={clearData} />
+        <SourcesTab psps={psps} datasets={datasets} warnings={warnings} onFile={readFile} onClear={clearData} />
       ) : tab === "psps" ? (
         <PspRegistryTab
           psps={psps}
@@ -210,12 +264,14 @@ function SourceCard({
   title,
   desc,
   ds,
+  warning,
   onFile,
   onClear,
 }: {
   title: string;
   desc: string;
   ds?: Dataset;
+  warning?: string[];
   onFile: (f: File) => void;
   onClear?: () => void;
 }) {
@@ -244,22 +300,33 @@ function SourceCard({
           <span className="text-xs text-muted">{desc}</span>
         </div>
         {ds ? (
-          <Badge variant="green">Loaded</Badge>
+          warning && warning.length ? (
+            <Badge variant="orange">Check columns</Badge>
+          ) : (
+            <Badge variant="green">Loaded</Badge>
+          )
         ) : (
           <Badge variant="default">Empty</Badge>
         )}
       </div>
 
       {ds ? (
-        <div className="flex items-center justify-between rounded-lg border border-border bg-surface px-3 py-2 text-xs">
-          <span className="flex items-center gap-2 text-muted-foreground">
-            <FileSpreadsheet className="size-3.5 text-accent-blue" />
-            {ds.fileName || "data"} · {ds.rows.length} rows
-          </span>
-          {onClear ? (
-            <button onClick={onClear} aria-label="Remove file" className="text-muted hover:text-accent-red">
-              <X className="size-3.5" />
-            </button>
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center justify-between rounded-lg border border-border bg-surface px-3 py-2 text-xs">
+            <span className="flex items-center gap-2 text-muted-foreground">
+              <FileSpreadsheet className="size-3.5 text-accent-blue" />
+              {ds.fileName || "data"} · {ds.rows.length} rows
+            </span>
+            {onClear ? (
+              <button onClick={onClear} aria-label="Remove file" className="text-muted hover:text-accent-red">
+                <X className="size-3.5" />
+              </button>
+            ) : null}
+          </div>
+          {warning && warning.length ? (
+            <span className="flex items-center gap-1.5 text-[11px] text-accent-orange">
+              <AlertTriangle className="size-3" /> Missing/renamed: {warning.join(", ")}
+            </span>
           ) : null}
         </div>
       ) : (
@@ -273,7 +340,7 @@ function SourceCard({
       <input
         ref={ref}
         type="file"
-        accept=".csv,.tsv,.txt"
+        accept=".csv,.tsv,.txt,.xls,.xlsx"
         className="hidden"
         onChange={(e) => {
           if (e.target.files?.[0]) onFile(e.target.files[0]);
@@ -287,21 +354,24 @@ function SourceCard({
 function SourcesTab({
   psps,
   datasets,
+  warnings,
   onFile,
   onClear,
 }: {
   psps: PspConfig[];
   datasets: Record<string, Dataset>;
+  warnings: Record<string, string[]>;
   onFile: (key: string, f: File) => void;
   onClear: (key: string) => void;
 }) {
   return (
     <div className="flex flex-col gap-5">
+      <p className="text-xs text-muted">Accepts CSV, TSV, XLS and XLSX. Files are parsed in your browser and never uploaded anywhere.</p>
       <div>
         <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-muted">Core sources (required)</h3>
         <div className="grid gap-3 sm:grid-cols-2">
-          <SourceCard title="CRM export" desc="The book of record — customer transactions." ds={datasets.crm} onFile={(f) => onFile("crm", f)} onClear={() => onClear("crm")} />
-          <SourceCard title="Cashier / Paymaxis" desc="The processing layer that routes to PSPs." ds={datasets.cashier} onFile={(f) => onFile("cashier", f)} onClear={() => onClear("cashier")} />
+          <SourceCard title="CRM export" desc="The book of record — customer transactions." ds={datasets.crm} warning={warnings.crm} onFile={(f) => onFile("crm", f)} onClear={() => onClear("crm")} />
+          <SourceCard title="Cashier / Paymaxis" desc="The processing layer that routes to PSPs." ds={datasets.cashier} warning={warnings.cashier} onFile={(f) => onFile("cashier", f)} onClear={() => onClear("cashier")} />
         </div>
       </div>
       <div>
@@ -315,6 +385,7 @@ function SourcesTab({
               title={p.label}
               desc={p.entity === "All" ? "Optional PSP export" : `${p.entity} · optional`}
               ds={datasets[p.id]}
+              warning={warnings[p.id]}
               onFile={(f) => onFile(p.id, f)}
               onClear={() => onClear(p.id)}
             />
@@ -503,6 +574,18 @@ function PspEditor({
               <input type="number" className={input} value={f.dateWindowMins} onChange={(e) => set({ dateWindowMins: Number(e.target.value) })} />
             </Fld>
           </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <Fld label="Deposit type values (optional)">
+              <input className={input} value={(f.depositTypes ?? []).join(", ")} placeholder="DB, SELL" onChange={(e) => set({ depositTypes: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })} />
+            </Fld>
+            <Fld label="Withdrawal type values (optional)">
+              <input className={input} value={(f.withdrawalTypes ?? []).join(", ")} placeholder="CD, BUY" onChange={(e) => set({ withdrawalTypes: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })} />
+            </Fld>
+          </div>
+          <p className="-mt-1 text-[11px] text-muted">
+            Type values stop a deposit being matched to a withdrawal (e.g. Paystrax DB/CD, ForumPay SELL/BUY). Leave blank to skip the check.
+          </p>
         </div>
 
         <div className="flex justify-end gap-2 border-t border-border px-5 py-3.5">
@@ -588,18 +671,76 @@ function ResultsTab({ result }: { result: ReconResult | null }) {
         <DataTable columns={pspColumns} rows={byPsp} getRowKey={(b) => b.psp} empty="No PSP rows matched." />
       </div>
 
-      <div className="flex flex-col gap-2">
+      <ExceptionsSection columns={columns} exceptions={exceptions} />
+    </div>
+  );
+}
+
+function ExceptionsSection({ columns, exceptions }: { columns: Column<ReconRow>[]; exceptions: ReconRow[] }) {
+  const [fLayer, setFLayer] = useState<"all" | "l1" | "l2">("all");
+  const [fStatus, setFStatus] = useState<"all" | ReconRow["status"]>("all");
+  const [q, setQ] = useState("");
+
+  const filtered = useMemo(
+    () =>
+      exceptions.filter((r) => {
+        if (fLayer === "l1" && r.psp) return false;
+        if (fLayer === "l2" && !r.psp) return false;
+        if (fStatus !== "all" && r.status !== fStatus) return false;
+        if (q) {
+          const hay = `${r.leftId} ${r.rightId} ${r.note} ${r.psp ?? ""} ${r.entity}`.toLowerCase();
+          if (!hay.includes(q.toLowerCase())) return false;
+        }
+        return true;
+      }),
+    [exceptions, fLayer, fStatus, q],
+  );
+
+  const sel = "h-9 cursor-pointer rounded-lg border border-border bg-card px-2.5 text-sm outline-none focus:border-border-strong";
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <h3 className="text-xs font-medium uppercase tracking-wider text-muted">
-          Exceptions ({exceptions.length}) — everything that isn’t a clean match
+          Exceptions ({filtered.length} of {exceptions.length})
         </h3>
-        <DataTable
-          columns={columns}
-          rows={exceptions}
-          getRowKey={(r, i) => `${r.psp ?? "l1"}-${r.leftId}-${r.rightId}-${i}`}
-          pageSize={12}
-          empty="No exceptions — everything reconciled cleanly. 🎉"
-        />
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search id, note…"
+            className="h-9 w-44 rounded-lg border border-border bg-card px-3 text-sm outline-none focus:border-border-strong"
+          />
+          <select value={fLayer} onChange={(e) => setFLayer(e.target.value as typeof fLayer)} className={sel}>
+            <option value="all">All layers</option>
+            <option value="l1">Layer 1 (CRM↔Cashier)</option>
+            <option value="l2">Layer 2 (Cashier↔PSP)</option>
+          </select>
+          <select value={fStatus} onChange={(e) => setFStatus(e.target.value as typeof fStatus)} className={sel}>
+            <option value="all">All statuses</option>
+            <option value="status">Status mismatch</option>
+            <option value="amount">Amount mismatch</option>
+            <option value="unmatched-crm">Unmatched CRM</option>
+            <option value="unmatched-cashier">Unmatched Cashier</option>
+            <option value="unmatched-psp">Unmatched PSP</option>
+          </select>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => downloadText("recon-exceptions.csv", reconRowsToCsv(filtered))}
+            disabled={filtered.length === 0}
+          >
+            <Download className="size-4" /> Export CSV
+          </Button>
+        </div>
       </div>
+      <DataTable
+        columns={columns}
+        rows={filtered}
+        getRowKey={(r, i) => `${r.psp ?? "l1"}-${r.leftId}-${r.rightId}-${i}`}
+        pageSize={12}
+        empty="No exceptions match these filters. 🎉"
+      />
     </div>
   );
 }

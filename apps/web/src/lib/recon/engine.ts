@@ -81,6 +81,50 @@ function entityFromBrand(brand: string): string {
   return /global/i.test(brand) ? "Saint Lucia" : "Mauritius";
 }
 
+type Kind = "deposit" | "withdrawal" | "";
+function kindFromType(t: string): Kind {
+  const s = up(t);
+  if (s.includes("DEPOSIT")) return "deposit";
+  if (s.includes("WITHDRAW") || s.includes("REFUND")) return "withdrawal";
+  return "";
+}
+function pspKind(row: Row, cfg: PspConfig): Kind {
+  const t = up(fieldVal(row, cfg.fields.typeCol));
+  if (!t) return "";
+  if (cfg.depositTypes?.some((x) => t === up(x))) return "deposit";
+  if (cfg.withdrawalTypes?.some((x) => t === up(x))) return "withdrawal";
+  return kindFromType(t);
+}
+/** True when the cashier and PSP transaction types are compatible (or unknown). */
+function typeCompatible(cashType: string, row: Row, cfg: PspConfig): boolean {
+  const ck = kindFromType(cashType);
+  const pk = pspKind(row, cfg);
+  if (!ck || !pk) return true;
+  return ck === pk;
+}
+
+/** Pulls extra candidate keys out of the cashier's JSON `External Refs`/`External Id`. */
+function jsonCandidateKeys(c: Row): string[] {
+  const out: string[] = [];
+  ["External Refs", "External Id"].forEach((col) => {
+    const raw = firstVal(c, [col]);
+    if (!raw) return;
+    let s = raw.trim();
+    if (s.startsWith('"') && s.endsWith('"')) s = s.slice(1, -1).replace(/""/g, '"');
+    if (!s.startsWith("{")) return;
+    try {
+      const obj = JSON.parse(s) as Record<string, unknown>;
+      ["webhookPaymentId", "requestId", "authenticateRequestId", "paymentId", "id"].forEach((k) => {
+        const v = obj[k];
+        if (v !== undefined && v !== null && String(v).trim()) out.push(norm(String(v)));
+      });
+    } catch {
+      /* not JSON */
+    }
+  });
+  return out;
+}
+
 // ── stats ──
 function emptyStats(): LayerStats {
   return { total: 0, matched: 0, amount: 0, status: 0, unmatched: 0, matchRate: 0, matchedAmount: 0, exposure: 0 };
@@ -237,16 +281,23 @@ function reconcileLayer2(cashier: Dataset, psps: PspConfig[], pspData: Record<st
     let matchKey = "";
     let matched: PspConfig | null = null;
 
-    // exact: cashier key candidates → PSP index
+    // exact: cashier key candidates (incl. JSON External Refs) → PSP index
     const candidateCfgs = cfg ? [cfg] : psps;
-    const keys = CASHIER_MAP.idCols.map((col) => norm(firstVal(c, [col]))).filter(Boolean);
+    const keys = Array.from(
+      new Set([
+        ...CASHIER_MAP.idCols.map((col) => norm(firstVal(c, [col]))),
+        ...jsonCandidateKeys(c),
+      ].filter(Boolean)),
+    );
     for (const p of candidateCfgs) {
       const idx = indexes[p.id];
       if (!idx) continue;
       for (const k of keys) {
         const hits = idx.get(k);
         if (!hits) continue;
-        const hit = hits.find((h) => !usedPsp[p.id].has(rowIndexOf[p.id].get(h)!));
+        const hit = hits.find(
+          (h) => !usedPsp[p.id].has(rowIndexOf[p.id].get(h)!) && typeCompatible(cashType, h, p),
+        );
         if (hit) {
           matchRow = hit;
           matched = p;
@@ -265,6 +316,7 @@ function reconcileLayer2(cashier: Dataset, psps: PspConfig[], pspData: Record<st
         let bestScore = Number.POSITIVE_INFINITY;
         ds.rows.forEach((pr, i) => {
           if (usedPsp[cfg.id].has(i)) return;
+          if (!typeCompatible(cashType, pr, cfg)) return;
           const amtDiff = Math.abs(num(fieldVal(pr, cfg.fields.amountCol)) - cashAmt);
           const minDiff = minutesBetween(cashDate, fieldVal(pr, cfg.fields.dateCol));
           if (amtDiff <= cfg.amountTolerance && minDiff <= cfg.dateWindowMins) {

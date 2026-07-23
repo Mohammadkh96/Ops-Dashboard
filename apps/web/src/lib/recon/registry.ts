@@ -42,6 +42,8 @@ export const DEFAULT_PSPS: PspConfig[] = [
     failedStatuses: ["DECLINED", "ERROR"],
     amountTolerance: 0.05,
     dateWindowMins: 180,
+    depositTypes: ["DB"],
+    withdrawalTypes: ["CD", "RF"],
     builtin: true,
   },
   {
@@ -60,6 +62,8 @@ export const DEFAULT_PSPS: PspConfig[] = [
     failedStatuses: ["false", "0", "no"],
     amountTolerance: 0.05,
     dateWindowMins: 240,
+    depositTypes: ["SELL"],
+    withdrawalTypes: ["BUY"],
     builtin: true,
   },
   {
@@ -167,6 +171,27 @@ export function resetPsps() {
   } catch {
     /* ignore */
   }
+}
+
+/**
+ * Validates that a PSP's configured columns actually exist in an uploaded
+ * file's headers. Returns the list of missing columns (empty = all present).
+ */
+export function missingColumns(cfg: PspConfig, headers: string[]): string[] {
+  const have = new Set(headers.map((h) => h.toLowerCase().trim()));
+  const missing: string[] = [];
+  const need = (spec: string | undefined, labelName: string) => {
+    if (!spec) return;
+    const any = spec.split(",").map((s) => s.trim()).filter(Boolean);
+    if (any.length && !any.some((c) => have.has(c.toLowerCase()))) missing.push(labelName);
+  };
+  // at least one id column must be present
+  if (cfg.fields.idCols.length && !cfg.fields.idCols.some((c) => have.has(c.toLowerCase()))) {
+    missing.push("match key");
+  }
+  need(cfg.fields.amountCol, "amount");
+  need(cfg.fields.statusCol, "status");
+  return missing;
 }
 
 export function emptyPsp(): PspConfig {

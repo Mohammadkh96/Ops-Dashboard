@@ -38,6 +38,9 @@ export type PspConfig = {
   amountTolerance: number;
   /** Fuzzy fallback: max minutes between cashier and PSP timestamps. */
   dateWindowMins: number;
+  /** Optional type synonyms so a deposit cashier row won't match a withdrawal PSP row. */
+  depositTypes?: string[];
+  withdrawalTypes?: string[];
   /** Built-in PSPs ship with the app; user-added ones are false/undefined. */
   builtin?: boolean;
 };
