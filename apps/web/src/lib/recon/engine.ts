@@ -214,7 +214,12 @@ function reconcileLayer1(crm: Dataset, cashier: Dataset, tolAbs: number, tolPct:
   // approved retry, so BOTH passes are cashier-driven best-match: for each
   // cashier row, among the CRM rows sharing a key, pick the one whose status
   // and amount agree best. Hash keys are tried before customer references.
-  const pickBest = (cashIdx: number, cand: Set<number>): number => {
+  // requireAmount: a hash is a unique transaction id, so an amount gap on a
+  // hash match is a real discrepancy worth reporting. A customer reference is
+  // NOT a transaction id (one customer reuses it across many deposits), so we
+  // only trust a reference pair when the amount also agrees — otherwise we'd
+  // be pairing two unrelated transactions and calling the gap a "mismatch".
+  const pickBest = (cashIdx: number, cand: Set<number>, requireAmount: boolean): number => {
     const c = cashier.rows[cashIdx];
     const cashAmt = num(fieldVal(c, CASHIER_MAP.amountCol));
     const cashState = firstVal(c, [CASHIER_MAP.statusCol ?? ""]);
@@ -225,9 +230,14 @@ function reconcileLayer1(crm: Dataset, cashier: Dataset, tolAbs: number, tolPct:
       const cr = crm.rows[ci];
       const crmAmt = num(fieldVal(cr, CRM_MAP.amountCol));
       const crmStatus = firstVal(cr, [CRM_MAP.statusCol ?? ""]);
+      const amtDiff = Math.abs(crmAmt - cashAmt);
+      if (requireAmount) {
+        const tol = Math.max(tolAbs, (Math.abs(crmAmt) * tolPct) / 100);
+        if (amtDiff > tol) return; // reference + differing amount ≠ same transaction
+      }
       const statusAgree =
         (isActive(crmStatus) && isActive(cashState)) || (isFailed(crmStatus) && isFailed(cashState));
-      const score = (statusAgree ? 0 : 1_000_000) + Math.abs(crmAmt - cashAmt);
+      const score = (statusAgree ? 0 : 1_000_000) + amtDiff;
       if (score < bestScore) {
         bestScore = score;
         best = ci;
@@ -255,7 +265,7 @@ function reconcileLayer1(crm: Dataset, cashier: Dataset, tolAbs: number, tolPct:
         });
       });
       if (!cand.size) return;
-      const best = pickBest(cashIdx, cand);
+      const best = pickBest(cashIdx, cand, false);
       if (best >= 0) {
         usedCash.add(cashIdx);
         matchedCrm.add(best);
@@ -288,11 +298,30 @@ function reconcileLayer1(crm: Dataset, cashier: Dataset, tolAbs: number, tolPct:
     } else if (Math.abs(diff) > tol) {
       status = "amount";
       note = `Amount diff ${diff}${tolPct ? ` (tol ${tolPct}%)` : ""}`;
+      // A unique hash is a true same-transaction match, so its amount gap is a
+      // real discrepancy. A customer reference is reused across deposits, so an
+      // amount gap there may just mean two different transactions share a ref.
+      if (via === "Customer ref") note += " — matched on customer reference, verify (may be different transactions)";
     }
     rows.push(mkRow(status, entity, undefined, via, displayKey(cr),
       crmAmt, firstVal(cr, [CRM_MAP.currencyCol ?? ""]), crmStatus,
       firstVal(c, CASHIER_MAP.idCols), cashAmt, firstVal(c, [CASHIER_MAP.currencyCol ?? ""]),
       cashState, diff, note));
+  });
+
+  // Key sets present on each side — used to explain *why* a row is unmatched:
+  // a shared key with no pair means the amount/status didn't line up (a likely
+  // different transaction reusing the reference), which is distinct from a key
+  // that simply doesn't exist on the other side.
+  const cashKeysAll = new Set<string>();
+  cashier.rows.forEach((c) => {
+    const s = keysByShape(c, KEY_COLS_CASH);
+    [...s.hash, ...s.ref].forEach((k) => cashKeysAll.add(k));
+  });
+  const crmKeysAll = new Set<string>();
+  scope.forEach((crmIdx) => {
+    const s = keysByShape(crm.rows[crmIdx], KEY_COLS_CRM);
+    [...s.hash, ...s.ref].forEach((k) => crmKeysAll.add(k));
   });
 
   // Unmatched CRM (payment rows only) — with a reason
@@ -303,10 +332,15 @@ function reconcileLayer1(crm: Dataset, cashier: Dataset, tolAbs: number, tolPct:
     if (isFailed(crmStatus)) return; // failed & unmatched → expected noise
     const shapes = keysByShape(cr, KEY_COLS_CRM);
     const anyKey = shapes.hash.length + shapes.ref.length > 0;
+    const shared = [...shapes.hash, ...shapes.ref].some((k) => cashKeysAll.has(k));
+    const reason = !anyKey
+      ? "CRM record has no usable key (no-key)"
+      : shared
+        ? "Key exists in Cashier but amount/status didn't match — likely a different transaction reusing the reference"
+        : "No cashier row with a matching key (key-not-found)";
     rows.push(mkRow("unmatched-crm", entityFromBrand(firstVal(cr, [CRM_MAP.entityCol])), undefined,
       "", displayKey(cr), num(fieldVal(cr, CRM_MAP.amountCol)),
-      firstVal(cr, [CRM_MAP.currencyCol ?? ""]), crmStatus, "", null, "", "", null,
-      anyKey ? "No cashier row with a matching key (key-not-found)" : "CRM record has no usable key (no-key)"));
+      firstVal(cr, [CRM_MAP.currencyCol ?? ""]), crmStatus, "", null, "", "", null, reason));
   });
 
   // Unmatched cashier
@@ -314,10 +348,14 @@ function reconcileLayer1(crm: Dataset, cashier: Dataset, tolAbs: number, tolPct:
     if (usedCash.has(i)) return;
     const cashState = firstVal(c, [CASHIER_MAP.statusCol ?? ""]);
     if (isFailed(cashState)) return;
+    const shapes = keysByShape(c, KEY_COLS_CASH);
+    const shared = [...shapes.hash, ...shapes.ref].some((k) => crmKeysAll.has(k));
     rows.push(mkRow("unmatched-cashier", entityFromShop(firstVal(c, [CASHIER_MAP.entityCol])),
       undefined, "", "", null, "", "", firstVal(c, CASHIER_MAP.idCols),
       num(fieldVal(c, CASHIER_MAP.amountCol)), firstVal(c, [CASHIER_MAP.currencyCol ?? ""]),
-      cashState, null, "In Cashier, no CRM payment with matching key (key-not-found)"));
+      cashState, null, shared
+        ? "Key exists in CRM but amount/status didn't match — likely a different transaction reusing the reference"
+        : "In Cashier, no CRM payment with matching key (key-not-found)"));
   });
 
   return rows;
@@ -552,18 +590,30 @@ function enrichBrands(
       if (k && !brandByCrmKey.has(k)) brandByCrmKey.set(k, brand);
     });
   });
+  // Learn shop -> brand from the cashier rows we *could* link to a CRM brand,
+  // plus a cashier-id -> shop map. This lets unmatched-cashier rows (which have
+  // no CRM counterpart) still get a real brand from their own shop instead of
+  // being mislabelled with the jurisdiction/entity name.
+  const brandByShop = new Map<string, string>();
+  const shopByCashId = new Map<string, string>();
   const brandByCashId = new Map<string, string>();
   cashier?.rows.forEach((c) => {
     const id = firstVal(c, ["ID"]);
+    const shop = firstVal(c, ["Shop"]);
     const ref = norm(firstVal(c, ["Reference ID"]));
     const brand = ref ? brandByCrmKey.get(ref) : undefined;
+    if (id && shop) shopByCashId.set(id, shop);
     if (id && brand) brandByCashId.set(id, brand);
+    if (shop && brand && !brandByShop.has(shop)) brandByShop.set(shop, brand);
   });
+  const shopBrand = (cashId: string) => brandByShop.get(shopByCashId.get(cashId) ?? "");
   l1.forEach((r) => {
-    r.brand = brandByCrmKey.get(norm(r.leftId)) || r.entity || "—";
+    // leftId = CRM ref, rightId = cashier id. Prefer the CRM brand; otherwise
+    // fall back to the brand of the cashier row's shop — never the entity.
+    r.brand = brandByCrmKey.get(norm(r.leftId)) || shopBrand(r.rightId) || "—";
   });
   l2.forEach((r) => {
-    r.brand = brandByCashId.get(r.leftId) || r.entity || "—";
+    r.brand = brandByCashId.get(r.leftId) || shopBrand(r.leftId) || "—";
   });
 }
 

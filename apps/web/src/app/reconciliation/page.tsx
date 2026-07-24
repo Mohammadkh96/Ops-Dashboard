@@ -1142,11 +1142,16 @@ function ExceptionsSection({
   const [fLayer, setFLayer] = useState<"all" | "l1" | "l2">("all");
   const [fStatus, setFStatus] = useState<"all" | ReconRow["status"]>("all");
   const [fBrand, setFBrand] = useState<string>(initialBrand ?? "all");
+  const [fEntity, setFEntity] = useState<string>("all");
   const [fPsp, setFPsp] = useState<string>(initialPsp ?? "all");
   const [q, setQ] = useState("");
 
   const brands = useMemo(
     () => Array.from(new Set(exceptions.map((r) => r.brand).filter(Boolean))).sort(),
+    [exceptions],
+  );
+  const entities = useMemo(
+    () => Array.from(new Set(exceptions.map((r) => r.entity).filter(Boolean))).sort(),
     [exceptions],
   );
   const psps = useMemo(
@@ -1161,6 +1166,7 @@ function ExceptionsSection({
         if (fLayer === "l2" && !r.psp) return false;
         if (fStatus !== "all" && r.status !== fStatus) return false;
         if (fBrand !== "all" && r.brand !== fBrand) return false;
+        if (fEntity !== "all" && r.entity !== fEntity) return false;
         if (fPsp !== "all" && (r.psp ?? "") !== fPsp) return false;
         if (q) {
           const hay = `${r.leftId} ${r.rightId} ${r.note} ${r.psp ?? ""} ${r.brand} ${r.entity}`.toLowerCase();
@@ -1168,7 +1174,7 @@ function ExceptionsSection({
         }
         return true;
       }),
-    [exceptions, fLayer, fStatus, fBrand, fPsp, q],
+    [exceptions, fLayer, fStatus, fBrand, fEntity, fPsp, q],
   );
 
   const sel = "h-9 cursor-pointer rounded-lg border border-border bg-card px-2.5 text-sm outline-none focus:border-border-strong";
@@ -1207,6 +1213,12 @@ function ExceptionsSection({
             <option value="all">All brands</option>
             {brands.map((b) => (
               <option key={b} value={b}>{b}</option>
+            ))}
+          </select>
+          <select value={fEntity} onChange={(e) => setFEntity(e.target.value)} className={sel}>
+            <option value="all">All entities</option>
+            {entities.map((en) => (
+              <option key={en} value={en}>{en}</option>
             ))}
           </select>
           <select value={fPsp} onChange={(e) => setFPsp(e.target.value)} className={sel}>
