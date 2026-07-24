@@ -29,6 +29,15 @@ import { loadPsps, savePsps, resetPsps, DEFAULT_PSPS, emptyPsp, missingColumns, 
 import { runReconciliation } from "@/lib/recon/engine";
 import { reconRowsToCsv, downloadText } from "@/lib/recon/export";
 import { loadPspsRemote, savePspsRemote, saveRunRemote, listRunsRemote, type RunSummaryRow } from "@/lib/recon/api";
+import { Sparkline } from "@/components/ui/sparkline";
+import {
+  snapshotFromResult,
+  appendHistory,
+  loadHistory,
+  detectAnomalies,
+  brandTrends as computeBrandTrends,
+  type Anomalies,
+} from "@/lib/recon/history";
 import type { Breakdown, Dataset, PspConfig, ReconMatrix, ReconResult, ReconRow } from "@/lib/recon/types";
 import { sampleCrm, sampleCashier, samplePaystrax, sampleForumpay, sampleMatch2pay, sampleRapyd } from "@/lib/recon/sample";
 import { useAuth } from "@/lib/auth";
@@ -69,6 +78,9 @@ export default function ReconciliationPage() {
   const [editing, setEditing] = useState<PspConfig | null>(null);
   const [warnings, setWarnings] = useState<Record<string, string[]>>({});
   const [runs, setRuns] = useState<RunSummaryRow[]>([]);
+  const [anomalies, setAnomalies] = useState<Anomalies | null>(null);
+  const [trends, setTrends] = useState<Record<string, number[]>>({});
+  const [drill, setDrill] = useState<{ brand?: string; psp?: string } | null>(null);
 
   useEffect(() => {
     setPsps(loadPsps());
@@ -183,12 +195,30 @@ export default function ReconciliationPage() {
     } catch {
       /* result too large to persist — keep in memory only */
     }
+    // Anomaly detection vs prior runs, then record this run into the rolling history.
+    const snapshot = snapshotFromResult(res);
+    const prior = loadHistory();
+    const anoms = detectAnomalies(prior, snapshot);
+    const history = appendHistory(snapshot);
+    setAnomalies(anoms);
+    setTrends(computeBrandTrends(history));
+    setDrill(null);
     setTab("results");
-    toast({ title: "Reconciliation complete", description: `${res.exceptions.length} exception(s) found.` });
+    toast({
+      title: "Reconciliation complete",
+      description:
+        `${res.exceptions.length} exception(s)` +
+        (anoms.list.length ? ` · ${anoms.list.length} regression(s) flagged` : ""),
+    });
     // Live mode: persist the run server-side and refresh shared history.
     void saveRunRemote(res, user?.email).then(() => listRunsRemote()).then((h) => {
       if (h.length) setRuns(h);
     });
+  };
+
+  const handleDrill = (brand?: string, psp?: string) => {
+    setDrill({ brand, psp });
+    setTab("results");
   };
 
   const removePsp = (id: string) => {
@@ -263,9 +293,9 @@ export default function ReconciliationPage() {
           onRestore={restore}
         />
       ) : tab === "analytics" ? (
-        <AnalyticsTab result={result} />
+        <AnalyticsTab result={result} anomalies={anomalies} trends={trends} onDrill={handleDrill} />
       ) : (
-        <ResultsTab result={result} runs={runs} />
+        <ResultsTab result={result} runs={runs} drill={drill} onClearDrill={() => setDrill(null)} />
       )}
 
       {editing ? (
@@ -674,7 +704,17 @@ function RunHistory({ runs }: { runs: RunSummaryRow[] }) {
   );
 }
 
-function ResultsTab({ result, runs }: { result: ReconResult | null; runs: RunSummaryRow[] }) {
+function ResultsTab({
+  result,
+  runs,
+  drill,
+  onClearDrill,
+}: {
+  result: ReconResult | null;
+  runs: RunSummaryRow[];
+  drill: { brand?: string; psp?: string } | null;
+  onClearDrill: () => void;
+}) {
   const columns: Column<ReconRow>[] = useMemo(
     () => [
       { key: "status", header: "Status", render: (r) => <Badge variant={STATUS_META[r.status].variant}>{STATUS_META[r.status].label}</Badge> },
@@ -737,7 +777,14 @@ function ResultsTab({ result, runs }: { result: ReconResult | null; runs: RunSum
         <DataTable columns={pspColumns} rows={byPsp} getRowKey={(b) => b.key} empty="No PSP rows matched." />
       </div>
 
-      <ExceptionsSection columns={columns} exceptions={exceptions} />
+      <ExceptionsSection
+        key={`${drill?.brand ?? ""}|${drill?.psp ?? ""}`}
+        columns={columns}
+        exceptions={exceptions}
+        initialBrand={drill?.brand}
+        initialPsp={drill?.psp}
+        onClearDrill={onClearDrill}
+      />
       <RunHistory runs={runs} />
     </div>
   );
@@ -751,7 +798,17 @@ function rateTone(rate: number) {
   return { bg: "bg-accent-red-soft", fg: "text-accent-red", bar: "bg-accent-red" };
 }
 
-function BrandCard({ b }: { b: Breakdown }) {
+function BrandCard({
+  b,
+  trend,
+  anomalyDelta,
+  onClick,
+}: {
+  b: Breakdown;
+  trend?: number[];
+  anomalyDelta?: number;
+  onClick?: () => void;
+}) {
   const tone = rateTone(b.matchRate);
   const issues = b.amount + b.status + b.unmatched;
   const cell = (n: string | number, l: string, c: string) => (
@@ -761,10 +818,21 @@ function BrandCard({ b }: { b: Breakdown }) {
     </div>
   );
   return (
-    <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4 hover-lift">
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4 text-left hover-lift"
+    >
       <div className="flex items-center justify-between gap-2">
         <span className="truncate text-sm font-medium">{b.key}</span>
-        <span className={cn("rounded-full px-2 py-0.5 text-xs font-semibold", tone.bg, tone.fg)}>{b.matchRate}%</span>
+        <div className="flex items-center gap-1.5">
+          {anomalyDelta !== undefined ? (
+            <span className="flex items-center gap-0.5 rounded-full bg-accent-red-soft px-1.5 py-0.5 text-[10px] font-semibold text-accent-red">
+              ▼ {Math.abs(anomalyDelta)}
+            </span>
+          ) : null}
+          <span className={cn("rounded-full px-2 py-0.5 text-xs font-semibold", tone.bg, tone.fg)}>{b.matchRate}%</span>
+        </div>
       </div>
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface">
         <div className={cn("h-full rounded-full", tone.bar)} style={{ width: `${b.matchRate}%` }} />
@@ -774,11 +842,25 @@ function BrandCard({ b }: { b: Breakdown }) {
         {cell(issues, "Issues", "text-accent-orange")}
         {cell(`$${money(b.exposure)}`, "Exposure", "text-foreground")}
       </div>
-    </div>
+      {trend && trend.length > 1 ? (
+        <div className="flex items-center gap-2 border-t border-border/60 pt-2">
+          <span className="text-[10px] uppercase tracking-wide text-muted">Trend</span>
+          <Sparkline data={trend} stroke={`var(--accent-${b.matchRate >= 90 ? "green" : b.matchRate >= 70 ? "orange" : "red"})`} fill={`var(--accent-${b.matchRate >= 90 ? "green" : b.matchRate >= 70 ? "orange" : "red"})`} />
+        </div>
+      ) : null}
+    </button>
   );
 }
 
-function MatrixHeatmap({ matrix }: { matrix: ReconMatrix }) {
+function MatrixHeatmap({
+  matrix,
+  anomalies,
+  onDrill,
+}: {
+  matrix: ReconMatrix;
+  anomalies?: Anomalies | null;
+  onDrill?: (brand: string, psp: string) => void;
+}) {
   if (!matrix.brands.length) {
     return <p className="text-sm text-muted">No Layer 2 rows to chart yet.</p>;
   }
@@ -812,17 +894,30 @@ function MatrixHeatmap({ matrix }: { matrix: ReconMatrix }) {
                     );
                   }
                   const tone = rateTone(c.rate);
+                  const anom = anomalies?.cell[`${brand}|||${psp}`];
                   return (
                     <td key={psp} className="px-2 py-2 text-center">
-                      <span
-                        className={cn("inline-flex min-w-14 flex-col rounded-lg px-2 py-1", tone.bg, tone.fg)}
-                        title={`${c.matched}/${c.total} matched${c.exposure ? ` · $${money(c.exposure)} exposure` : ""}`}
+                      <button
+                        type="button"
+                        onClick={() => onDrill?.(brand, psp)}
+                        className={cn(
+                          "relative inline-flex min-w-16 flex-col rounded-lg px-2 py-1 transition-transform hover:scale-[1.05]",
+                          tone.bg,
+                          tone.fg,
+                          anom ? "ring-1 ring-accent-red" : "",
+                        )}
+                        title={`${c.matched}/${c.total} matched${c.exposure ? ` · $${money(c.exposure)} exposure` : ""}${anom ? ` · ▼ ${Math.abs(anom.delta)} pts vs avg ${anom.baseline}%` : ""} — click to drill in`}
                       >
+                        {anom ? (
+                          <span className="absolute -right-1 -top-1 flex size-3.5 items-center justify-center rounded-full bg-accent-red text-[8px] font-bold text-white">
+                            !
+                          </span>
+                        ) : null}
                         <span className="tnum text-sm font-semibold">{c.rate}%</span>
                         <span className="tnum text-[10px] opacity-80">
                           {c.matched}/{c.total}
                         </span>
-                      </span>
+                      </button>
                     </td>
                   );
                 })}
@@ -835,7 +930,17 @@ function MatrixHeatmap({ matrix }: { matrix: ReconMatrix }) {
   );
 }
 
-function AnalyticsTab({ result }: { result: ReconResult | null }) {
+function AnalyticsTab({
+  result,
+  anomalies,
+  trends,
+  onDrill,
+}: {
+  result: ReconResult | null;
+  anomalies: Anomalies | null;
+  trends: Record<string, number[]>;
+  onDrill: (brand?: string, psp?: string) => void;
+}) {
   if (!result) {
     return (
       <Card className="glass card-seam">
@@ -860,20 +965,50 @@ function AnalyticsTab({ result }: { result: ReconResult | null }) {
 
   return (
     <div className="flex flex-col gap-6">
+      {anomalies && anomalies.list.length ? (
+        <div className="flex flex-col gap-2 rounded-xl border border-accent-red/20 bg-accent-red-soft px-4 py-3">
+          <span className="flex items-center gap-2 text-sm font-medium text-accent-red">
+            <AlertTriangle className="size-4" /> {anomalies.list.length} regression(s) vs recent runs
+          </span>
+          <div className="flex flex-wrap gap-2">
+            {anomalies.list.slice(0, 8).map((a) => (
+              <button
+                key={a.key}
+                type="button"
+                onClick={() => onDrill(a.brand, a.psp)}
+                className="rounded-lg border border-accent-red/20 bg-card/60 px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <span className="font-medium text-foreground">{a.key}</span>{" "}
+                <span className="text-accent-red">▼ {Math.abs(a.delta)} pts</span>{" "}
+                <span className="text-muted">({a.current}% vs {a.baseline}% avg)</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
       <div className="flex flex-col gap-2">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-muted">Per-brand health</h3>
+        <h3 className="text-xs font-medium uppercase tracking-wider text-muted">
+          Per-brand health <span className="text-muted/70">· click a card to drill into its exceptions</span>
+        </h3>
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {result.byBrand.map((b) => (
-            <BrandCard key={b.key} b={b} />
+            <BrandCard
+              key={b.key}
+              b={b}
+              trend={trends[b.key]}
+              anomalyDelta={anomalies?.brand[b.key]?.delta}
+              onClick={() => onDrill(b.key)}
+            />
           ))}
         </div>
       </div>
 
       <div className="flex flex-col gap-2">
         <h3 className="text-xs font-medium uppercase tracking-wider text-muted">
-          Brand × PSP match-rate matrix — where money slips between brand and processor
+          Brand × PSP match-rate matrix — click a cell to drill in; ▼ flags a regression vs history
         </h3>
-        <MatrixHeatmap matrix={result.matrix} />
+        <MatrixHeatmap matrix={result.matrix} anomalies={anomalies} onDrill={(b, p) => onDrill(b, p)} />
       </div>
 
       <div className="flex flex-col gap-2">
@@ -884,10 +1019,33 @@ function AnalyticsTab({ result }: { result: ReconResult | null }) {
   );
 }
 
-function ExceptionsSection({ columns, exceptions }: { columns: Column<ReconRow>[]; exceptions: ReconRow[] }) {
+function ExceptionsSection({
+  columns,
+  exceptions,
+  initialBrand,
+  initialPsp,
+  onClearDrill,
+}: {
+  columns: Column<ReconRow>[];
+  exceptions: ReconRow[];
+  initialBrand?: string;
+  initialPsp?: string;
+  onClearDrill?: () => void;
+}) {
   const [fLayer, setFLayer] = useState<"all" | "l1" | "l2">("all");
   const [fStatus, setFStatus] = useState<"all" | ReconRow["status"]>("all");
+  const [fBrand, setFBrand] = useState<string>(initialBrand ?? "all");
+  const [fPsp, setFPsp] = useState<string>(initialPsp ?? "all");
   const [q, setQ] = useState("");
+
+  const brands = useMemo(
+    () => Array.from(new Set(exceptions.map((r) => r.brand).filter(Boolean))).sort(),
+    [exceptions],
+  );
+  const psps = useMemo(
+    () => Array.from(new Set(exceptions.map((r) => r.psp ?? "").filter(Boolean))).sort(),
+    [exceptions],
+  );
 
   const filtered = useMemo(
     () =>
@@ -895,16 +1053,25 @@ function ExceptionsSection({ columns, exceptions }: { columns: Column<ReconRow>[
         if (fLayer === "l1" && r.psp) return false;
         if (fLayer === "l2" && !r.psp) return false;
         if (fStatus !== "all" && r.status !== fStatus) return false;
+        if (fBrand !== "all" && r.brand !== fBrand) return false;
+        if (fPsp !== "all" && (r.psp ?? "") !== fPsp) return false;
         if (q) {
-          const hay = `${r.leftId} ${r.rightId} ${r.note} ${r.psp ?? ""} ${r.entity}`.toLowerCase();
+          const hay = `${r.leftId} ${r.rightId} ${r.note} ${r.psp ?? ""} ${r.brand} ${r.entity}`.toLowerCase();
           if (!hay.includes(q.toLowerCase())) return false;
         }
         return true;
       }),
-    [exceptions, fLayer, fStatus, q],
+    [exceptions, fLayer, fStatus, fBrand, fPsp, q],
   );
 
   const sel = "h-9 cursor-pointer rounded-lg border border-border bg-card px-2.5 text-sm outline-none focus:border-border-strong";
+  const drilled = (initialBrand || initialPsp) && (fBrand !== "all" || fPsp !== "all");
+
+  const clearDrill = () => {
+    setFBrand("all");
+    setFPsp("all");
+    onClearDrill?.();
+  };
 
   return (
     <div className="flex flex-col gap-2">
@@ -912,17 +1079,34 @@ function ExceptionsSection({ columns, exceptions }: { columns: Column<ReconRow>[
         <h3 className="text-xs font-medium uppercase tracking-wider text-muted">
           Exceptions ({filtered.length} of {exceptions.length})
         </h3>
+        {drilled ? (
+          <button
+            type="button"
+            onClick={clearDrill}
+            className="flex items-center gap-1 rounded-full border border-accent-blue/30 bg-accent-blue-soft px-2 py-0.5 text-xs text-accent-blue"
+          >
+            {[initialBrand, initialPsp].filter(Boolean).join(" × ")}
+            <X className="size-3" />
+          </button>
+        ) : null}
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Search id, note…"
-            className="h-9 w-44 rounded-lg border border-border bg-card px-3 text-sm outline-none focus:border-border-strong"
+            className="h-9 w-40 rounded-lg border border-border bg-card px-3 text-sm outline-none focus:border-border-strong"
           />
-          <select value={fLayer} onChange={(e) => setFLayer(e.target.value as typeof fLayer)} className={sel}>
-            <option value="all">All layers</option>
-            <option value="l1">Layer 1 (CRM↔Cashier)</option>
-            <option value="l2">Layer 2 (Cashier↔PSP)</option>
+          <select value={fBrand} onChange={(e) => setFBrand(e.target.value)} className={sel}>
+            <option value="all">All brands</option>
+            {brands.map((b) => (
+              <option key={b} value={b}>{b}</option>
+            ))}
+          </select>
+          <select value={fPsp} onChange={(e) => setFPsp(e.target.value)} className={sel}>
+            <option value="all">All PSPs</option>
+            {psps.map((p) => (
+              <option key={p} value={p}>{p}</option>
+            ))}
           </select>
           <select value={fStatus} onChange={(e) => setFStatus(e.target.value as typeof fStatus)} className={sel}>
             <option value="all">All statuses</option>
