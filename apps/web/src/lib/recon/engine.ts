@@ -176,8 +176,19 @@ function buildIndex(rows: Row[], cfg: PspConfig): Map<string, Row[]> {
 // customer reference (e.g. CU570_1783945765743, shared across a customer's
 // retries). We route each candidate value by SHAPE, not by column, and always
 // match the unique hash first so a cancelled retry can't steal a match.
-const KEY_COLS_CRM = ["Psp Transaction ID", "Withdrawal Psp Transaction ID", "Merchant Trn Ref", "Order No"];
-const KEY_COLS_CASH = ["ID", "External Id", "Reference ID", "Customer Reference ID"];
+// Key columns depend on the transaction KIND, because deposits and withdrawals
+// live in different columns and must never cross-match. A CRM withdrawal row
+// carries its PARENT deposit's reference in "Psp Transaction ID" and the
+// deposit's hash in "Merchant Trn Ref"; the withdrawal's own identifiers are in
+// the Withdrawal* columns. Using the wrong columns makes withdrawals collide
+// with their parent deposit (and with each other).
+const CRM_KEYS_DEPOSIT = ["Psp Transaction ID", "Merchant Trn Ref", "Order No"];
+const CRM_KEYS_WITHDRAWAL = ["Withdrawal Psp Transaction ID", "Withdrawal Merchant ID"];
+// "Customer Reference ID" (e.g. "CU47099") is customer-level, not transaction-
+// level, so it is deliberately excluded: it would link unrelated transactions
+// belonging to the same customer.
+const CASH_KEYS = ["ID", "External Id", "Reference ID"];
+const crmKeyCols = (kind: Kind) => (kind === "withdrawal" ? CRM_KEYS_WITHDRAWAL : CRM_KEYS_DEPOSIT);
 const isHashKey = (v: string) => /^[0-9a-f]{16,}$/i.test(v);
 
 function keysByShape(row: Row, cols: string[]): { hash: string[]; ref: string[] } {
@@ -199,14 +210,19 @@ function reconcileLayer1(crm: Dataset, cashier: Dataset, tolAbs: number, tolPct:
   const usedCash = new Set<number>();
   const matchedCrm = new Set<number>();
 
-  // Which CRM rows are in scope (payment types only).
+  const crmKindOf = (cr: Row): Kind => kindFromType(firstVal(cr, [CRM_MAP.typeCol ?? ""]));
+  const cashKindOf = (c: Row): Kind => kindFromType(firstVal(c, [CASHIER_MAP.typeCol ?? ""]));
+
+  // Which CRM rows are in scope (deposits & withdrawals only; internal
+  // transfers and other noise are excluded).
   const scope: number[] = [];
   crm.rows.forEach((cr, i) => {
-    const t = firstVal(cr, [CRM_MAP.typeCol ?? ""]);
-    if (/deposit|withdraw|refund/i.test(t)) scope.push(i);
+    if (crmKindOf(cr)) scope.push(i);
   });
 
-  const displayKey = (cr: Row) => firstVal(cr, KEY_COLS_CRM);
+  // Show the identifier that actually keyed the row (withdrawal ref for
+  // withdrawals, deposit ref for deposits) rather than the parent reference.
+  const displayKey = (cr: Row) => firstVal(cr, crmKeyCols(crmKindOf(cr))) || firstVal(cr, CRM_KEYS_DEPOSIT);
 
   const pairs: Array<{ crmIdx: number; cashIdx: number; via: string }> = [];
 
@@ -246,21 +262,29 @@ function reconcileLayer1(crm: Dataset, cashier: Dataset, tolAbs: number, tolPct:
     return best;
   };
 
+  // Keys are namespaced by kind ("deposit"\0key / "withdrawal"\0key) so a
+  // deposit can only ever match a deposit and a withdrawal/refund a withdrawal.
+  const nk = (kind: Kind, key: string) => `${kind} ${key}`;
+
   const runPass = (which: "hash" | "ref", via: string) => {
     const crmIndex = new Map<string, number[]>();
     scope.forEach((crmIdx) => {
       if (matchedCrm.has(crmIdx)) return;
-      keysByShape(crm.rows[crmIdx], KEY_COLS_CRM)[which].forEach((k) => {
-        const arr = crmIndex.get(k) ?? [];
+      const kind = crmKindOf(crm.rows[crmIdx]);
+      keysByShape(crm.rows[crmIdx], crmKeyCols(kind))[which].forEach((k) => {
+        const kk = nk(kind, k);
+        const arr = crmIndex.get(kk) ?? [];
         arr.push(crmIdx);
-        crmIndex.set(k, arr);
+        crmIndex.set(kk, arr);
       });
     });
     cashier.rows.forEach((c, cashIdx) => {
       if (usedCash.has(cashIdx)) return;
+      const kind = cashKindOf(c);
+      if (!kind) return; // only reconcile deposit/withdrawal/refund cashier rows
       const cand = new Set<number>();
-      keysByShape(c, KEY_COLS_CASH)[which].forEach((k) => {
-        (crmIndex.get(k) ?? []).forEach((ci) => {
+      keysByShape(c, CASH_KEYS)[which].forEach((k) => {
+        (crmIndex.get(nk(kind, k)) ?? []).forEach((ci) => {
           if (!matchedCrm.has(ci)) cand.add(ci);
         });
       });
@@ -315,13 +339,16 @@ function reconcileLayer1(crm: Dataset, cashier: Dataset, tolAbs: number, tolPct:
   // that simply doesn't exist on the other side.
   const cashKeysAll = new Set<string>();
   cashier.rows.forEach((c) => {
-    const s = keysByShape(c, KEY_COLS_CASH);
-    [...s.hash, ...s.ref].forEach((k) => cashKeysAll.add(k));
+    const kind = cashKindOf(c);
+    if (!kind) return;
+    const s = keysByShape(c, CASH_KEYS);
+    [...s.hash, ...s.ref].forEach((k) => cashKeysAll.add(nk(kind, k)));
   });
   const crmKeysAll = new Set<string>();
   scope.forEach((crmIdx) => {
-    const s = keysByShape(crm.rows[crmIdx], KEY_COLS_CRM);
-    [...s.hash, ...s.ref].forEach((k) => crmKeysAll.add(k));
+    const kind = crmKindOf(crm.rows[crmIdx]);
+    const s = keysByShape(crm.rows[crmIdx], crmKeyCols(kind));
+    [...s.hash, ...s.ref].forEach((k) => crmKeysAll.add(nk(kind, k)));
   });
 
   // Unmatched CRM (payment rows only) — with a reason
@@ -330,9 +357,10 @@ function reconcileLayer1(crm: Dataset, cashier: Dataset, tolAbs: number, tolPct:
     const cr = crm.rows[crmIdx];
     const crmStatus = firstVal(cr, [CRM_MAP.statusCol ?? ""]);
     if (isFailed(crmStatus)) return; // failed & unmatched → expected noise
-    const shapes = keysByShape(cr, KEY_COLS_CRM);
+    const kind = crmKindOf(cr);
+    const shapes = keysByShape(cr, crmKeyCols(kind));
     const anyKey = shapes.hash.length + shapes.ref.length > 0;
-    const shared = [...shapes.hash, ...shapes.ref].some((k) => cashKeysAll.has(k));
+    const shared = [...shapes.hash, ...shapes.ref].some((k) => cashKeysAll.has(nk(kind, k)));
     const reason = !anyKey
       ? "CRM record has no usable key (no-key)"
       : shared
@@ -348,8 +376,9 @@ function reconcileLayer1(crm: Dataset, cashier: Dataset, tolAbs: number, tolPct:
     if (usedCash.has(i)) return;
     const cashState = firstVal(c, [CASHIER_MAP.statusCol ?? ""]);
     if (isFailed(cashState)) return;
-    const shapes = keysByShape(c, KEY_COLS_CASH);
-    const shared = [...shapes.hash, ...shapes.ref].some((k) => crmKeysAll.has(k));
+    const kind = cashKindOf(c);
+    const shapes = keysByShape(c, CASH_KEYS);
+    const shared = [...shapes.hash, ...shapes.ref].some((k) => crmKeysAll.has(nk(kind, k)));
     rows.push(mkRow("unmatched-cashier", entityFromShop(firstVal(c, [CASHIER_MAP.entityCol])),
       undefined, "", "", null, "", "", firstVal(c, CASHIER_MAP.idCols),
       num(fieldVal(c, CASHIER_MAP.amountCol)), firstVal(c, [CASHIER_MAP.currencyCol ?? ""]),
