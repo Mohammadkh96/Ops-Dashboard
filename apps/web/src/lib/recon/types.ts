@@ -105,6 +105,13 @@ export type ReconMatrix = {
   cells: Record<string, Record<string, MatrixCell>>;
 };
 
+export type ReconOptions = {
+  amountTolAbs?: number; // absolute $ tolerance for Layer-1 amount match (default 1)
+  amountTolPct?: number; // additional % tolerance (fee/commission netting)
+  dateFrom?: string; // ISO/date string — restrict both sources to this window
+  dateTo?: string;
+};
+
 export type ReconResult = {
   layer1: { rows: ReconRow[]; stats: LayerStats };
   layer2: { rows: ReconRow[]; stats: LayerStats };
@@ -113,5 +120,6 @@ export type ReconResult = {
   byEntity: Breakdown[];
   matrix: ReconMatrix;
   exceptions: ReconRow[];
+  matched: ReconRow[];
   ranAt: string;
 };

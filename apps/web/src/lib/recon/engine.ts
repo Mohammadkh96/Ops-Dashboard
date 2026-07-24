@@ -7,6 +7,7 @@ import type {
   MatrixCell,
   PspConfig,
   ReconMatrix,
+  ReconOptions,
   ReconResult,
   ReconRow,
   Row,
@@ -170,88 +171,153 @@ function buildIndex(rows: Row[], cfg: PspConfig): Map<string, Row[]> {
   return m;
 }
 
-// ═══════════════════════════════════════════════════════════
-//  LAYER 1 — CRM ↔ CASHIER (by reference)
-// ═══════════════════════════════════════════════════════════
-function reconcileLayer1(crm: Dataset, cashier: Dataset): ReconRow[] {
-  const rows: ReconRow[] = [];
-  const used = new Set<number>();
+// A transaction key is either a UNIQUE per-transaction hash (long hex — it
+// lives in different CRM columns for deposits vs withdrawals) or a REUSABLE
+// customer reference (e.g. CU570_1783945765743, shared across a customer's
+// retries). We route each candidate value by SHAPE, not by column, and always
+// match the unique hash first so a cancelled retry can't steal a match.
+const KEY_COLS_CRM = ["Psp Transaction ID", "Withdrawal Psp Transaction ID", "Merchant Trn Ref", "Order No"];
+const KEY_COLS_CASH = ["ID", "External Id", "Reference ID", "Customer Reference ID"];
+const isHashKey = (v: string) => /^[0-9a-f]{16,}$/i.test(v);
 
-  const cashByRef = new Map<string, number>();
-  cashier.rows.forEach((r, i) => {
-    const ref = norm(firstVal(r, ["Reference ID"]));
-    if (ref && !cashByRef.has(ref)) cashByRef.set(ref, i);
+function keysByShape(row: Row, cols: string[]): { hash: string[]; ref: string[] } {
+  const hash: string[] = [];
+  const ref: string[] = [];
+  cols.forEach((col) => {
+    const raw = firstVal(row, [col]);
+    if (!raw) return;
+    (isHashKey(raw) ? hash : ref).push(norm(raw));
+  });
+  return { hash, ref };
+}
+
+// ═══════════════════════════════════════════════════════════
+//  LAYER 1 — CRM ↔ CASHIER (unique hash first, then customer ref)
+// ═══════════════════════════════════════════════════════════
+function reconcileLayer1(crm: Dataset, cashier: Dataset, tolAbs: number, tolPct: number): ReconRow[] {
+  const rows: ReconRow[] = [];
+  const usedCash = new Set<number>();
+  const matchedCrm = new Set<number>();
+
+  // Which CRM rows are in scope (payment types only).
+  const scope: number[] = [];
+  crm.rows.forEach((cr, i) => {
+    const t = firstVal(cr, [CRM_MAP.typeCol ?? ""]);
+    if (/deposit|withdraw|refund/i.test(t)) scope.push(i);
   });
 
-  crm.rows.forEach((cr) => {
-    const crmType = firstVal(cr, [CRM_MAP.typeCol ?? ""]);
-    // Only payment transactions reconcile against the cashier. Internal
-    // transfers between trading accounts never touch a PSP, so excluding them
-    // keeps them out of the exception noise.
-    if (!/deposit|withdraw|refund/i.test(crmType)) return;
+  const displayKey = (cr: Row) => firstVal(cr, KEY_COLS_CRM);
 
-    const crmAmt = num(fieldVal(cr, CRM_MAP.amountCol));
-    const crmStatus = firstVal(cr, [CRM_MAP.statusCol ?? ""]);
-    const entity = entityFromBrand(firstVal(cr, [CRM_MAP.entityCol]));
-    // Try every id column as a candidate key (Psp Transaction ID matches
-    // deposits, Withdrawal Psp Transaction ID matches withdrawals, …) — the
-    // same multi-key strategy Layer 2 uses. First unused hit wins.
-    const keys = Array.from(
-      new Set(CRM_MAP.idCols.map((col) => norm(firstVal(cr, [col]))).filter(Boolean)),
-    );
-    const key = keys[0] ?? "";
+  const pairs: Array<{ crmIdx: number; cashIdx: number; via: string }> = [];
 
-    let cashIdx: number | undefined;
-    for (const k of keys) {
-      if (cashByRef.has(k)) {
-        const idx = cashByRef.get(k)!;
-        if (!used.has(idx)) {
-          cashIdx = idx;
-          break;
-        }
-      }
-    }
-
-    if (cashIdx === undefined) {
-      if (isFailed(crmStatus)) return; // failed & unmatched → noise, skip
-      rows.push(mkRow("unmatched-crm", entity, undefined, "", key, crmAmt,
-        firstVal(cr, [CRM_MAP.currencyCol ?? ""]), crmStatus, "", null, "", "", null,
-        "In CRM, no Cashier match"));
-      return;
-    }
-
-    used.add(cashIdx);
+  // Even the "unique" hash is shared between a cancelled attempt and its
+  // approved retry, so BOTH passes are cashier-driven best-match: for each
+  // cashier row, among the CRM rows sharing a key, pick the one whose status
+  // and amount agree best. Hash keys are tried before customer references.
+  const pickBest = (cashIdx: number, cand: Set<number>): number => {
     const c = cashier.rows[cashIdx];
     const cashAmt = num(fieldVal(c, CASHIER_MAP.amountCol));
     const cashState = firstVal(c, [CASHIER_MAP.statusCol ?? ""]);
-    const diff = round(crmAmt - cashAmt);
+    let best = -1;
+    let bestScore = Number.POSITIVE_INFINITY;
+    cand.forEach((ci) => {
+      if (matchedCrm.has(ci)) return;
+      const cr = crm.rows[ci];
+      const crmAmt = num(fieldVal(cr, CRM_MAP.amountCol));
+      const crmStatus = firstVal(cr, [CRM_MAP.statusCol ?? ""]);
+      const statusAgree =
+        (isActive(crmStatus) && isActive(cashState)) || (isFailed(crmStatus) && isFailed(cashState));
+      const score = (statusAgree ? 0 : 1_000_000) + Math.abs(crmAmt - cashAmt);
+      if (score < bestScore) {
+        bestScore = score;
+        best = ci;
+      }
+    });
+    return best;
+  };
 
+  const runPass = (which: "hash" | "ref", via: string) => {
+    const crmIndex = new Map<string, number[]>();
+    scope.forEach((crmIdx) => {
+      if (matchedCrm.has(crmIdx)) return;
+      keysByShape(crm.rows[crmIdx], KEY_COLS_CRM)[which].forEach((k) => {
+        const arr = crmIndex.get(k) ?? [];
+        arr.push(crmIdx);
+        crmIndex.set(k, arr);
+      });
+    });
+    cashier.rows.forEach((c, cashIdx) => {
+      if (usedCash.has(cashIdx)) return;
+      const cand = new Set<number>();
+      keysByShape(c, KEY_COLS_CASH)[which].forEach((k) => {
+        (crmIndex.get(k) ?? []).forEach((ci) => {
+          if (!matchedCrm.has(ci)) cand.add(ci);
+        });
+      });
+      if (!cand.size) return;
+      const best = pickBest(cashIdx, cand);
+      if (best >= 0) {
+        usedCash.add(cashIdx);
+        matchedCrm.add(best);
+        pairs.push({ crmIdx: best, cashIdx, via });
+      }
+    });
+  };
+
+  runPass("hash", "Txn hash"); // Pass 1 — unique transaction hash
+  runPass("ref", "Customer ref"); // Pass 2 — reusable customer reference
+
+  // Classify matched pairs
+  pairs.forEach(({ crmIdx, cashIdx, via }) => {
+    const cr = crm.rows[crmIdx];
+    const c = cashier.rows[cashIdx];
+    const crmAmt = num(fieldVal(cr, CRM_MAP.amountCol));
+    const crmStatus = firstVal(cr, [CRM_MAP.statusCol ?? ""]);
+    const entity = entityFromBrand(firstVal(cr, [CRM_MAP.entityCol]));
+    const cashAmt = num(fieldVal(c, CASHIER_MAP.amountCol));
+    const cashState = firstVal(c, [CASHIER_MAP.statusCol ?? ""]);
+    const diff = round(crmAmt - cashAmt);
+    const tol = Math.max(tolAbs, (Math.abs(crmAmt) * tolPct) / 100);
+
+    if (isFailed(crmStatus) && isFailed(cashState)) return; // both failed → not a discrepancy
     let status: ReconRow["status"] = "matched";
-    let note = "Matched by reference";
-    if (isFailed(crmStatus) && isFailed(cashState)) return; // both failed → skip
+    let note = `Matched on ${via}`;
     if ((isActive(crmStatus) && isFailed(cashState)) || (isFailed(crmStatus) && isActive(cashState))) {
       status = "status";
       note = `CRM: ${crmStatus || "?"} vs Cashier: ${cashState || "?"}`;
-    } else if (Math.abs(diff) >= 1) {
+    } else if (Math.abs(diff) > tol) {
       status = "amount";
-      note = `Amount diff ${diff}`;
+      note = `Amount diff ${diff}${tolPct ? ` (tol ${tolPct}%)` : ""}`;
     }
-
-    rows.push(mkRow(status, entity, undefined, "Reference ID", key, crmAmt,
-      firstVal(cr, [CRM_MAP.currencyCol ?? ""]), crmStatus,
+    rows.push(mkRow(status, entity, undefined, via, displayKey(cr),
+      crmAmt, firstVal(cr, [CRM_MAP.currencyCol ?? ""]), crmStatus,
       firstVal(c, CASHIER_MAP.idCols), cashAmt, firstVal(c, [CASHIER_MAP.currencyCol ?? ""]),
       cashState, diff, note));
   });
 
-  // Cashier rows never matched to CRM
+  // Unmatched CRM (payment rows only) — with a reason
+  scope.forEach((crmIdx) => {
+    if (matchedCrm.has(crmIdx)) return;
+    const cr = crm.rows[crmIdx];
+    const crmStatus = firstVal(cr, [CRM_MAP.statusCol ?? ""]);
+    if (isFailed(crmStatus)) return; // failed & unmatched → expected noise
+    const shapes = keysByShape(cr, KEY_COLS_CRM);
+    const anyKey = shapes.hash.length + shapes.ref.length > 0;
+    rows.push(mkRow("unmatched-crm", entityFromBrand(firstVal(cr, [CRM_MAP.entityCol])), undefined,
+      "", displayKey(cr), num(fieldVal(cr, CRM_MAP.amountCol)),
+      firstVal(cr, [CRM_MAP.currencyCol ?? ""]), crmStatus, "", null, "", "", null,
+      anyKey ? "No cashier row with a matching key (key-not-found)" : "CRM record has no usable key (no-key)"));
+  });
+
+  // Unmatched cashier
   cashier.rows.forEach((c, i) => {
-    if (used.has(i)) return;
+    if (usedCash.has(i)) return;
     const cashState = firstVal(c, [CASHIER_MAP.statusCol ?? ""]);
     if (isFailed(cashState)) return;
     rows.push(mkRow("unmatched-cashier", entityFromShop(firstVal(c, [CASHIER_MAP.entityCol])),
       undefined, "", "", null, "", "", firstVal(c, CASHIER_MAP.idCols),
       num(fieldVal(c, CASHIER_MAP.amountCol)), firstVal(c, [CASHIER_MAP.currencyCol ?? ""]),
-      cashState, null, "In Cashier, no CRM match"));
+      cashState, null, "In Cashier, no CRM payment with matching key (key-not-found)"));
   });
 
   return rows;
@@ -501,19 +567,40 @@ function enrichBrands(
   });
 }
 
+/** Restricts a dataset to rows whose date column falls within [from, to]. */
+function filterByDate(ds: Dataset, dateCols: string[], from: string, to: string): Dataset {
+  if (!from && !to) return ds;
+  const fromT = from ? new Date(from).getTime() : -Infinity;
+  const toT = to ? new Date(to + "T23:59:59").getTime() : Infinity;
+  const rows = ds.rows.filter((r) => {
+    const t = toDate(firstVal(r, dateCols));
+    if (t === null) return true; // undated rows kept (can't exclude what we can't parse)
+    return t >= fromT && t <= toT;
+  });
+  return { ...ds, rows };
+}
+
 export function runReconciliation(
   crm: Dataset | null,
   cashier: Dataset | null,
   psps: PspConfig[],
   pspData: Record<string, Dataset>,
   nowIso: string,
+  opts: ReconOptions = {},
 ): ReconResult {
-  const l1Rows = crm && cashier ? reconcileLayer1(crm, cashier) : [];
+  const tolAbs = opts.amountTolAbs ?? 1;
+  const tolPct = opts.amountTolPct ?? 0;
+  const from = opts.dateFrom ?? "";
+  const to = opts.dateTo ?? "";
+  const crmF = crm ? filterByDate(crm, ["LastUpdated", "CreatedOn"], from, to) : crm;
+  const cashierF = cashier ? filterByDate(cashier, ["Finalized", "Created"], from, to) : cashier;
+
+  const l1Rows = crmF && cashierF ? reconcileLayer1(crmF, cashierF, tolAbs, tolPct) : [];
   // Layer 2 only runs when at least one PSP file is present — otherwise every
   // cashier row would be reported "unmatched" purely for lack of PSP data.
   const hasPspData = Object.values(pspData).some((d) => d && d.rows.length > 0);
-  const l2Rows = cashier && hasPspData ? reconcileLayer2(cashier, psps, pspData) : [];
-  enrichBrands(crm, cashier, l1Rows, l2Rows);
+  const l2Rows = cashierF && hasPspData ? reconcileLayer2(cashierF, psps, pspData) : [];
+  enrichBrands(crmF, cashierF, l1Rows, l2Rows);
   const severity = (s: ReconRow["status"]) =>
     s === "status" ? 0 : s.startsWith("unmatched") ? 1 : s === "amount" ? 2 : 5;
   const sorter = (a: ReconRow, b: ReconRow) => severity(a.status) - severity(b.status);
@@ -521,6 +608,7 @@ export function runReconciliation(
   l2Rows.sort(sorter);
   const all = [...l1Rows, ...l2Rows];
   const exceptions = all.filter((r) => r.status !== "matched");
+  const matched = all.filter((r) => r.status === "matched");
   return {
     layer1: { rows: l1Rows, stats: computeStats(l1Rows) },
     layer2: { rows: l2Rows, stats: computeStats(l2Rows) },
@@ -529,6 +617,7 @@ export function runReconciliation(
     byEntity: groupBy(all, (r) => r.entity),
     matrix: buildMatrix(l2Rows),
     exceptions,
+    matched,
     ranAt: nowIso,
   };
 }

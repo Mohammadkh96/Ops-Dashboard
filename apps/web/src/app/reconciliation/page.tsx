@@ -38,7 +38,7 @@ import {
   brandTrends as computeBrandTrends,
   type Anomalies,
 } from "@/lib/recon/history";
-import type { Breakdown, Dataset, PspConfig, ReconMatrix, ReconResult, ReconRow } from "@/lib/recon/types";
+import type { Breakdown, Dataset, PspConfig, ReconMatrix, ReconOptions, ReconResult, ReconRow } from "@/lib/recon/types";
 import { sampleCrm, sampleCashier, samplePaystrax, sampleForumpay, sampleMatch2pay, sampleRapyd } from "@/lib/recon/sample";
 import { useAuth } from "@/lib/auth";
 
@@ -52,6 +52,7 @@ const TABS = [
   { key: "sources", label: "Sources" },
   { key: "psps", label: "PSP Registry" },
   { key: "results", label: "Results" },
+  { key: "matched", label: "Matched" },
   { key: "analytics", label: "Analytics" },
 ] as const;
 type TabKey = (typeof TABS)[number]["key"];
@@ -81,6 +82,7 @@ export default function ReconciliationPage() {
   const [anomalies, setAnomalies] = useState<Anomalies | null>(null);
   const [trends, setTrends] = useState<Record<string, number[]>>({});
   const [drill, setDrill] = useState<{ brand?: string; psp?: string } | null>(null);
+  const [opts, setOpts] = useState<ReconOptions>({});
 
   useEffect(() => {
     setPsps(loadPsps());
@@ -188,7 +190,7 @@ export default function ReconciliationPage() {
     psps.forEach((p) => {
       if (datasets[p.id]) pspData[p.id] = datasets[p.id];
     });
-    const res = runReconciliation(datasets.crm, datasets.cashier, psps, pspData, new Date().toISOString());
+    const res = runReconciliation(datasets.crm, datasets.cashier, psps, pspData, new Date().toISOString(), opts);
     setResult(res);
     try {
       window.localStorage.setItem(RESULT_KEY, JSON.stringify(res));
@@ -282,6 +284,36 @@ export default function ReconciliationPage() {
         ))}
       </div>
 
+      <div className="flex flex-wrap items-end gap-4 rounded-xl border border-border bg-card/40 px-4 py-3">
+        <span className="text-[11px] font-medium uppercase tracking-wider text-muted">Run options</span>
+        <label className="flex flex-col gap-1">
+          <span className="text-[11px] text-muted">Date from</span>
+          <input type="date" value={opts.dateFrom ?? ""} onChange={(e) => setOpts((o) => ({ ...o, dateFrom: e.target.value }))}
+            className="h-8 rounded-lg border border-border bg-card px-2 text-xs outline-none focus:border-border-strong" />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-[11px] text-muted">Date to</span>
+          <input type="date" value={opts.dateTo ?? ""} onChange={(e) => setOpts((o) => ({ ...o, dateTo: e.target.value }))}
+            className="h-8 rounded-lg border border-border bg-card px-2 text-xs outline-none focus:border-border-strong" />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-[11px] text-muted">Amount tolerance ($)</span>
+          <input type="number" step="0.01" min="0" value={opts.amountTolAbs ?? 1} onChange={(e) => setOpts((o) => ({ ...o, amountTolAbs: Number(e.target.value) }))}
+            className="h-8 w-28 rounded-lg border border-border bg-card px-2 text-xs outline-none focus:border-border-strong" />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-[11px] text-muted">Fee tolerance (%)</span>
+          <input type="number" step="0.1" min="0" value={opts.amountTolPct ?? 0} onChange={(e) => setOpts((o) => ({ ...o, amountTolPct: Number(e.target.value) }))}
+            className="h-8 w-28 rounded-lg border border-border bg-card px-2 text-xs outline-none focus:border-border-strong" />
+        </label>
+        {opts.dateFrom || opts.dateTo || opts.amountTolPct ? (
+          <button type="button" onClick={() => setOpts({})} className="mb-0.5 text-xs text-muted-foreground hover:text-foreground">
+            Reset
+          </button>
+        ) : null}
+        <span className="mb-1 ml-auto text-[11px] text-muted">Re-run after changing options.</span>
+      </div>
+
       {tab === "sources" ? (
         <SourcesTab psps={psps} datasets={datasets} warnings={warnings} onFile={readFile} onClear={clearData} />
       ) : tab === "psps" ? (
@@ -294,6 +326,8 @@ export default function ReconciliationPage() {
         />
       ) : tab === "analytics" ? (
         <AnalyticsTab result={result} anomalies={anomalies} trends={trends} onDrill={handleDrill} />
+      ) : tab === "matched" ? (
+        <MatchedTab result={result} />
       ) : (
         <ResultsTab result={result} runs={runs} drill={drill} onClearDrill={() => setDrill(null)} />
       )}
@@ -1015,6 +1049,79 @@ function AnalyticsTab({
         <h3 className="text-xs font-medium uppercase tracking-wider text-muted">Per-cashier entity</h3>
         <DataTable columns={entityCols} rows={result.byEntity} getRowKey={(b) => b.key} empty="No rows." />
       </div>
+    </div>
+  );
+}
+
+function MatchedTab({ result }: { result: ReconResult | null }) {
+  const [q, setQ] = useState("");
+  const matched = result?.matched ?? [];
+  const filtered = useMemo(
+    () =>
+      q
+        ? matched.filter((r) =>
+            `${r.leftId} ${r.rightId} ${r.psp ?? ""} ${r.brand} ${r.entity} ${r.matchKey}`
+              .toLowerCase()
+              .includes(q.toLowerCase()),
+          )
+        : matched,
+    [matched, q],
+  );
+
+  const columns: Column<ReconRow>[] = [
+    { key: "src", header: "Source", render: (r) => <span className="text-muted-foreground">{r.psp ?? "CRM ↔ Cashier"}</span> },
+    { key: "brand", header: "Brand", render: (r) => <span className="text-muted-foreground">{r.brand || "—"}</span> },
+    { key: "via", header: "Matched via", render: (r) => <span className="text-xs text-accent-green">{r.matchKey || "—"}</span> },
+    { key: "left", header: "CRM / Cashier ID", render: (r) => <span className="font-mono text-xs">{r.leftId || "—"}</span> },
+    { key: "leftAmt", header: "Left Amt", align: "right", render: (r) => <span className="tnum">{money(r.leftAmount)}</span> },
+    { key: "right", header: "Counterpart ID", render: (r) => <span className="font-mono text-xs">{r.rightId || "—"}</span> },
+    { key: "rightAmt", header: "Right Amt", align: "right", render: (r) => <span className="tnum">{money(r.rightAmount)}</span> },
+    { key: "status", header: "Status", render: (r) => <span className="text-xs text-muted-foreground">{r.leftStatus} / {r.rightStatus}</span> },
+  ];
+
+  if (!result) {
+    return (
+      <Card className="glass card-seam">
+        <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
+          <span className="flex size-11 items-center justify-center rounded-xl border border-border bg-card text-muted">
+            <Play className="size-5" />
+          </span>
+          <span className="text-sm text-muted-foreground">Run a reconciliation to see matched transactions.</span>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 className="text-xs font-medium uppercase tracking-wider text-muted">
+          Matched transactions ({filtered.length} of {matched.length})
+        </h3>
+        <div className="ml-auto flex items-center gap-2">
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search id, brand, PSP…"
+            className="h-9 w-56 rounded-lg border border-border bg-card px-3 text-sm outline-none focus:border-border-strong"
+          />
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => downloadText("recon-matched.csv", reconRowsToCsv(filtered))}
+            disabled={filtered.length === 0}
+          >
+            <Download className="size-4" /> Export CSV
+          </Button>
+        </div>
+      </div>
+      <DataTable
+        columns={columns}
+        rows={filtered}
+        getRowKey={(r, i) => `m-${r.leftId}-${r.rightId}-${i}`}
+        pageSize={15}
+        empty="No matched transactions."
+      />
     </div>
   );
 }
