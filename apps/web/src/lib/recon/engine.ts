@@ -266,7 +266,7 @@ function reconcileLayer1(crm: Dataset, cashier: Dataset, tolAbs: number, tolPct:
   // deposit can only ever match a deposit and a withdrawal/refund a withdrawal.
   const nk = (kind: Kind, key: string) => `${kind} ${key}`;
 
-  const runPass = (which: "hash" | "ref", via: string) => {
+  const runPass = (which: "hash" | "ref", via: string, requireAmount: boolean) => {
     const crmIndex = new Map<string, number[]>();
     scope.forEach((crmIdx) => {
       if (matchedCrm.has(crmIdx)) return;
@@ -289,7 +289,7 @@ function reconcileLayer1(crm: Dataset, cashier: Dataset, tolAbs: number, tolPct:
         });
       });
       if (!cand.size) return;
-      const best = pickBest(cashIdx, cand, false);
+      const best = pickBest(cashIdx, cand, requireAmount);
       if (best >= 0) {
         usedCash.add(cashIdx);
         matchedCrm.add(best);
@@ -298,8 +298,17 @@ function reconcileLayer1(crm: Dataset, cashier: Dataset, tolAbs: number, tolPct:
     });
   };
 
-  runPass("hash", "Txn hash"); // Pass 1 — unique transaction hash
-  runPass("ref", "Customer ref"); // Pass 2 — reusable customer reference
+  // Order matters — most confident first, so a greedy fuzzy pair can't steal a
+  // row that belongs to a cleaner match:
+  //  1. hash 1:1 (unique transaction id; amount gap is a real discrepancy)
+  //  2. reference 1:1 but only when the amount also agrees (confident)
+  //  3. aggregation/netting (N CRM legs ↔ M cashier rows summing to the same total)
+  //  4. reference 1:1 fallback, amount gap allowed → surfaces genuine single-leg
+  //     amount discrepancies as one "amount" exception instead of two unmatched
+  runPass("hash", "Txn hash", false);
+  runPass("ref", "Customer ref", true);
+  aggregatePass();
+  runPass("ref", "Customer ref", false);
 
   // Classify matched pairs
   pairs.forEach(({ crmIdx, cashIdx, via }) => {
@@ -332,6 +341,60 @@ function reconcileLayer1(crm: Dataset, cashier: Dataset, tolAbs: number, tolPct:
       firstVal(c, CASHIER_MAP.idCols), cashAmt, firstVal(c, [CASHIER_MAP.currencyCol ?? ""]),
       cashState, diff, note));
   });
+
+  // ── Aggregation / netting pass ─────────────────────────────────────────
+  // Some flows are booked as ONE cashier movement but SEVERAL CRM legs sharing
+  // the same transaction reference (or vice-versa) — e.g. a $122.99 withdrawal
+  // recorded in the CRM as $31.02 + $91.97. The 1:1 passes can't pair those, so
+  // they'd surface as N+M separate exceptions. Here we group the still-unmatched
+  // rows by shared transaction key (kind-namespaced) and, when the totals on
+  // each side reconcile within tolerance, net them into a single matched line.
+  // Only transaction-level keys are used (the customer-level key was dropped),
+  // so rows sharing a key genuinely belong to the same movement.
+  function aggregatePass() {
+    const grp = new Map<string, { crm: Set<number>; cash: Set<number> }>();
+    const bucket = (kk: string) => {
+      const g = grp.get(kk) ?? { crm: new Set<number>(), cash: new Set<number>() };
+      grp.set(kk, g);
+      return g;
+    };
+    scope.forEach((ci) => {
+      if (matchedCrm.has(ci)) return;
+      const cr = crm.rows[ci];
+      if (isFailed(firstVal(cr, [CRM_MAP.statusCol ?? ""]))) return;
+      const kind = crmKindOf(cr);
+      const s = keysByShape(cr, crmKeyCols(kind));
+      [...s.hash, ...s.ref].forEach((k) => bucket(nk(kind, k)).crm.add(ci));
+    });
+    cashier.rows.forEach((c, ci) => {
+      if (usedCash.has(ci)) return;
+      const kind = cashKindOf(c);
+      if (!kind || isFailed(firstVal(c, [CASHIER_MAP.statusCol ?? ""]))) return;
+      const s = keysByShape(c, CASH_KEYS);
+      [...s.hash, ...s.ref].forEach((k) => bucket(nk(kind, k)).cash.add(ci));
+    });
+    grp.forEach((g) => {
+      const crmIdxs = [...g.crm].filter((i) => !matchedCrm.has(i));
+      const cashIdxs = [...g.cash].filter((i) => !usedCash.has(i));
+      if (!crmIdxs.length || !cashIdxs.length) return;
+      if (crmIdxs.length === 1 && cashIdxs.length === 1) return; // pure 1:1 belongs to the 1:1 passes
+      const crmSum = round(crmIdxs.reduce((s, i) => s + num(fieldVal(crm.rows[i], CRM_MAP.amountCol)), 0));
+      const cashSum = round(cashIdxs.reduce((s, i) => s + num(fieldVal(cashier.rows[i], CASHIER_MAP.amountCol)), 0));
+      const tol = Math.max(tolAbs, (Math.abs(cashSum) * tolPct) / 100);
+      if (Math.abs(crmSum - cashSum) > tol) return; // totals don't reconcile → leave for unmatched reporting
+      crmIdxs.forEach((i) => matchedCrm.add(i));
+      cashIdxs.forEach((i) => usedCash.add(i));
+      const cr0 = crm.rows[crmIdxs[0]];
+      const c0 = cashier.rows[cashIdxs[0]];
+      rows.push(mkRow("matched", entityFromBrand(firstVal(cr0, [CRM_MAP.entityCol])), undefined,
+        "Aggregated", `${crmIdxs.length}× ${displayKey(cr0)}`, crmSum,
+        firstVal(cr0, [CRM_MAP.currencyCol ?? ""]), firstVal(cr0, [CRM_MAP.statusCol ?? ""]),
+        `${cashIdxs.length}× ${firstVal(c0, CASHIER_MAP.idCols)}`, cashSum,
+        firstVal(c0, [CASHIER_MAP.currencyCol ?? ""]), firstVal(c0, [CASHIER_MAP.statusCol ?? ""]),
+        round(crmSum - cashSum),
+        `Netted ${crmIdxs.length} CRM ↔ ${cashIdxs.length} Cashier on ${displayKey(cr0)} (Σ ${crmSum})`));
+    });
+  }
 
   // Key sets present on each side — used to explain *why* a row is unmatched:
   // a shared key with no pair means the amount/status didn't line up (a likely
