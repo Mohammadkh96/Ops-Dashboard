@@ -191,6 +191,48 @@ const CASH_KEYS = ["ID", "External Id", "Reference ID"];
 const crmKeyCols = (kind: Kind) => (kind === "withdrawal" ? CRM_KEYS_WITHDRAWAL : CRM_KEYS_DEPOSIT);
 const isHashKey = (v: string) => /^[0-9a-f]{16,}$/i.test(v);
 
+// Route a cashier Provider/Terminal string to a PSP config. Cashier exports
+// suffix providers (e.g. "ForumPay_NDP", "MatchTrade_NDP"), so we strip "_ndp"
+// and non-alphanumerics, then match against each PSP's routeMatch aliases
+// (falling back to id/label).
+const canonProvider = (s: string) => s.toLowerCase().replace(/_ndp\b/g, "").replace(/[^a-z0-9]/g, "");
+function routePsp(providerText: string, psps: PspConfig[]): PspConfig | null {
+  const r = canonProvider(providerText);
+  if (!r) return null;
+  for (const p of psps) {
+    const aliases = p.routeMatch?.length ? p.routeMatch : [p.id, p.label];
+    if (aliases.some((a) => a && r.includes(canonProvider(a)))) return p;
+  }
+  return null;
+}
+
+/**
+ * PSP readiness, computed from the cashier file alone (before Layer 2 runs).
+ * Lists each Provider seen, its row count, the PSP config it routes to (if
+ * any), and whether that PSP's settlement file has been uploaded. Lets the UI
+ * tell the user exactly what to upload to switch Layer 2 on.
+ */
+export function providerCoverage(
+  cashier: Dataset | null,
+  psps: PspConfig[],
+  pspData: Record<string, Dataset>,
+): { provider: string; count: number; psp: string | null; hasFile: boolean }[] {
+  if (!cashier) return [];
+  const counts = new Map<string, number>();
+  cashier.rows.forEach((c) => {
+    const t = firstVal(c, [CASHIER_MAP.typeCol ?? ""]);
+    if (t && !/deposit|withdraw|refund/i.test(t)) return; // payment rows only
+    const prov = firstVal(c, ["Provider"]) || firstVal(c, ["Terminal"]) || "(unrouted)";
+    counts.set(prov, (counts.get(prov) ?? 0) + 1);
+  });
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([provider, count]) => {
+      const p = provider === "(unrouted)" ? null : routePsp(provider, psps);
+      return { provider, count, psp: p?.label ?? null, hasFile: !!(p && pspData[p.id]?.rows.length) };
+    });
+}
+
 function keysByShape(row: Row, cols: string[]): { hash: string[]; ref: string[] } {
   const hash: string[] = [];
   const ref: string[] = [];
@@ -471,14 +513,9 @@ function reconcileLayer2(cashier: Dataset, psps: PspConfig[], pspData: Record<st
     rowIndexOf[p.id] = ri;
   });
 
-  // Which PSP does a cashier row route to? Use Provider/Terminal text.
-  const routeToPsp = (c: Row): PspConfig | null => {
-    const route = `${firstVal(c, ["Provider"])} ${firstVal(c, ["Terminal"])}`.toLowerCase();
-    for (const p of psps) {
-      if (route.includes(p.id.toLowerCase()) || route.includes(p.label.toLowerCase())) return p;
-    }
-    return null;
-  };
+  // Which PSP does a cashier row route to? (see routePsp).
+  const routeToPsp = (c: Row): PspConfig | null =>
+    routePsp(`${firstVal(c, ["Provider"])} ${firstVal(c, ["Terminal"])}`, psps);
 
   cashier.rows.forEach((c) => {
     const entity = entityFromShop(firstVal(c, [CASHIER_MAP.entityCol]));

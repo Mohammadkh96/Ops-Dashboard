@@ -26,7 +26,7 @@ import { cn } from "@/lib/utils";
 
 import { parseFile } from "@/lib/recon/parse";
 import { loadPsps, savePsps, resetPsps, DEFAULT_PSPS, emptyPsp, missingColumns, CRM_MAP, CASHIER_MAP } from "@/lib/recon/registry";
-import { runReconciliation } from "@/lib/recon/engine";
+import { runReconciliation, providerCoverage } from "@/lib/recon/engine";
 import { reconRowsToCsv, downloadText } from "@/lib/recon/export";
 import { loadPspsRemote, savePspsRemote, saveRunRemote, listRunsRemote, type RunSummaryRow } from "@/lib/recon/api";
 import { Sparkline } from "@/components/ui/sparkline";
@@ -319,6 +319,7 @@ export default function ReconciliationPage() {
       ) : tab === "psps" ? (
         <PspRegistryTab
           psps={psps}
+          datasets={datasets}
           onAdd={() => setEditing(emptyPsp())}
           onEdit={(p) => setEditing(p)}
           onRemove={removePsp}
@@ -486,17 +487,31 @@ function SourcesTab({
 
 function PspRegistryTab({
   psps,
+  datasets,
   onAdd,
   onEdit,
   onRemove,
   onRestore,
 }: {
   psps: PspConfig[];
+  datasets: Record<string, Dataset>;
   onAdd: () => void;
   onEdit: (p: PspConfig) => void;
   onRemove: (id: string) => void;
   onRestore: () => void;
 }) {
+  const pspData = useMemo(() => {
+    const d: Record<string, Dataset> = {};
+    psps.forEach((p) => {
+      if (datasets[p.id]) d[p.id] = datasets[p.id];
+    });
+    return d;
+  }, [psps, datasets]);
+  const coverage = useMemo(
+    () => providerCoverage(datasets.cashier ?? null, psps, pspData),
+    [datasets.cashier, psps, pspData],
+  );
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
@@ -514,6 +529,8 @@ function PspRegistryTab({
           </Button>
         </div>
       </div>
+
+      {coverage.length > 0 ? <PspReadiness coverage={coverage} /> : null}
 
       <div className="grid gap-3 md:grid-cols-2">
         {psps.map((p) => (
@@ -544,6 +561,48 @@ function PspRegistryTab({
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function PspReadiness({
+  coverage,
+}: {
+  coverage: { provider: string; count: number; psp: string | null; hasFile: boolean }[];
+}) {
+  const ready = coverage.filter((c) => c.hasFile).length;
+  const routed = coverage.filter((c) => c.psp).length;
+  return (
+    <div className="flex flex-col gap-2 rounded-xl border border-border bg-card p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-xs font-medium uppercase tracking-wider text-muted">
+          Layer 2 readiness — providers in your cashier file
+        </h3>
+        <span className="text-xs text-muted-foreground">
+          {routed}/{coverage.length} routed · {ready} with a file loaded
+        </span>
+      </div>
+      <div className="flex flex-col divide-y divide-border/60">
+        {coverage.map((c) => (
+          <div key={c.provider} className="flex items-center gap-3 py-1.5 text-sm">
+            <span className="font-mono text-xs text-muted-foreground">{c.provider}</span>
+            <span className="text-xs text-muted">{c.count.toLocaleString()} rows</span>
+            <span className="ml-auto flex items-center gap-1.5">
+              {c.hasFile ? (
+                <Badge variant="green">File loaded — {c.psp}</Badge>
+              ) : c.psp ? (
+                <Badge variant="blue">Upload {c.psp} file</Badge>
+              ) : (
+                <Badge variant="default">No PSP config</Badge>
+              )}
+            </span>
+          </div>
+        ))}
+      </div>
+      <p className="text-xs text-muted">
+        Layer 2 (Cashier ↔ PSP) reconciles each provider against its settlement export. Upload a
+        file for any provider above to switch it on — no code changes needed.
+      </p>
     </div>
   );
 }

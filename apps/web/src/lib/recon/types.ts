@@ -41,6 +41,13 @@ export type PspConfig = {
   /** Optional type synonyms so a deposit cashier row won't match a withdrawal PSP row. */
   depositTypes?: string[];
   withdrawalTypes?: string[];
+  /**
+   * Provider/Terminal substrings that route a cashier row to this PSP. Cashier
+   * exports often suffix the provider (e.g. "ForumPay_NDP", "MatchTrade_NDP"),
+   * so an explicit alias list is more reliable than matching on id/label.
+   * Falls back to [id, label] when omitted.
+   */
+  routeMatch?: string[];
   /** Built-in PSPs ship with the app; user-added ones are false/undefined. */
   builtin?: boolean;
 };
