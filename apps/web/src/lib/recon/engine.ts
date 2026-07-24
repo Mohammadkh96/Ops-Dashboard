@@ -184,16 +184,32 @@ function reconcileLayer1(crm: Dataset, cashier: Dataset): ReconRow[] {
   });
 
   crm.rows.forEach((cr) => {
+    const crmType = firstVal(cr, [CRM_MAP.typeCol ?? ""]);
+    // Only payment transactions reconcile against the cashier. Internal
+    // transfers between trading accounts never touch a PSP, so excluding them
+    // keeps them out of the exception noise.
+    if (!/deposit|withdraw|refund/i.test(crmType)) return;
+
     const crmAmt = num(fieldVal(cr, CRM_MAP.amountCol));
     const crmStatus = firstVal(cr, [CRM_MAP.statusCol ?? ""]);
-    const crmType = firstVal(cr, [CRM_MAP.typeCol ?? ""]);
     const entity = entityFromBrand(firstVal(cr, [CRM_MAP.entityCol]));
-    const key = norm(firstVal(cr, CRM_MAP.idCols));
+    // Try every id column as a candidate key (Psp Transaction ID matches
+    // deposits, Withdrawal Psp Transaction ID matches withdrawals, …) — the
+    // same multi-key strategy Layer 2 uses. First unused hit wins.
+    const keys = Array.from(
+      new Set(CRM_MAP.idCols.map((col) => norm(firstVal(cr, [col]))).filter(Boolean)),
+    );
+    const key = keys[0] ?? "";
 
     let cashIdx: number | undefined;
-    if (key && cashByRef.has(key)) {
-      const idx = cashByRef.get(key)!;
-      if (!used.has(idx)) cashIdx = idx;
+    for (const k of keys) {
+      if (cashByRef.has(k)) {
+        const idx = cashByRef.get(k)!;
+        if (!used.has(idx)) {
+          cashIdx = idx;
+          break;
+        }
+      }
     }
 
     if (cashIdx === undefined) {
@@ -493,7 +509,10 @@ export function runReconciliation(
   nowIso: string,
 ): ReconResult {
   const l1Rows = crm && cashier ? reconcileLayer1(crm, cashier) : [];
-  const l2Rows = cashier ? reconcileLayer2(cashier, psps, pspData) : [];
+  // Layer 2 only runs when at least one PSP file is present — otherwise every
+  // cashier row would be reported "unmatched" purely for lack of PSP data.
+  const hasPspData = Object.values(pspData).some((d) => d && d.rows.length > 0);
+  const l2Rows = cashier && hasPspData ? reconcileLayer2(cashier, psps, pspData) : [];
   enrichBrands(crm, cashier, l1Rows, l2Rows);
   const severity = (s: ReconRow["status"]) =>
     s === "status" ? 0 : s.startsWith("unmatched") ? 1 : s === "amount" ? 2 : 5;

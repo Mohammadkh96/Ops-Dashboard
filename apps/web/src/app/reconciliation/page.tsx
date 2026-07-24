@@ -752,8 +752,8 @@ function ResultsTab({
 
   const { layer1, layer2, byPsp, exceptions } = result;
   const stats: Stat[] = [
-    { label: "L1 match rate", value: `${layer1.stats.matchRate}%`, tone: layer1.stats.matchRate >= 90 ? "green" : "orange" },
-    { label: "L2 match rate", value: `${layer2.stats.matchRate}%`, tone: layer2.stats.matchRate >= 90 ? "green" : "orange" },
+    { label: "L1 match rate", value: layer1.stats.total ? `${layer1.stats.matchRate}%` : "N/A", tone: layer1.stats.matchRate >= 90 ? "green" : "orange" },
+    { label: "L2 match rate", value: layer2.stats.total ? `${layer2.stats.matchRate}%` : "N/A", tone: !layer2.stats.total ? "blue" : layer2.stats.matchRate >= 90 ? "green" : "orange" },
     { label: "Exceptions", value: String(exceptions.length), tone: exceptions.length ? "red" : "green" },
     { label: "Exposure", value: `$${money(layer2.stats.exposure + layer1.stats.exposure)}`, tone: "purple" },
   ];
