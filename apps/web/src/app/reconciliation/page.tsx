@@ -843,16 +843,18 @@ function ResultsTab({
     );
   }
 
-  const { layer1, layer2, byPsp, exceptions } = result;
+  const { layer1, layer2, byPsp, byBrand, byEntity, exceptions } = result;
+  const netted = layer1.rows.filter((r) => r.matchKey === "Aggregated").length;
   const stats: Stat[] = [
     { label: "L1 match rate", value: layer1.stats.total ? `${layer1.stats.matchRate}%` : "N/A", tone: layer1.stats.matchRate >= 90 ? "green" : "orange" },
     { label: "L2 match rate", value: layer2.stats.total ? `${layer2.stats.matchRate}%` : "N/A", tone: !layer2.stats.total ? "blue" : layer2.stats.matchRate >= 90 ? "green" : "orange" },
-    { label: "Exceptions", value: String(exceptions.length), tone: exceptions.length ? "red" : "green" },
+    { label: "Matched", value: layer1.stats.matched.toLocaleString(), tone: "green" },
+    { label: "Exceptions", value: exceptions.length.toLocaleString(), tone: exceptions.length ? "red" : "green" },
     { label: "Exposure", value: `$${money(layer2.stats.exposure + layer1.stats.exposure)}`, tone: "purple" },
   ];
 
-  const pspColumns: Column<(typeof byPsp)[number]>[] = [
-    { key: "psp", header: "PSP", render: (b) => <span className="font-medium">{b.key}</span> },
+  const breakdownColumns = (firstHeader: string): Column<Breakdown>[] => [
+    { key: "k", header: firstHeader, render: (b) => <span className="font-medium">{b.key}</span> },
     { key: "matched", header: "Matched", align: "right", render: (b) => <span className="tnum text-accent-green">{b.matched}</span> },
     { key: "amount", header: "Amount", align: "right", render: (b) => <span className="tnum text-accent-orange">{b.amount}</span> },
     { key: "status", header: "Status", align: "right", render: (b) => <span className="tnum text-accent-red">{b.status}</span> },
@@ -865,10 +867,37 @@ function ResultsTab({
     <div className="flex flex-col gap-5">
       <StatTileRow stats={stats} />
 
-      <div className="flex flex-col gap-2">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-muted">Breakdown by PSP — Layer 2</h3>
-        <DataTable columns={pspColumns} rows={byPsp} getRowKey={(b) => b.key} empty="No PSP rows matched." />
+      {netted > 0 ? (
+        <p className="rounded-lg border border-accent-blue/25 bg-accent-blue-soft px-3 py-2 text-xs text-accent-blue">
+          {netted.toLocaleString()} matches were <span className="font-medium">netted</span> — split
+          transactions (several CRM legs summing to one cashier movement) reconciled into a single line.
+          See “Matched via: Aggregated” in the Matched tab.
+        </p>
+      ) : null}
+
+      <div className="grid gap-5 lg:grid-cols-2">
+        <div className="flex flex-col gap-2">
+          <h3 className="text-xs font-medium uppercase tracking-wider text-muted">Breakdown by Brand — Layer 1</h3>
+          <DataTable columns={breakdownColumns("Brand")} rows={byBrand} getRowKey={(b) => b.key} empty="No rows." />
+        </div>
+        <div className="flex flex-col gap-2">
+          <h3 className="text-xs font-medium uppercase tracking-wider text-muted">Breakdown by Entity — Layer 1</h3>
+          <DataTable columns={breakdownColumns("Entity")} rows={byEntity} getRowKey={(b) => b.key} empty="No rows." />
+        </div>
       </div>
+
+      {byPsp.length > 0 ? (
+        <div className="flex flex-col gap-2">
+          <h3 className="text-xs font-medium uppercase tracking-wider text-muted">Breakdown by PSP — Layer 2</h3>
+          <DataTable columns={breakdownColumns("PSP")} rows={byPsp} getRowKey={(b) => b.key} empty="No PSP rows matched." />
+        </div>
+      ) : (
+        <div className="rounded-xl border border-dashed border-border bg-card/40 px-4 py-3 text-xs text-muted">
+          <span className="text-muted-foreground">Layer 2 (Cashier ↔ PSP) is off.</span> Upload PSP
+          settlement files under Sources to reconcile each provider — see the readiness list in the
+          PSP Registry tab.
+        </div>
+      )}
 
       <ExceptionsSection
         key={`${drill?.brand ?? ""}|${drill?.psp ?? ""}`}
