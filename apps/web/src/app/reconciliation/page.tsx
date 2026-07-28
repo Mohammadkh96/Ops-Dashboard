@@ -195,13 +195,15 @@ export default function ReconciliationPage() {
     setDatasets({
       crm: sampleCrm(),
       cashier: sampleCashier(),
-      paystrax: samplePaystrax(),
-      forumpay: sampleForumpay(),
-      match2pay: sampleMatch2pay(),
+      // Keyed to the per-entity configs the sample cashier rows actually route
+      // to: Paystrax rows are tradin_mu, ForumPay/Match2pay rows are tradin_sl.
+      paystrax_mu: samplePaystrax(),
+      forumpay_sl: sampleForumpay(),
+      match2pay_sl: sampleMatch2pay(),
       rapyd: sampleRapyd(),
     });
     setWarnings({});
-    toast({ title: "Sample data loaded", description: "CRM, Cashier and 4 PSPs across 4 brands." });
+    toast({ title: "Sample data loaded", description: "CRM, Cashier and 4 PSP files across 4 brands." });
   };
 
   const run = () => {
@@ -800,7 +802,7 @@ function CaseCard({
 function PspReadiness({
   coverage,
 }: {
-  coverage: { provider: string; count: number; psp: string | null; hasFile: boolean }[];
+  coverage: { provider: string; entity: string; count: number; psp: string | null; hasFile: boolean }[];
 }) {
   const ready = coverage.filter((c) => c.hasFile).length;
   const routed = coverage.filter((c) => c.psp).length;
@@ -816,8 +818,9 @@ function PspReadiness({
       </div>
       <div className="flex flex-col divide-y divide-border/60">
         {coverage.map((c) => (
-          <div key={c.provider} className="flex items-center gap-3 py-1.5 text-sm">
+          <div key={`${c.provider}|${c.entity}`} className="flex items-center gap-3 py-1.5 text-sm">
             <span className="font-mono text-xs text-muted-foreground">{c.provider}</span>
+            <span className="text-xs text-muted">{c.entity}</span>
             <span className="text-xs text-muted">{c.count.toLocaleString()} rows</span>
             <span className="ml-auto flex items-center gap-1.5">
               {c.hasFile ? (

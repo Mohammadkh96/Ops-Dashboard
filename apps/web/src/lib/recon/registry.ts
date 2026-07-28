@@ -25,21 +25,107 @@ export const CASHIER_MAP: FieldMap & { entityCol: string } = {
 };
 
 // ── Built-in PSP registry (seed). Users can edit/remove these and add their own. ──
+//
+// Paystrax, ForumPay and Match2pay settle SEPARATELY per entity, so each has
+// its own config and therefore its own upload slot — mirroring the production
+// import catalog (Paystrax_SL / Paystrax_MU, ...). Rapyd, Beem and VirtualPay
+// are shared across entities ("All"). VirtualPay refunds arrive as a distinct
+// report, so they are a distinct source.
+//
+// Routing is entity-aware: a cashier row's Shop decides whether it goes to the
+// Saint Lucia or the Mauritius config (see routePsp in engine.ts).
+
+const PAYSTRAX_FIELDS: FieldMap = {
+  idCols: ["UniqueId", "TransactionId"],
+  amountCol: "Debit,Credit",
+  currencyCol: "Currency",
+  statusCol: "Result",
+  typeCol: "PaymentType",
+  dateCol: "RequestTimestamp",
+};
+
+const FORUMPAY_FIELDS: FieldMap = {
+  idCols: ["payment id", "pos id", "reference no"],
+  amountCol: "invoice amount,original invoice amount",
+  currencyCol: "invoice currency",
+  statusCol: "confirmed",
+  typeCol: "type",
+  dateCol: "confirmed",
+};
+
+const MATCH2PAY_FIELDS: FieldMap = {
+  idCols: ["Payment ID"],
+  amountCol: "Final amount,Transaction amount",
+  currencyCol: "Final currency",
+  statusCol: "Status",
+  typeCol: "Type",
+  dateCol: "Created",
+};
+
 export const DEFAULT_PSPS: PspConfig[] = [
+  // ── ForumPay (crypto) — per entity ──
   {
-    id: "paystrax",
-    label: "Paystrax",
-    entity: "All",
-    fields: {
-      idCols: ["UniqueId", "TransactionId"],
-      amountCol: "Debit,Credit",
-      currencyCol: "Currency",
-      statusCol: "Result",
-      typeCol: "PaymentType",
-      dateCol: "RequestTimestamp",
-    },
-    activeStatuses: ["APPROVED", "OK", "SUCCESS"],
-    failedStatuses: ["DECLINED", "ERROR"],
+    id: "forumpay_sl",
+    label: "ForumPay — Saint Lucia",
+    entity: "Saint Lucia",
+    fields: { ...FORUMPAY_FIELDS },
+    activeStatuses: ["true", "1", "yes", "confirmed"],
+    failedStatuses: ["false", "0", "no", "cancelled"],
+    amountTolerance: 0.05,
+    dateWindowMins: 240,
+    depositTypes: ["SELL"],
+    withdrawalTypes: ["BUY"],
+    routeMatch: ["forumpay", "forum", "crypto"],
+    builtin: true,
+  },
+  {
+    id: "forumpay_mu",
+    label: "ForumPay — Mauritius",
+    entity: "Mauritius",
+    fields: { ...FORUMPAY_FIELDS },
+    activeStatuses: ["true", "1", "yes", "confirmed"],
+    failedStatuses: ["false", "0", "no", "cancelled"],
+    amountTolerance: 0.05,
+    dateWindowMins: 240,
+    depositTypes: ["SELL"],
+    withdrawalTypes: ["BUY"],
+    routeMatch: ["forumpay", "forum", "crypto"],
+    builtin: true,
+  },
+  // ── Match2pay — per entity. The cashier reports this provider as
+  //    "MatchTrade_NDP" (terminal "MT_..."), so those are routing aliases. ──
+  {
+    id: "match2pay_sl",
+    label: "Match2pay — Saint Lucia",
+    entity: "Saint Lucia",
+    fields: { ...MATCH2PAY_FIELDS },
+    activeStatuses: ["DONE", "COMPLETED", "SUCCESS", "APPROVED"],
+    failedStatuses: ["DECLINED", "CANCELLED", "REJECTED"],
+    amountTolerance: 0.05,
+    dateWindowMins: 4320,
+    routeMatch: ["match2pay", "matchtrade", "mt"],
+    builtin: true,
+  },
+  {
+    id: "match2pay_mu",
+    label: "Match2pay — Mauritius",
+    entity: "Mauritius",
+    fields: { ...MATCH2PAY_FIELDS },
+    activeStatuses: ["DONE", "COMPLETED", "SUCCESS", "APPROVED"],
+    failedStatuses: ["DECLINED", "CANCELLED", "REJECTED"],
+    amountTolerance: 0.05,
+    dateWindowMins: 4320,
+    routeMatch: ["match2pay", "matchtrade", "mt"],
+    builtin: true,
+  },
+  // ── Paystrax (cards) — per entity ──
+  {
+    id: "paystrax_sl",
+    label: "Paystrax — Saint Lucia",
+    entity: "Saint Lucia",
+    fields: { ...PAYSTRAX_FIELDS },
+    activeStatuses: ["ACK", "APPROVED", "OK", "SUCCESS"],
+    failedStatuses: ["NOK", "DECLINED", "ERROR"],
     amountTolerance: 0.05,
     dateWindowMins: 180,
     depositTypes: ["DB"],
@@ -48,45 +134,20 @@ export const DEFAULT_PSPS: PspConfig[] = [
     builtin: true,
   },
   {
-    id: "forumpay",
-    label: "ForumPay",
-    entity: "All",
-    fields: {
-      idCols: ["payment id", "pos id", "reference no"],
-      amountCol: "invoice amount,original invoice amount",
-      currencyCol: "invoice currency",
-      statusCol: "confirmed",
-      typeCol: "type",
-      dateCol: "confirmed",
-    },
-    activeStatuses: ["true", "1", "yes", "confirmed"],
-    failedStatuses: ["false", "0", "no"],
+    id: "paystrax_mu",
+    label: "Paystrax — Mauritius",
+    entity: "Mauritius",
+    fields: { ...PAYSTRAX_FIELDS },
+    activeStatuses: ["ACK", "APPROVED", "OK", "SUCCESS"],
+    failedStatuses: ["NOK", "DECLINED", "ERROR"],
     amountTolerance: 0.05,
-    dateWindowMins: 240,
-    depositTypes: ["SELL"],
-    withdrawalTypes: ["BUY"],
-    routeMatch: ["forumpay"],
+    dateWindowMins: 180,
+    depositTypes: ["DB"],
+    withdrawalTypes: ["CD", "RF"],
+    routeMatch: ["paystrax"],
     builtin: true,
   },
-  {
-    id: "match2pay",
-    label: "Match2pay",
-    entity: "All",
-    fields: {
-      idCols: ["Payment ID"],
-      amountCol: "Final amount,Transaction amount",
-      currencyCol: "Final currency",
-      statusCol: "Status",
-      typeCol: "Type",
-      dateCol: "Created",
-    },
-    activeStatuses: ["COMPLETED", "SUCCESS", "APPROVED"],
-    failedStatuses: ["DECLINED", "CANCELLED"],
-    amountTolerance: 0.05,
-    dateWindowMins: 4320,
-    routeMatch: ["match2pay"],
-    builtin: true,
-  },
+  // ── Shared across entities ──
   {
     id: "rapyd",
     label: "Rapyd",
@@ -127,7 +188,7 @@ export const DEFAULT_PSPS: PspConfig[] = [
   },
   {
     id: "virtualpay",
-    label: "VirtualPay",
+    label: "VirtualPay — Transactions",
     entity: "All",
     fields: {
       idCols: ["Transaction Number"],
@@ -137,91 +198,33 @@ export const DEFAULT_PSPS: PspConfig[] = [
       typeCol: "Payment Type",
       dateCol: "Date - Time",
     },
-    activeStatuses: ["SUCCESS", "COMPLETED", "APPROVED"],
-    failedStatuses: ["FAILED", "DECLINED"],
+    activeStatuses: ["1", "SUCCESS", "COMPLETED", "APPROVED"],
+    failedStatuses: ["4", "FAILED", "DECLINED"],
     amountTolerance: 0.5,
     dateWindowMins: 240,
     routeMatch: ["virtualpay"],
     builtin: true,
   },
-  // ── Providers seen in the live cashier data but whose settlement export
-  // formats aren't yet confirmed. Routing is wired up via routeMatch; the
-  // column mappings below are sensible starters — verify/adjust them against
-  // the real export in the PSP Registry after the first upload. ──
   {
-    id: "matchtrade",
-    label: "MatchTrade",
+    // Refunds are a separate VirtualPay report keyed on REF ID; a refund is a
+    // withdrawal-side flow, so it must never match a deposit.
+    id: "virtualpay_refunds",
+    label: "VirtualPay — Refunds",
     entity: "All",
     fields: {
-      idCols: ["Reference", "Transaction ID", "Payment ID"],
-      amountCol: "Amount",
+      idCols: ["REF ID", "Transaction Number"],
+      amountCol: "Refund Amount",
       currencyCol: "Currency",
-      statusCol: "Status",
-      typeCol: "Type",
-      dateCol: "Date",
+      statusCol: "Refund Status",
+      typeCol: "",
+      dateCol: "Refund Completion Date,Transaction Date",
     },
-    activeStatuses: ["COMPLETED", "SUCCESS", "APPROVED", "DONE"],
-    failedStatuses: ["FAILED", "DECLINED", "CANCELLED", "REJECTED"],
-    amountTolerance: 0.05,
-    dateWindowMins: 4320,
-    routeMatch: ["matchtrade"],
-    builtin: true,
-  },
-  {
-    id: "paymaxis",
-    label: "Paymaxis",
-    entity: "All",
-    fields: {
-      idCols: ["Reference Id", "Payment Id", "Merchant Reference"],
-      amountCol: "Amount",
-      currencyCol: "Currency",
-      statusCol: "State",
-      typeCol: "Payment Type",
-      dateCol: "Created At",
-    },
-    activeStatuses: ["COMPLETED", "SUCCESS", "APPROVED"],
-    failedStatuses: ["FAILED", "DECLINED", "CANCELLED"],
-    amountTolerance: 0.05,
-    dateWindowMins: 4320,
-    routeMatch: ["paymaxis"],
-    builtin: true,
-  },
-  {
-    id: "heropayments",
-    label: "Hero Payments",
-    entity: "All",
-    fields: {
-      idCols: ["Transaction ID", "Reference"],
-      amountCol: "Amount",
-      currencyCol: "Currency",
-      statusCol: "Status",
-      typeCol: "Type",
-      dateCol: "Date",
-    },
-    activeStatuses: ["COMPLETED", "SUCCESS", "APPROVED"],
-    failedStatuses: ["FAILED", "DECLINED"],
-    amountTolerance: 0.05,
-    dateWindowMins: 4320,
-    routeMatch: ["heropayments", "hero"],
-    builtin: true,
-  },
-  {
-    id: "limepay",
-    label: "LimePay",
-    entity: "All",
-    fields: {
-      idCols: ["Transaction ID", "Reference"],
-      amountCol: "Amount",
-      currencyCol: "Currency",
-      statusCol: "Status",
-      typeCol: "Type",
-      dateCol: "Date",
-    },
-    activeStatuses: ["COMPLETED", "SUCCESS", "APPROVED"],
-    failedStatuses: ["FAILED", "DECLINED"],
-    amountTolerance: 0.05,
-    dateWindowMins: 4320,
-    routeMatch: ["limepay", "lime"],
+    activeStatuses: ["SUCCESS", "COMPLETED"],
+    failedStatuses: ["FAILED", "DECLINED", "REJECTED"],
+    amountTolerance: 0.5,
+    dateWindowMins: 7200,
+    withdrawalTypes: ["Refund"],
+    routeMatch: ["virtualpay"],
     builtin: true,
   },
 ];

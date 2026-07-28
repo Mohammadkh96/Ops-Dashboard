@@ -203,14 +203,28 @@ const isHashKey = (v: string) => /^[0-9a-f]{16,}$/i.test(v);
 // and non-alphanumerics, then match against each PSP's routeMatch aliases
 // (falling back to id/label).
 const canonProvider = (s: string) => s.toLowerCase().replace(/_ndp\b/g, "").replace(/[^a-z0-9]/g, "");
-function routePsp(providerText: string, psps: PspConfig[]): PspConfig | null {
+/**
+ * Routes a cashier Provider/Terminal string to a PSP config.
+ *
+ * Entity matters: Paystrax, ForumPay and Match2pay settle separately per
+ * entity, so several configs share the same provider aliases and the cashier
+ * row's entity (from its Shop) decides which one owns the row. An exact entity
+ * match wins, then an "All" config, then anything that matched — so a
+ * single-config setup still works.
+ */
+function routePsp(providerText: string, psps: PspConfig[], entity = ""): PspConfig | null {
   const r = canonProvider(providerText);
   if (!r) return null;
-  for (const p of psps) {
+  const hits = psps.filter((p) => {
     const aliases = p.routeMatch?.length ? p.routeMatch : [p.id, p.label];
-    if (aliases.some((a) => a && r.includes(canonProvider(a)))) return p;
-  }
-  return null;
+    return aliases.some((a) => a && r.includes(canonProvider(a)));
+  });
+  if (!hits.length) return null;
+  return (
+    (entity && hits.find((p) => p.entity === entity)) ||
+    hits.find((p) => p.entity === "All") ||
+    hits[0]
+  );
 }
 
 /**
@@ -223,20 +237,32 @@ export function providerCoverage(
   cashier: Dataset | null,
   psps: PspConfig[],
   pspData: Record<string, Dataset>,
-): { provider: string; count: number; psp: string | null; hasFile: boolean }[] {
+): { provider: string; entity: string; count: number; psp: string | null; hasFile: boolean }[] {
   if (!cashier) return [];
-  const counts = new Map<string, number>();
+  // Group by provider AND entity, because the same provider settles through a
+  // different config (and therefore a different file) per entity.
+  const counts = new Map<string, { provider: string; entity: string; count: number }>();
   cashier.rows.forEach((c) => {
     const t = firstVal(c, [CASHIER_MAP.typeCol ?? ""]);
     if (t && !/deposit|withdraw|refund/i.test(t)) return; // payment rows only
-    const prov = firstVal(c, ["Provider"]) || firstVal(c, ["Terminal"]) || "(unrouted)";
-    counts.set(prov, (counts.get(prov) ?? 0) + 1);
+    const provider = firstVal(c, ["Provider"]) || firstVal(c, ["Terminal"]) || "(unrouted)";
+    const entity = entityFromShop(firstVal(c, [CASHIER_MAP.entityCol]));
+    const k = `${provider}|${entity}`;
+    const e = counts.get(k) ?? { provider, entity, count: 0 };
+    e.count++;
+    counts.set(k, e);
   });
-  return [...counts.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .map(([provider, count]) => {
-      const p = provider === "(unrouted)" ? null : routePsp(provider, psps);
-      return { provider, count, psp: p?.label ?? null, hasFile: !!(p && pspData[p.id]?.rows.length) };
+  return [...counts.values()]
+    .sort((a, b) => b.count - a.count)
+    .map(({ provider, entity, count }) => {
+      const p = provider === "(unrouted)" ? null : routePsp(provider, psps, entity);
+      return {
+        provider,
+        entity,
+        count,
+        psp: p?.label ?? null,
+        hasFile: !!(p && pspData[p.id]?.rows.length),
+      };
     });
 }
 
@@ -698,9 +724,14 @@ function reconcileLayer2(cashier: Dataset, psps: PspConfig[], pspData: Record<st
     rowIndexOf[p.id] = ri;
   });
 
-  // Which PSP does a cashier row route to? (see routePsp).
+  // Which PSP does a cashier row route to? The row's entity picks the correct
+  // per-entity config (see routePsp).
   const routeToPsp = (c: Row): PspConfig | null =>
-    routePsp(`${firstVal(c, ["Provider"])} ${firstVal(c, ["Terminal"])}`, psps);
+    routePsp(
+      `${firstVal(c, ["Provider"])} ${firstVal(c, ["Terminal"])}`,
+      psps,
+      entityFromShop(firstVal(c, [CASHIER_MAP.entityCol])),
+    );
 
   cashier.rows.forEach((c) => {
     const entity = entityFromShop(firstVal(c, [CASHIER_MAP.entityCol]));
