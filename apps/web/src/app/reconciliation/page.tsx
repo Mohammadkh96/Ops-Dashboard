@@ -57,13 +57,22 @@ const TABS = [
 ] as const;
 type TabKey = (typeof TABS)[number]["key"];
 
-const STATUS_META: Record<ReconRow["status"], { label: string; variant: "green" | "orange" | "red" | "purple" }> = {
-  matched: { label: "Matched", variant: "green" },
+const STATUS_META: Record<
+  ReconRow["status"],
+  { label: string; variant: "green" | "orange" | "red" | "purple" | "blue" | "default" }
+> = {
+  matched: { label: "Reconciled", variant: "green" },
   amount: { label: "Amount", variant: "orange" },
   status: { label: "Status Mismatch", variant: "red" },
-  "unmatched-cashier": { label: "Unmatched (Cashier)", variant: "purple" },
-  "unmatched-psp": { label: "Unmatched (PSP)", variant: "purple" },
-  "unmatched-crm": { label: "Unmatched (CRM)", variant: "purple" },
+  "needs-review": { label: "Needs Review", variant: "orange" },
+  "unmatched-cashier": { label: "Missing in CRM", variant: "purple" },
+  "unmatched-psp": { label: "Missing in PSP", variant: "purple" },
+  "unmatched-crm": { label: "Missing in Cashier", variant: "purple" },
+  // ⏭️ informational — never counted as exceptions
+  "out-of-scope": { label: "Out of Scope", variant: "default" },
+  "agreed-decline": { label: "Agreed Decline", variant: "default" },
+  incomplete: { label: "Incomplete", variant: "default" },
+  "not-reconciled": { label: "Not Reconciled", variant: "blue" },
 };
 
 const money = (n: number | null) =>
@@ -810,6 +819,24 @@ function ResultsTab({
 }) {
   const columns: Column<ReconRow>[] = useMemo(
     () => [
+      {
+        key: "prio",
+        header: "Prio",
+        render: (r) => (
+          <span
+            className={cn(
+              "rounded px-1.5 py-0.5 font-mono text-[11px] font-medium",
+              r.priority === "P1"
+                ? "bg-accent-red-soft text-accent-red"
+                : r.priority === "P2"
+                  ? "bg-accent-orange-soft text-accent-orange"
+                  : "bg-card text-muted",
+            )}
+          >
+            {r.priority}
+          </span>
+        ),
+      },
       { key: "status", header: "Status", render: (r) => <Badge variant={STATUS_META[r.status].variant}>{STATUS_META[r.status].label}</Badge> },
       { key: "src", header: "Source", render: (r) => <span className="text-muted-foreground">{r.psp ?? "CRM ↔ Cashier"}</span> },
       { key: "brand", header: "Brand", render: (r) => <span className="text-muted-foreground">{r.brand || "—"}</span> },
@@ -1231,6 +1258,7 @@ function ExceptionsSection({
   const [fStatus, setFStatus] = useState<"all" | ReconRow["status"]>("all");
   const [fBrand, setFBrand] = useState<string>(initialBrand ?? "all");
   const [fEntity, setFEntity] = useState<string>("all");
+  const [fPrio, setFPrio] = useState<string>("all");
   const [fPsp, setFPsp] = useState<string>(initialPsp ?? "all");
   const [q, setQ] = useState("");
 
@@ -1255,6 +1283,7 @@ function ExceptionsSection({
         if (fStatus !== "all" && r.status !== fStatus) return false;
         if (fBrand !== "all" && r.brand !== fBrand) return false;
         if (fEntity !== "all" && r.entity !== fEntity) return false;
+        if (fPrio !== "all" && r.priority !== fPrio) return false;
         if (fPsp !== "all" && (r.psp ?? "") !== fPsp) return false;
         if (q) {
           const hay = `${r.leftId} ${r.rightId} ${r.note} ${r.psp ?? ""} ${r.brand} ${r.entity}`.toLowerCase();
@@ -1262,7 +1291,7 @@ function ExceptionsSection({
         }
         return true;
       }),
-    [exceptions, fLayer, fStatus, fBrand, fEntity, fPsp, q],
+    [exceptions, fLayer, fStatus, fBrand, fEntity, fPrio, fPsp, q],
   );
 
   const sel = "h-9 cursor-pointer rounded-lg border border-border bg-card px-2.5 text-sm outline-none focus:border-border-strong";
@@ -1315,13 +1344,20 @@ function ExceptionsSection({
               <option key={p} value={p}>{p}</option>
             ))}
           </select>
+          <select value={fPrio} onChange={(e) => setFPrio(e.target.value)} className={sel}>
+            <option value="all">All priorities</option>
+            <option value="P1">P1 — act now</option>
+            <option value="P2">P2 — high</option>
+            <option value="P3">P3 — review</option>
+          </select>
           <select value={fStatus} onChange={(e) => setFStatus(e.target.value as typeof fStatus)} className={sel}>
             <option value="all">All statuses</option>
             <option value="status">Status mismatch</option>
             <option value="amount">Amount mismatch</option>
-            <option value="unmatched-crm">Unmatched CRM</option>
-            <option value="unmatched-cashier">Unmatched Cashier</option>
-            <option value="unmatched-psp">Unmatched PSP</option>
+            <option value="needs-review">Needs review</option>
+            <option value="unmatched-crm">Missing in Cashier</option>
+            <option value="unmatched-cashier">Missing in CRM</option>
+            <option value="unmatched-psp">Missing in PSP</option>
           </select>
           <Button
             variant="secondary"

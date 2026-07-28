@@ -58,12 +58,20 @@ export type MatchStatus =
   | "matched"
   | "amount"
   | "status"
+  | "needs-review"
   | "unmatched-cashier"
   | "unmatched-psp"
-  | "unmatched-crm";
+  | "unmatched-crm"
+  // ⏭️ informational — excluded from exceptions and match rates
+  | "out-of-scope" // internal transfers: no cashier/PSP counterpart exists
+  | "agreed-decline" // every settled leg declined; no money moved
+  | "incomplete" // never settled, never booked — abandoned attempt
+  | "not-reconciled"; // the PSP's settlement file was not uploaded
 
 export type ReconRow = {
   status: MatchStatus;
+  /** P1 (act now) → P7 (informational). Drives Action-Center ordering. */
+  priority: string;
   entity: string;
   brand: string;
   psp?: string;

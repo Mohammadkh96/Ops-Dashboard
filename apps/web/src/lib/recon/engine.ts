@@ -1,4 +1,7 @@
 import { CASHIER_MAP, CRM_MAP } from "./registry";
+import { classifyStatus, type StatusClass } from "./status";
+import { buildFamilies, uniqueKeys, normKey, type Families } from "./families";
+import { combineVerdict, isInformational, priorityOf } from "./verdict";
 import type {
   Breakdown,
   Dataset,
@@ -135,6 +138,10 @@ function emptyStats(): LayerStats {
 function computeStats(rows: ReconRow[]): LayerStats {
   const s = emptyStats();
   rows.forEach((r) => {
+    // ⏭️ informational rows (out of scope, agreed decline, incomplete, PSP file
+    // not uploaded) are excluded from the denominator so the match rate
+    // measures reconciliation quality, not data volume.
+    if (isInformational(r.status)) return;
     s.total++;
     if (r.status === "matched") {
       s.matched++;
@@ -244,6 +251,25 @@ function keysByShape(row: Row, cols: string[]): { hash: string[]; ref: string[] 
   return { hash, ref };
 }
 
+// The CRM books in the shop's base currency, so Layer 1 must compare against
+// "Amount in Shop Base Currency" and fall back to the transaction amount only
+// when it is blank. Layer 2 keeps using the transaction amount, which is the
+// basis the PSPs settle and report in.
+function cashAmountShopBase(c: Row): number {
+  const sb = num(firstVal(c, ["Amount in Shop Base Currency"]));
+  return sb || num(fieldVal(c, CASHIER_MAP.amountCol));
+}
+
+// Identifier sets used to build payment families (see families.ts).
+const crmFamilyKeys = (cr: Row, kind: Kind) =>
+  uniqueKeys(
+    kind === "withdrawal"
+      ? [firstVal(cr, ["Withdrawal Psp Transaction ID"]), firstVal(cr, ["Withdrawal Merchant ID"])]
+      : [firstVal(cr, ["Psp Transaction ID"]), firstVal(cr, ["Order No"]), firstVal(cr, ["Merchant Trn Ref"])],
+  );
+const cashFamilyKeys = (c: Row) =>
+  uniqueKeys([firstVal(c, ["Reference ID"]), firstVal(c, ["ID"]), firstVal(c, ["External Id"])]);
+
 // ═══════════════════════════════════════════════════════════
 //  LAYER 1 — CRM ↔ CASHIER (unique hash first, then customer ref)
 // ═══════════════════════════════════════════════════════════
@@ -255,11 +281,15 @@ function reconcileLayer1(crm: Dataset, cashier: Dataset, tolAbs: number, tolPct:
   const crmKindOf = (cr: Row): Kind => kindFromType(firstVal(cr, [CRM_MAP.typeCol ?? ""]));
   const cashKindOf = (c: Row): Kind => kindFromType(firstVal(c, [CASHIER_MAP.typeCol ?? ""]));
 
-  // Which CRM rows are in scope (deposits & withdrawals only; internal
-  // transfers and other noise are excluded).
+  // Which CRM rows are in scope (deposits & withdrawals only). Internal
+  // transfers are book movements with no cashier/PSP leg — they are recorded
+  // as Out of Scope rather than silently dropped, so the numbers are auditable
+  // without inflating the exception queue.
   const scope: number[] = [];
+  const outOfScope: number[] = [];
   crm.rows.forEach((cr, i) => {
     if (crmKindOf(cr)) scope.push(i);
+    else if (/internal transfer/i.test(firstVal(cr, [CRM_MAP.typeCol ?? ""]))) outOfScope.push(i);
   });
 
   // Show the identifier that actually keyed the row (withdrawal ref for
@@ -277,26 +307,65 @@ function reconcileLayer1(crm: Dataset, cashier: Dataset, tolAbs: number, tolPct:
   // NOT a transaction id (one customer reuses it across many deposits), so we
   // only trust a reference pair when the amount also agrees — otherwise we'd
   // be pairing two unrelated transactions and calling the gap a "mismatch".
+  // Higher score wins. Weights mirror the production Apps Script: a directly
+  // shared key dominates, then status agreement, then how close the amounts and
+  // timestamps are. Scoring beats "first hit" because a customer's retries all
+  // share keys and only one of them is the real counterpart.
+  const scorePair = (cr: Row, c: Row): number => {
+    let pts = 0;
+    const crmAmt = num(fieldVal(cr, CRM_MAP.amountCol));
+    const cashAmt = cashAmountShopBase(c);
+    const crmC = classifyStatus(firstVal(cr, [CRM_MAP.statusCol ?? ""]), "CRM");
+    const cashC = classifyStatus(firstVal(c, [CASHIER_MAP.statusCol ?? ""]), "Cashier");
+    const kind = crmKindOf(cr);
+
+    const shared = crmFamilyKeys(cr, kind).some((k) => cashFamilyKeys(c).includes(k));
+    if (shared) pts += 5000;
+
+    const crmCust = uniqueKeys([firstVal(cr, ["Customer No"]), firstVal(cr, ["TradingAccount"]), firstVal(cr, ["Email"])]);
+    const cashCust = uniqueKeys([
+      firstVal(c, ["Customer Account Number"]), firstVal(c, ["Customer Reference ID"]), firstVal(c, ["Customer Email"]),
+    ]);
+    if (crmCust.some((k) => cashCust.includes(k))) pts += 700;
+
+    if (crmC === "ACTIVE" && cashC === "ACTIVE") pts += 3000;
+    else if (crmC === "FAILED" && cashC === "FAILED") pts += 2800;
+    else if ((crmC === "ACTIVE" && cashC === "FAILED") || (crmC === "FAILED" && cashC === "ACTIVE")) pts -= 1500;
+
+    const amtDiff = Math.abs(crmAmt - cashAmt);
+    if (amtDiff < 0.01) pts += 1200;
+    else if (amtDiff < 1) pts += 900;
+    else if (amtDiff <= 5) pts += 600;
+    else if (amtDiff <= 20) pts += 250;
+    else pts -= Math.min(500, amtDiff);
+
+    const mins = minutesBetween(
+      firstVal(cr, ["LastUpdated", "CreatedOn"]),
+      firstVal(c, ["Finalized", "Updated", "Created"]),
+    );
+    if (mins <= 60) pts += 350;
+    else if (mins <= 1440) pts += 200;
+    else if (mins <= 10080) pts += 75;
+
+    return pts;
+  };
+
   const pickBest = (cashIdx: number, cand: Set<number>, requireAmount: boolean): number => {
     const c = cashier.rows[cashIdx];
-    const cashAmt = num(fieldVal(c, CASHIER_MAP.amountCol));
-    const cashState = firstVal(c, [CASHIER_MAP.statusCol ?? ""]);
+    const cashAmt = cashAmountShopBase(c);
     let best = -1;
-    let bestScore = Number.POSITIVE_INFINITY;
+    let bestScore = Number.NEGATIVE_INFINITY;
     cand.forEach((ci) => {
       if (matchedCrm.has(ci)) return;
       const cr = crm.rows[ci];
       const crmAmt = num(fieldVal(cr, CRM_MAP.amountCol));
-      const crmStatus = firstVal(cr, [CRM_MAP.statusCol ?? ""]);
       const amtDiff = Math.abs(crmAmt - cashAmt);
       if (requireAmount) {
         const tol = Math.max(tolAbs, (Math.abs(crmAmt) * tolPct) / 100);
         if (amtDiff > tol) return; // reference + differing amount ≠ same transaction
       }
-      const statusAgree =
-        (isActive(crmStatus) && isActive(cashState)) || (isFailed(crmStatus) && isFailed(cashState));
-      const score = (statusAgree ? 0 : 1_000_000) + amtDiff;
-      if (score < bestScore) {
+      const score = scorePair(cr, c);
+      if (score > bestScore) {
         bestScore = score;
         best = ci;
       }
@@ -352,36 +421,45 @@ function reconcileLayer1(crm: Dataset, cashier: Dataset, tolAbs: number, tolPct:
   aggregatePass();
   runPass("ref", "Customer ref", false);
 
-  // Classify matched pairs
+  // Classify matched pairs through the combined verdict engine, so a pending
+  // leg is never mistaken for a pass or a fail.
   pairs.forEach(({ crmIdx, cashIdx, via }) => {
     const cr = crm.rows[crmIdx];
     const c = cashier.rows[cashIdx];
     const crmAmt = num(fieldVal(cr, CRM_MAP.amountCol));
     const crmStatus = firstVal(cr, [CRM_MAP.statusCol ?? ""]);
     const entity = entityFromBrand(firstVal(cr, [CRM_MAP.entityCol]));
-    const cashAmt = num(fieldVal(c, CASHIER_MAP.amountCol));
+    const cashAmt = cashAmountShopBase(c);
     const cashState = firstVal(c, [CASHIER_MAP.statusCol ?? ""]);
     const diff = round(crmAmt - cashAmt);
     const tol = Math.max(tolAbs, (Math.abs(crmAmt) * tolPct) / 100);
 
-    if (isFailed(crmStatus) && isFailed(cashState)) return; // both failed → not a discrepancy
-    let status: ReconRow["status"] = "matched";
-    let note = `Matched on ${via}`;
-    if ((isActive(crmStatus) && isFailed(cashState)) || (isFailed(crmStatus) && isActive(cashState))) {
-      status = "status";
-      note = `CRM: ${crmStatus || "?"} vs Cashier: ${cashState || "?"}`;
-    } else if (Math.abs(diff) > tol) {
-      status = "amount";
-      note = `Amount diff ${diff}${tolPct ? ` (tol ${tolPct}%)` : ""}`;
-      // A unique hash is a true same-transaction match, so its amount gap is a
-      // real discrepancy. A customer reference is reused across deposits, so an
-      // amount gap there may just mean two different transactions share a ref.
-      if (via === "Customer ref") note += " — matched on customer reference, verify (may be different transactions)";
-    }
-    rows.push(mkRow(status, entity, undefined, via, displayKey(cr),
+    const v = combineVerdict({
+      crm: classifyStatus(crmStatus, "CRM"),
+      cash: classifyStatus(cashState, "Cashier"),
+      psp: "MISSING",
+      hasCRM: true,
+      hasCash: true,
+      hasPSP: false,
+      l1diff: diff,
+      l2diff: 0,
+      tolL1: tol,
+      tolL2: Number.POSITIVE_INFINITY,
+      crmExpected: true,
+      pspExpected: false,
+    });
+
+    let note = v.status === "matched" ? `Matched on ${via}` : v.reason;
+    // A hash is a unique transaction id, so an amount gap on it is a real
+    // discrepancy. A customer reference is reused across a customer's
+    // deposits, so flag those for verification.
+    if (v.status === "amount" && via === "Customer ref")
+      note += " — matched on customer reference, verify (may be different transactions)";
+
+    rows.push(mkRow(v.status, entity, undefined, via, displayKey(cr),
       crmAmt, firstVal(cr, [CRM_MAP.currencyCol ?? ""]), crmStatus,
       firstVal(c, CASHIER_MAP.idCols), cashAmt, firstVal(c, [CASHIER_MAP.currencyCol ?? ""]),
-      cashState, diff, note));
+      cashState, diff, note, v.priority));
   });
 
   // ── Aggregation / netting pass ─────────────────────────────────────────
@@ -421,7 +499,7 @@ function reconcileLayer1(crm: Dataset, cashier: Dataset, tolAbs: number, tolPct:
       if (!crmIdxs.length || !cashIdxs.length) return;
       if (crmIdxs.length === 1 && cashIdxs.length === 1) return; // pure 1:1 belongs to the 1:1 passes
       const crmSum = round(crmIdxs.reduce((s, i) => s + num(fieldVal(crm.rows[i], CRM_MAP.amountCol)), 0));
-      const cashSum = round(cashIdxs.reduce((s, i) => s + num(fieldVal(cashier.rows[i], CASHIER_MAP.amountCol)), 0));
+      const cashSum = round(cashIdxs.reduce((s, i) => s + cashAmountShopBase(cashier.rows[i]), 0));
       const tol = Math.max(tolAbs, (Math.abs(cashSum) * tolPct) / 100);
       if (Math.abs(crmSum - cashSum) > tol) return; // totals don't reconcile → leave for unmatched reporting
       crmIdxs.forEach((i) => matchedCrm.add(i));
@@ -461,7 +539,9 @@ function reconcileLayer1(crm: Dataset, cashier: Dataset, tolAbs: number, tolPct:
     if (matchedCrm.has(crmIdx)) return;
     const cr = crm.rows[crmIdx];
     const crmStatus = firstVal(cr, [CRM_MAP.statusCol ?? ""]);
-    if (isFailed(crmStatus)) return; // failed & unmatched → expected noise
+    // A settled decline with no counterpart is an agreed decline, not a break.
+    // A PENDING leg is NOT a decline, so it still surfaces below.
+    if (classifyStatus(crmStatus, "CRM") === "FAILED") return;
     const kind = crmKindOf(cr);
     const shapes = keysByShape(cr, crmKeyCols(kind));
     const anyKey = shapes.hash.length + shapes.ref.length > 0;
@@ -480,19 +560,124 @@ function reconcileLayer1(crm: Dataset, cashier: Dataset, tolAbs: number, tolPct:
   cashier.rows.forEach((c, i) => {
     if (usedCash.has(i)) return;
     const cashState = firstVal(c, [CASHIER_MAP.statusCol ?? ""]);
-    if (isFailed(cashState)) return;
+    const cashClass = classifyStatus(cashState, "Cashier");
+    if (cashClass === "FAILED") return;
     const kind = cashKindOf(c);
+    // A refund is money returning to the customer; the CRM books it as a
+    // withdrawal, but a refund with no CRM leg is not automatically a break.
+    const isRefund = /refund/i.test(firstVal(c, [CASHIER_MAP.typeCol ?? ""]));
     const shapes = keysByShape(c, CASH_KEYS);
     const shared = [...shapes.hash, ...shapes.ref].some((k) => crmKeysAll.has(nk(kind, k)));
-    rows.push(mkRow("unmatched-cashier", entityFromShop(firstVal(c, [CASHIER_MAP.entityCol])),
+    // Only a COMPLETED cashier row with no CRM record is a P1 gap — money left
+    // the account and the platform has no record of it. A row that never
+    // settled AND was never booked in the CRM is an abandoned attempt, not a
+    // discrepancy: nothing was approved, nothing was declined, and no money is
+    // confirmed to have moved. It is recorded but folded out of the queue.
+    const status: ReconRow["status"] = cashClass === "ACTIVE" ? "unmatched-cashier" : "incomplete";
+    const reason =
+      cashClass !== "ACTIVE"
+        ? `Never settled (${cashState || "unknown"}) and never booked in the CRM — abandoned attempt`
+        : shared
+          ? "Key exists in CRM but amount/status didn't match — likely a different transaction reusing the reference"
+          : isRefund
+            ? "Completed refund with no CRM withdrawal — verify it was authorised"
+            : "In Cashier, no CRM payment with matching key (key-not-found)";
+    rows.push(mkRow(status, entityFromShop(firstVal(c, [CASHIER_MAP.entityCol])),
       undefined, "", "", null, "", "", firstVal(c, CASHIER_MAP.idCols),
-      num(fieldVal(c, CASHIER_MAP.amountCol)), firstVal(c, [CASHIER_MAP.currencyCol ?? ""]),
-      cashState, null, shared
-        ? "Key exists in CRM but amount/status didn't match — likely a different transaction reusing the reference"
-        : "In Cashier, no CRM payment with matching key (key-not-found)"));
+      cashAmountShopBase(c), firstVal(c, [CASHIER_MAP.currencyCol ?? ""]),
+      cashState, null, reason));
   });
 
+  // Internal transfers — recorded, but out of scope for payment reconciliation.
+  outOfScope.forEach((crmIdx) => {
+    const cr = crm.rows[crmIdx];
+    rows.push(mkRow("out-of-scope", entityFromBrand(firstVal(cr, [CRM_MAP.entityCol])), undefined,
+      "", displayKey(cr), num(fieldVal(cr, CRM_MAP.amountCol)),
+      firstVal(cr, [CRM_MAP.currencyCol ?? ""]), firstVal(cr, [CRM_MAP.statusCol ?? ""]),
+      "", null, "", "", null,
+      "Internal transfer to/from a trading account — an internal book movement with no cashier or PSP counterpart"));
+  });
+
+  // ── Blind-spot exceptions ───────────────────────────────────────────────
+  // The 1:1 grid can only report on pairs it formed. These are the cases it
+  // structurally cannot see: a whole family of cashier attempts that all
+  // failed while the CRM says approved. Anchored on payment families so a
+  // successful retry anywhere in the chain correctly suppresses the flag.
+  rows.push(...familyBlindSpots(crm, cashier, scope, crmKindOf, cashKindOf));
+
   return rows;
+}
+
+/**
+ * Family-level status conflicts. For each linked family of identifiers, if the
+ * CRM has an ACTIVE row but NO cashier attempt in that family succeeded, that
+ * is a real discrepancy the pairwise grid misses (it would have matched the
+ * CRM row to one failed attempt and reported a single mismatch, or nothing).
+ */
+function familyBlindSpots(
+  crm: Dataset,
+  cashier: Dataset,
+  scope: number[],
+  crmKindOf: (r: Row) => Kind,
+  cashKindOf: (r: Row) => Kind,
+): ReconRow[] {
+  const out: ReconRow[] = [];
+  const groups: string[][] = [];
+  scope.forEach((i) => groups.push(crmFamilyKeys(crm.rows[i], crmKindOf(crm.rows[i]))));
+  cashier.rows.forEach((c) => {
+    if (cashKindOf(c)) groups.push(cashFamilyKeys(c));
+  });
+  const fam: Families = buildFamilies(groups);
+
+  const crmByFam = new Map<string, number[]>();
+  scope.forEach((i) => {
+    const id = fam.idForKeys(crmFamilyKeys(crm.rows[i], crmKindOf(crm.rows[i])));
+    if (!id) return;
+    const arr = crmByFam.get(id) ?? [];
+    arr.push(i);
+    crmByFam.set(id, arr);
+  });
+  const cashByFam = new Map<string, Row[]>();
+  cashier.rows.forEach((c) => {
+    if (!cashKindOf(c)) return;
+    const id = fam.idForKeys(cashFamilyKeys(c));
+    if (!id) return;
+    const arr = cashByFam.get(id) ?? [];
+    arr.push(c);
+    cashByFam.set(id, arr);
+  });
+
+  crmByFam.forEach((crmIdxs, id) => {
+    const cashRows = cashByFam.get(id) ?? [];
+    if (!cashRows.length) return; // no cashier leg at all — already reported as unmatched
+    const activeCrm = crmIdxs
+      .map((i) => crm.rows[i])
+      .filter((r) => classifyStatus(firstVal(r, [CRM_MAP.statusCol ?? ""]), "CRM") === "ACTIVE");
+    if (!activeCrm.length) return;
+    // A success anywhere in the family means the retry chain settled fine.
+    const anySuccess = cashRows.some(
+      (c) => classifyStatus(firstVal(c, [CASHIER_MAP.statusCol ?? ""]), "Cashier") === "ACTIVE",
+    );
+    if (anySuccess) return;
+    const failed = cashRows.filter(
+      (c) => classifyStatus(firstVal(c, [CASHIER_MAP.statusCol ?? ""]), "Cashier") === "FAILED",
+    );
+    if (!failed.length) return; // all unresolved — covered by needs-review above
+    const cr = activeCrm[0];
+    const c = failed[0];
+    const crmAmt = num(fieldVal(cr, CRM_MAP.amountCol));
+    const cashAmt = cashAmountShopBase(c);
+    out.push(mkRow("status", entityFromShop(firstVal(c, [CASHIER_MAP.entityCol])), undefined,
+      `Family: ${fam.keysFor(crmFamilyKeys(cr, crmKindOf(cr))).slice(0, 3).join(" ↔ ")}`,
+      firstVal(cr, CRM_MAP.idCols), crmAmt, firstVal(cr, [CRM_MAP.currencyCol ?? ""]),
+      firstVal(cr, [CRM_MAP.statusCol ?? ""]), firstVal(c, CASHIER_MAP.idCols), cashAmt,
+      firstVal(c, [CASHIER_MAP.currencyCol ?? ""]), firstVal(c, [CASHIER_MAP.statusCol ?? ""]),
+      round(crmAmt - cashAmt),
+      `CRM is approved but every cashier attempt in this linked family failed (${cashRows.length} attempt(s), none successful)`,
+      "P1"));
+  });
+
+  return out;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -589,7 +774,17 @@ function reconcileLayer2(cashier: Dataset, psps: PspConfig[], pspData: Record<st
     const pspName = matched?.label ?? cfg?.label ?? "Unrouted";
 
     if (!matchRow || !matched) {
-      if (isFailed(cashState) && (firstVal(c, ["Provider"]) || firstVal(c, ["Terminal"]))) return;
+      if (classifyStatus(cashState, "Cashier") === "FAILED" && (firstVal(c, ["Provider"]) || firstVal(c, ["Terminal"]))) return;
+      // The row routes to a known PSP but that PSP's settlement file was never
+      // uploaded. That is missing input, not a reconciliation break — flagging
+      // it as unmatched would blame the data for the operator's omission.
+      const routedButNoFile = cfg && !(pspData[cfg.id]?.rows.length);
+      if (routedButNoFile) {
+        rows.push(mkRow("not-reconciled", entity, cfg.label, "", cashId, cashAmt,
+          firstVal(c, [CASHIER_MAP.currencyCol ?? ""]), cashState, "", null, "", "", null,
+          `The ${cfg.label} settlement file was not uploaded — excluded from PSP matching and KPIs`));
+        return;
+      }
       rows.push(mkRow("unmatched-cashier", entity, pspName, "", cashId, cashAmt,
         firstVal(c, [CASHIER_MAP.currencyCol ?? ""]), cashState, "", null, "", "", null,
         "In Cashier, no PSP match"));
@@ -601,24 +796,26 @@ function reconcileLayer2(cashier: Dataset, psps: PspConfig[], pspData: Record<st
     const pspStatus = fieldVal(matchRow, matched.fields.statusCol);
     const diff = round(cashAmt - pspAmt);
 
-    let status: ReconRow["status"] = "matched";
-    let note = matchKey;
-    if (isFailed(cashState) && isFailed(pspStatus, matched.failedStatuses)) return;
-    if (
-      (isActive(cashState) && isFailed(pspStatus, matched.failedStatuses)) ||
-      (isFailed(cashState) && isActive(pspStatus, matched.activeStatuses))
-    ) {
-      status = "status";
-      note = `Cashier: ${cashState || "?"} vs PSP: ${pspStatus || "?"}`;
-    } else if (Math.abs(diff) > matched.amountTolerance) {
-      status = "amount";
-      note = `Amount diff ${diff}`;
-    }
+    const v = combineVerdict({
+      crm: "MISSING",
+      cash: classifyStatus(cashState, "Cashier"),
+      psp: classifyStatus(pspStatus, matched.label, matched),
+      hasCRM: false,
+      hasCash: true,
+      hasPSP: true,
+      l1diff: 0,
+      l2diff: diff,
+      tolL1: Number.POSITIVE_INFINITY,
+      tolL2: matched.amountTolerance,
+      crmExpected: false,
+      pspExpected: true,
+    });
+    const note = v.status === "matched" ? matchKey : `${v.reason} — ${matchKey}`;
 
-    rows.push(mkRow(status, entity, matched.label, matchKey, cashId, cashAmt,
+    rows.push(mkRow(v.status, entity, matched.label, matchKey, cashId, cashAmt,
       firstVal(c, [CASHIER_MAP.currencyCol ?? ""]), cashState,
       fieldVal(matchRow, matched.fields.idCols[0]), pspAmt,
-      fieldVal(matchRow, matched.fields.currencyCol), pspStatus, diff, note));
+      fieldVal(matchRow, matched.fields.currencyCol), pspStatus, diff, note, v.priority));
   });
 
   // PSP rows never matched to a cashier row
@@ -628,7 +825,7 @@ function reconcileLayer2(cashier: Dataset, psps: PspConfig[], pspData: Record<st
     ds.rows.forEach((pr, i) => {
       if (usedPsp[p.id].has(i)) return;
       const st = fieldVal(pr, p.fields.statusCol);
-      if (isFailed(st, p.failedStatuses)) return;
+      if (classifyStatus(st, p.label, p) === "FAILED") return;
       rows.push(mkRow("unmatched-psp", p.entity === "All" ? "" : p.entity, p.label, "", "", null,
         "", "", firstVal(pr, p.fields.idCols), num(fieldVal(pr, p.fields.amountCol)),
         fieldVal(pr, p.fields.currencyCol), st, null, `In ${p.label}, no Cashier match`));
@@ -642,9 +839,10 @@ function mkRow(
   status: ReconRow["status"], entity: string, psp: string | undefined, matchKey: string,
   leftId: string, leftAmount: number | null, leftCurrency: string, leftStatus: string,
   rightId: string, rightAmount: number | null, rightCurrency: string, rightStatus: string,
-  diff: number | null, note: string,
+  diff: number | null, note: string, priority?: string,
 ): ReconRow {
-  return { status, entity, brand: "", psp, matchKey, leftId, leftAmount, leftCurrency, leftStatus,
+  return { status, priority: priority ?? priorityOf(status), entity, brand: "", psp, matchKey,
+    leftId, leftAmount, leftCurrency, leftStatus,
     rightId, rightAmount, rightCurrency, rightStatus, diff, note };
 }
 
@@ -652,6 +850,7 @@ function mkRow(
 function groupBy(rows: ReconRow[], keyOf: (r: ReconRow) => string): Breakdown[] {
   const m = new Map<string, Breakdown>();
   rows.forEach((r) => {
+    if (isInformational(r.status)) return; // ⏭️ rows never move a match rate
     const key = keyOf(r) || "—";
     const b =
       m.get(key) ??
@@ -780,13 +979,16 @@ export function runReconciliation(
   const hasPspData = Object.values(pspData).some((d) => d && d.rows.length > 0);
   const l2Rows = cashierF && hasPspData ? reconcileLayer2(cashierF, psps, pspData) : [];
   enrichBrands(crmF, cashierF, l1Rows, l2Rows);
-  const severity = (s: ReconRow["status"]) =>
-    s === "status" ? 0 : s.startsWith("unmatched") ? 1 : s === "amount" ? 2 : 5;
-  const sorter = (a: ReconRow, b: ReconRow) => severity(a.status) - severity(b.status);
+  // Sort by priority (P1 first), then by money at risk — the Action-Center
+  // ordering: what to work on now, biggest exposure first.
+  const exposureOf = (r: ReconRow) =>
+    Math.max(Math.abs(r.diff ?? 0), Math.abs(r.leftAmount ?? 0), Math.abs(r.rightAmount ?? 0));
+  const sorter = (a: ReconRow, b: ReconRow) =>
+    a.priority.localeCompare(b.priority) || exposureOf(b) - exposureOf(a);
   l1Rows.sort(sorter);
   l2Rows.sort(sorter);
   const all = [...l1Rows, ...l2Rows];
-  const exceptions = all.filter((r) => r.status !== "matched");
+  const exceptions = all.filter((r) => r.status !== "matched" && !isInformational(r.status));
   const matched = all.filter((r) => r.status === "matched");
   return {
     layer1: { rows: l1Rows, stats: computeStats(l1Rows) },
