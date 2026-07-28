@@ -227,6 +227,32 @@ export const DEFAULT_PSPS: PspConfig[] = [
     routeMatch: ["virtualpay"],
     builtin: true,
   },
+  {
+    // Crypto processor (provider "Heropayments", terminal "HP_Tradin"). Its
+    // Order ID is the cashier's transaction ID, so exact matching works. Amounts
+    // are compared in the account currency (USD) — NOT the crypto or USDT
+    // columns, which differ by the conversion rate and the network fee. Status
+    // "finished" means settled; dates arrive as DD.MM.YY.
+    id: "heropayments",
+    label: "Hero Payments",
+    entity: "All",
+    fields: {
+      idCols: ["Order ID", "Transaction ID", "Internal ID"],
+      amountCol: "Client amount (account),Client amount (USDT)",
+      currencyCol: "Account currency",
+      statusCol: "Status",
+      typeCol: "Transaction type",
+      dateCol: "Date (GMT+0),Last update",
+    },
+    activeStatuses: ["finished"],
+    failedStatuses: ["cancelled", "canceled", "failed", "expired", "error", "rejected", "declined"],
+    amountTolerance: 0.05,
+    dateWindowMins: 4320,
+    depositTypes: ["deposit"],
+    withdrawalTypes: ["withdrawal"],
+    routeMatch: ["heropayments", "hero", "hptradin"],
+    builtin: true,
+  },
 ];
 
 const STORAGE_KEY = "opsos.recon.psps";

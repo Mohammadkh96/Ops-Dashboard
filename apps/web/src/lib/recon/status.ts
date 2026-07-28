@@ -29,6 +29,8 @@ const ACTIVE_KEYWORDS = [
   "APPROVED", "APPROVE", "COMPLETED", "COMPLETE", "SUCCESS", "SETTLED",
   "SETTLE", "CONFIRMED", "CONFIRM", "PAID", "PROCESSED", "CAPTURED",
   "AUTHORIZED", "AUTHORISED", "PAYMENT_OUT", "PAYMENT",
+  // Crypto processors commonly report a settled transfer as "finished".
+  "FINISHED",
 ];
 
 /**

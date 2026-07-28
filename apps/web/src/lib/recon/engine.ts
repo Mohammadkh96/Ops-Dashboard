@@ -70,7 +70,19 @@ const norm = (v: string) => String(v || "").replace(/-/g, "").toLowerCase().trim
 
 function toDate(v: string): number | null {
   if (!v) return null;
-  const d = new Date(v);
+  const s = String(v).trim();
+  // DD.MM.YY[YY] [HH:MM[:SS]] — used by crypto PSP exports and rejected
+  // outright by the native parser. Only the DOT separator is handled here:
+  // slash dates stay with the native parser because DD/MM vs MM/DD is
+  // genuinely ambiguous and guessing would silently corrupt existing sources.
+  const m = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{2}|\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (m) {
+    const year = m[3].length === 2 ? 2000 + Number(m[3]) : Number(m[3]);
+    const d = new Date(year, Number(m[2]) - 1, Number(m[1]),
+      Number(m[4] ?? 0), Number(m[5] ?? 0), Number(m[6] ?? 0));
+    return isNaN(d.getTime()) ? null : d.getTime();
+  }
+  const d = new Date(s);
   return isNaN(d.getTime()) ? null : d.getTime();
 }
 function minutesBetween(a: string, b: string): number {
@@ -805,7 +817,19 @@ function reconcileLayer2(cashier: Dataset, psps: PspConfig[], pspData: Record<st
     const pspName = matched?.label ?? cfg?.label ?? "Unrouted";
 
     if (!matchRow || !matched) {
-      if (classifyStatus(cashState, "Cashier") === "FAILED" && (firstVal(c, ["Provider"]) || firstVal(c, ["Terminal"]))) return;
+      const cashClass = classifyStatus(cashState, "Cashier");
+      const routed = !!(firstVal(c, ["Provider"]) || firstVal(c, ["Terminal"]));
+      if (cashClass === "FAILED" && routed) return; // failed at a known PSP → expected noise
+      // A row with no Provider and no Terminal never reached a PSP, so there is
+      // no PSP leg to reconcile it against. Cancelled/declined before routing is
+      // recorded but not an exception. A COMPLETED row that never routed is
+      // genuinely odd, so that one stays in the queue.
+      if (!routed && cashClass !== "ACTIVE") {
+        rows.push(mkRow("out-of-scope", entity, undefined, "", cashId, cashAmt,
+          firstVal(c, [CASHIER_MAP.currencyCol ?? ""]), cashState, "", null, "", "", null,
+          `Never routed to a PSP (${cashState || "not final"} before routing) — no PSP leg exists`));
+        return;
+      }
       // The row routes to a known PSP but that PSP's settlement file was never
       // uploaded. That is missing input, not a reconciliation break — flagging
       // it as unmatched would blame the data for the operator's omission.
