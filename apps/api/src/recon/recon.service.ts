@@ -20,6 +20,20 @@ export type PspConfigDto = {
   [key: string]: unknown;
 };
 
+export type ReconCaseDto = {
+  caseKey: string;
+  resolution?: string;
+  owner?: string | null;
+  notes?: string | null;
+  priority?: string | null;
+  status?: string | null;
+  entity?: string | null;
+  brand?: string | null;
+  psp?: string | null;
+  reference?: string | null;
+  exposure?: number;
+};
+
 export type ReconRunDto = {
   ranBy?: string;
   layer1Matched?: number;
@@ -75,6 +89,69 @@ export class ReconService {
           ),
         ]);
         return { saved: psps.length };
+      },
+      { saved: 0 },
+    );
+  }
+
+  /** Ops workflow for every case the team has touched. */
+  async getCases(): Promise<unknown[]> {
+    return this.safe(
+      () =>
+        this.prisma.reconCase.findMany({
+          orderBy: { updatedAt: 'desc' },
+          take: 5000,
+        }),
+      [],
+    );
+  }
+
+  /**
+   * Upserts workflow state for one or more cases. Only the fields the operator
+   * owns are written on update — the denormalised context is refreshed too so
+   * the queue stays reportable, but a case is never re-created as "Open" once
+   * it has been resolved.
+   */
+  async saveCases(cases: ReconCaseDto[]): Promise<{ saved: number }> {
+    return this.safe(
+      async () => {
+        const valid = cases.filter((c) => c.caseKey);
+        await this.prisma.$transaction(
+          valid.map((c) =>
+            this.prisma.reconCase.upsert({
+              where: { caseKey: c.caseKey },
+              create: {
+                caseKey: c.caseKey,
+                resolution: c.resolution ?? 'Open',
+                owner: c.owner ?? null,
+                notes: c.notes ?? null,
+                priority: c.priority ?? null,
+                status: c.status ?? null,
+                entity: c.entity ?? null,
+                brand: c.brand ?? null,
+                psp: c.psp ?? null,
+                reference: c.reference ?? null,
+                exposure: c.exposure ?? 0,
+              },
+              // Only overwrite what the caller actually sent, so a partial
+              // update (e.g. just flipping the resolution) can't blank out the
+              // denormalised context recorded by an earlier full write.
+              update: {
+                resolution: c.resolution ?? 'Open',
+                owner: c.owner ?? null,
+                notes: c.notes ?? null,
+                ...(c.priority !== undefined ? { priority: c.priority } : {}),
+                ...(c.status !== undefined ? { status: c.status } : {}),
+                ...(c.entity !== undefined ? { entity: c.entity } : {}),
+                ...(c.brand !== undefined ? { brand: c.brand } : {}),
+                ...(c.psp !== undefined ? { psp: c.psp } : {}),
+                ...(c.reference !== undefined ? { reference: c.reference } : {}),
+                ...(c.exposure !== undefined ? { exposure: c.exposure } : {}),
+              },
+            }),
+          ),
+        );
+        return { saved: valid.length };
       },
       { saved: 0 },
     );

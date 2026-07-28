@@ -12,6 +12,11 @@ export class ReplacePspsDto {
   psps!: unknown[];
 }
 
+export class SaveCasesDto {
+  @IsArray()
+  cases!: unknown[];
+}
+
 export class SaveRunDto {
   @IsOptional()
   @IsString()

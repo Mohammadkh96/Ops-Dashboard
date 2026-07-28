@@ -12,6 +12,7 @@ import {
   Database,
   Download,
   AlertTriangle,
+  ClipboardList,
   X,
 } from "lucide-react";
 
@@ -29,6 +30,7 @@ import { loadPsps, savePsps, resetPsps, DEFAULT_PSPS, emptyPsp, missingColumns, 
 import { runReconciliation, providerCoverage } from "@/lib/recon/engine";
 import { reconRowsToCsv, downloadText } from "@/lib/recon/export";
 import { loadPspsRemote, savePspsRemote, saveRunRemote, listRunsRemote, type RunSummaryRow } from "@/lib/recon/api";
+import { loadCases, saveCase, caseTotals, emptyCase } from "@/lib/recon/cases";
 import { Sparkline } from "@/components/ui/sparkline";
 import {
   snapshotFromResult,
@@ -38,7 +40,8 @@ import {
   brandTrends as computeBrandTrends,
   type Anomalies,
 } from "@/lib/recon/history";
-import type { Breakdown, Dataset, PspConfig, ReconMatrix, ReconOptions, ReconResult, ReconRow } from "@/lib/recon/types";
+import type { Breakdown, CaseState, Dataset, PspConfig, ReconMatrix, ReconOptions, ReconResult, ReconRow } from "@/lib/recon/types";
+import { RESOLUTIONS } from "@/lib/recon/types";
 import { sampleCrm, sampleCashier, samplePaystrax, sampleForumpay, sampleMatch2pay, sampleRapyd } from "@/lib/recon/sample";
 import { useAuth } from "@/lib/auth";
 
@@ -52,6 +55,7 @@ const TABS = [
   { key: "sources", label: "Sources" },
   { key: "psps", label: "PSP Registry" },
   { key: "results", label: "Results" },
+  { key: "actions", label: "Action Center" },
   { key: "matched", label: "Matched" },
   { key: "analytics", label: "Analytics" },
 ] as const;
@@ -92,6 +96,14 @@ export default function ReconciliationPage() {
   const [trends, setTrends] = useState<Record<string, number[]>>({});
   const [drill, setDrill] = useState<{ brand?: string; psp?: string } | null>(null);
   const [opts, setOpts] = useState<ReconOptions>({});
+  const [cases, setCases] = useState<Record<string, CaseState>>({});
+
+  // Ops workflow is stored separately from the run and re-attached by caseKey,
+  // so re-running the reconciliation never wipes what the team recorded.
+  const updateCase = (next: CaseState, row?: ReconRow) => {
+    setCases((prev) => ({ ...prev, [next.caseKey]: next }));
+    void saveCase(next, row);
+  };
 
   useEffect(() => {
     setPsps(loadPsps());
@@ -112,6 +124,8 @@ export default function ReconciliationPage() {
       }
       const history = await listRunsRemote();
       if (active && history.length) setRuns(history);
+      const saved = await loadCases();
+      if (active) setCases(saved);
     });
     return () => {
       active = false;
@@ -334,6 +348,8 @@ export default function ReconciliationPage() {
           onRemove={removePsp}
           onRestore={restore}
         />
+      ) : tab === "actions" ? (
+        <ActionCenterTab result={result} cases={cases} onUpdate={updateCase} />
       ) : tab === "analytics" ? (
         <AnalyticsTab result={result} anomalies={anomalies} trends={trends} onDrill={handleDrill} />
       ) : tab === "matched" ? (
@@ -569,6 +585,213 @@ function PspRegistryTab({
             </dl>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────── Action Center (the operational queue) ─────────────── */
+
+function ActionCenterTab({
+  result,
+  cases,
+  onUpdate,
+}: {
+  result: ReconResult | null;
+  cases: Record<string, CaseState>;
+  onUpdate: (next: CaseState, row?: ReconRow) => void;
+}) {
+  const [showDone, setShowDone] = useState(false);
+  const [fPrio, setFPrio] = useState<string>("all");
+  const [q, setQ] = useState("");
+
+  const exceptions = result?.exceptions ?? [];
+  const totals = useMemo(() => caseTotals(exceptions, cases), [exceptions, cases]);
+
+  const rows = useMemo(
+    () =>
+      exceptions.filter((r) => {
+        const res = cases[r.caseKey]?.resolution ?? "Open";
+        const done = res === "Resolved" || res === "Accepted Exception";
+        if (!showDone && done) return false;
+        if (fPrio !== "all" && r.priority !== fPrio) return false;
+        if (q) {
+          const c = cases[r.caseKey];
+          const hay = `${r.leftId} ${r.rightId} ${r.note} ${r.brand} ${r.entity} ${c?.owner ?? ""} ${c?.notes ?? ""}`;
+          if (!hay.toLowerCase().includes(q.toLowerCase())) return false;
+        }
+        return true;
+      }),
+    [exceptions, cases, showDone, fPrio, q],
+  );
+
+  if (!result) {
+    return (
+      <Card className="glass card-seam">
+        <CardContent className="flex flex-col items-center gap-3 py-16 text-center">
+          <span className="flex size-11 items-center justify-center rounded-xl border border-border bg-card text-muted">
+            <ClipboardList className="size-5" />
+          </span>
+          <span className="text-sm text-muted-foreground">
+            Run a reconciliation to build the action queue.
+          </span>
+          <span className="text-xs text-muted">
+            Owner, status and notes you record here survive future runs.
+          </span>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const exposure = (r: ReconRow) =>
+    Math.max(Math.abs(r.diff ?? 0), Math.abs(r.leftAmount ?? 0), Math.abs(r.rightAmount ?? 0));
+  const prioExposure = (p: string) =>
+    exceptions.filter((r) => r.priority === p).reduce((s, r) => s + exposure(r), 0);
+
+  const sel = "h-9 cursor-pointer rounded-lg border border-border bg-card px-2.5 text-sm outline-none focus:border-border-strong";
+
+  return (
+    <div className="flex flex-col gap-4">
+      <StatTileRow
+        stats={[
+          { label: `P1 — act now · $${money(prioExposure("P1"))}`, value: String(exceptions.filter((r) => r.priority === "P1").length), tone: "red" },
+          { label: `P2 — high · $${money(prioExposure("P2"))}`, value: String(exceptions.filter((r) => r.priority === "P2").length), tone: "orange" },
+          { label: `P3 — review · $${money(prioExposure("P3"))}`, value: String(exceptions.filter((r) => r.priority === "P3").length), tone: "purple" },
+          { label: "Open", value: String(totals.open), tone: "blue" },
+          { label: "In progress", value: String(totals.inProgress), tone: "magenta" },
+          { label: "Resolved", value: String(totals.done), tone: "green" },
+        ]}
+      />
+
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 className="text-xs font-medium uppercase tracking-wider text-muted">
+          Queue ({rows.length} of {exceptions.length})
+        </h3>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search id, note, owner…"
+            className="h-9 w-48 rounded-lg border border-border bg-card px-3 text-sm outline-none focus:border-border-strong"
+          />
+          <select value={fPrio} onChange={(e) => setFPrio(e.target.value)} className={sel}>
+            <option value="all">All priorities</option>
+            <option value="P1">P1 — act now</option>
+            <option value="P2">P2 — high</option>
+            <option value="P3">P3 — review</option>
+          </select>
+          <Button variant="secondary" size="sm" onClick={() => setShowDone((v) => !v)}>
+            {showDone ? "Hide" : "Show"} resolved
+          </Button>
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        {rows.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-border bg-card/40 px-4 py-10 text-center text-sm text-muted">
+            Nothing in the queue. 🎉
+          </div>
+        ) : (
+          rows.slice(0, 100).map((r) => (
+            <CaseCard
+              key={r.caseKey}
+              row={r}
+              state={cases[r.caseKey] ?? emptyCase(r.caseKey)}
+              onUpdate={(next) => onUpdate(next, r)}
+            />
+          ))
+        )}
+        {rows.length > 100 ? (
+          <p className="text-xs text-muted">
+            Showing the first 100 of {rows.length} — narrow the filters to see the rest.
+          </p>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function CaseCard({
+  row,
+  state,
+  onUpdate,
+}: {
+  row: ReconRow;
+  state: CaseState;
+  onUpdate: (next: CaseState) => void;
+}) {
+  const [notes, setNotes] = useState(state.notes);
+  const [owner, setOwner] = useState(state.owner);
+  const done = state.resolution === "Resolved" || state.resolution === "Accepted Exception";
+
+  const exposure = Math.max(
+    Math.abs(row.diff ?? 0), Math.abs(row.leftAmount ?? 0), Math.abs(row.rightAmount ?? 0),
+  );
+
+  return (
+    <div className={cn("flex flex-col gap-3 rounded-xl border border-border bg-card p-4", done && "opacity-60")}>
+      <div className="flex flex-wrap items-center gap-2">
+        <span
+          className={cn(
+            "rounded px-1.5 py-0.5 font-mono text-[11px] font-medium",
+            row.priority === "P1"
+              ? "bg-accent-red-soft text-accent-red"
+              : row.priority === "P2"
+                ? "bg-accent-orange-soft text-accent-orange"
+                : "bg-card-hover text-muted",
+          )}
+        >
+          {row.priority}
+        </span>
+        <Badge variant={STATUS_META[row.status].variant}>{STATUS_META[row.status].label}</Badge>
+        <span className="text-xs text-muted-foreground">{row.psp ?? "CRM ↔ Cashier"}</span>
+        {row.brand ? <span className="text-xs text-muted">· {row.brand}</span> : null}
+        {row.entity ? <span className="text-xs text-muted">· {row.entity}</span> : null}
+        <span className="ml-auto tnum text-sm font-medium">${money(exposure)}</span>
+      </div>
+
+      <p className="text-xs text-muted-foreground">{row.note}</p>
+
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-4">
+        <Meta k="CRM / Cashier ID" v={row.leftId || "—"} />
+        <Meta k="Left amount" v={money(row.leftAmount)} />
+        <Meta k="Counterpart ID" v={row.rightId || "—"} />
+        <Meta k="Right amount" v={money(row.rightAmount)} />
+      </dl>
+
+      <div className="flex flex-wrap items-end gap-2">
+        <div className="flex flex-col gap-1">
+          <span className={label}>Status</span>
+          <select
+            value={state.resolution}
+            onChange={(e) => onUpdate({ ...state, resolution: e.target.value, owner, notes })}
+            className="h-9 cursor-pointer rounded-lg border border-border bg-card px-2.5 text-sm outline-none focus:border-border-strong"
+          >
+            {RESOLUTIONS.map((r) => (
+              <option key={r} value={r}>{r}</option>
+            ))}
+          </select>
+        </div>
+        <div className="flex flex-col gap-1">
+          <span className={label}>Owner</span>
+          <input
+            value={owner}
+            onChange={(e) => setOwner(e.target.value)}
+            onBlur={() => owner !== state.owner && onUpdate({ ...state, owner, notes })}
+            placeholder="unassigned"
+            className="h-9 w-40 rounded-lg border border-border bg-card px-3 text-sm outline-none focus:border-border-strong"
+          />
+        </div>
+        <div className="flex min-w-56 flex-1 flex-col gap-1">
+          <span className={label}>Ops notes</span>
+          <input
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            onBlur={() => notes !== state.notes && onUpdate({ ...state, owner, notes })}
+            placeholder="What did you find?"
+            className="h-9 w-full rounded-lg border border-border bg-card px-3 text-sm outline-none focus:border-border-strong"
+          />
+        </div>
       </div>
     </div>
   );

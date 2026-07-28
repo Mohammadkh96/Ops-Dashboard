@@ -86,7 +86,31 @@ export type ReconRow = {
   rightStatus: string;
   diff: number | null;
   note: string;
+  /**
+   * Stable identity for this exception across runs. Ops workflow (owner,
+   * resolution, notes) is keyed on it, so re-running the reconciliation keeps
+   * whatever the team already recorded. Includes the status so an issue that
+   * changes character re-opens rather than inheriting a stale "Resolved".
+   */
+  caseKey: string;
 };
+
+/** Ops workflow attached to a case, preserved across reconciliation runs. */
+export type CaseState = {
+  caseKey: string;
+  resolution: string;
+  owner: string;
+  notes: string;
+};
+
+export const RESOLUTIONS = [
+  "Open",
+  "Investigating",
+  "Waiting PSP",
+  "Waiting Internal",
+  "Resolved",
+  "Accepted Exception",
+] as const;
 
 export type LayerStats = {
   total: number;

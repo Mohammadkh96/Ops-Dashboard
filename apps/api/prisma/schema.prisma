@@ -285,6 +285,29 @@ model ReconRun {
   @@index([ranAt])
 }
 
+// Ops workflow attached to a reconciliation exception. Keyed on the engine's
+// stable caseKey so re-running the reconciliation preserves whatever the team
+// already recorded (owner, resolution, notes). The denormalised context
+// columns let the queue be filtered and reported on without a run payload.
+model ReconCase {
+  caseKey    String   @id
+  resolution String   @default("Open")
+  owner      String?
+  notes      String?
+  priority   String?
+  status     String?
+  entity     String?
+  brand      String?
+  psp        String?
+  reference  String?
+  exposure   Float    @default(0)
+  updatedAt  DateTime @updatedAt
+  createdAt  DateTime @default(now())
+
+  @@index([resolution])
+  @@index([priority])
+}
+
 // ---------- Audit ----------
 
 model AuditLog {

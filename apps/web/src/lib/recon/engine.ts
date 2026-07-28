@@ -843,7 +843,8 @@ function mkRow(
 ): ReconRow {
   return { status, priority: priority ?? priorityOf(status), entity, brand: "", psp, matchKey,
     leftId, leftAmount, leftCurrency, leftStatus,
-    rightId, rightAmount, rightCurrency, rightStatus, diff, note };
+    rightId, rightAmount, rightCurrency, rightStatus, diff, note,
+    caseKey: [psp || "L1", entity, leftId, rightId, status].map((x) => String(x ?? "").trim()).join("|") };
 }
 
 /** Generic dimensional breakdown (PSP, brand, entity — driven by the key fn). */
