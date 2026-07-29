@@ -48,6 +48,14 @@ export type PspConfig = {
    * Falls back to [id, label] when omitted.
    */
   routeMatch?: string[];
+  /**
+   * For exports that record a TIMESTAMP instead of a status word: the mere
+   * presence of a value in these columns decides the outcome. ForumPay is the
+   * canonical case — it writes `confirmed` / `cancelled` datetimes, so reading
+   * either as a status string yields a date that classifies as "pending".
+   * Checked before `fields.statusCol`.
+   */
+  statusWhenSet?: { active?: string; failed?: string };
   /** Built-in PSPs ship with the app; user-added ones are false/undefined. */
   builtin?: boolean;
 };

@@ -113,6 +113,23 @@ function pspKind(row: Row, cfg: PspConfig): Kind {
   if (cfg.withdrawalTypes?.some((x) => t === up(x))) return "withdrawal";
   return kindFromType(t);
 }
+/**
+ * A PSP row's status, honouring `statusWhenSet` for exports that record a
+ * timestamp rather than a status word (ForumPay writes `confirmed` /
+ * `cancelled` datetimes — reading either as a status string would yield a date
+ * that classifies as "pending", so ForumPay would never match).
+ */
+function pspStatusOf(row: Row, cfg: PspConfig): { text: string; cls: StatusClass } {
+  const sw = cfg.statusWhenSet;
+  if (sw) {
+    if (sw.active && firstVal(row, [sw.active])) return { text: "Confirmed", cls: "ACTIVE" };
+    if (sw.failed && firstVal(row, [sw.failed])) return { text: "Cancelled", cls: "FAILED" };
+    return { text: "Pending", cls: "PENDING" };
+  }
+  const text = fieldVal(row, cfg.fields.statusCol);
+  return { text, cls: classifyStatus(text, cfg.label, cfg) };
+}
+
 /** True when the cashier and PSP transaction types are compatible (or unknown). */
 function typeCompatible(cashType: string, row: Row, cfg: PspConfig): boolean {
   const ck = kindFromType(cashType);
@@ -848,13 +865,14 @@ function reconcileLayer2(cashier: Dataset, psps: PspConfig[], pspData: Record<st
 
     usedPsp[matched.id].add(rowIndexOf[matched.id].get(matchRow)!);
     const pspAmt = num(fieldVal(matchRow, matched.fields.amountCol));
-    const pspStatus = fieldVal(matchRow, matched.fields.statusCol);
+    const ps = pspStatusOf(matchRow, matched);
+    const pspStatus = ps.text;
     const diff = round(cashAmt - pspAmt);
 
     const v = combineVerdict({
       crm: "MISSING",
       cash: classifyStatus(cashState, "Cashier"),
-      psp: classifyStatus(pspStatus, matched.label, matched),
+      psp: ps.cls,
       hasCRM: false,
       hasCash: true,
       hasPSP: true,
@@ -879,11 +897,11 @@ function reconcileLayer2(cashier: Dataset, psps: PspConfig[], pspData: Record<st
     if (!ds) return;
     ds.rows.forEach((pr, i) => {
       if (usedPsp[p.id].has(i)) return;
-      const st = fieldVal(pr, p.fields.statusCol);
-      if (classifyStatus(st, p.label, p) === "FAILED") return;
+      const ps = pspStatusOf(pr, p);
+      if (ps.cls === "FAILED") return;
       rows.push(mkRow("unmatched-psp", p.entity === "All" ? "" : p.entity, p.label, "", "", null,
         "", "", firstVal(pr, p.fields.idCols), num(fieldVal(pr, p.fields.amountCol)),
-        fieldVal(pr, p.fields.currencyCol), st, null, `In ${p.label}, no Cashier match`));
+        fieldVal(pr, p.fields.currencyCol), ps.text, null, `In ${p.label}, no Cashier match`));
     });
   });
 

@@ -50,7 +50,8 @@ const FORUMPAY_FIELDS: FieldMap = {
   currencyCol: "invoice currency",
   statusCol: "confirmed",
   typeCol: "type",
-  dateCol: "confirmed",
+  // Event date: when it settled, else when it was cancelled, else created.
+  dateCol: "confirmed,cancelled,date",
 };
 
 const MATCH2PAY_FIELDS: FieldMap = {
@@ -71,6 +72,9 @@ export const DEFAULT_PSPS: PspConfig[] = [
     fields: { ...FORUMPAY_FIELDS },
     activeStatuses: ["true", "1", "yes", "confirmed"],
     failedStatuses: ["false", "0", "no", "cancelled"],
+    // ForumPay records datetimes, not status words: a value in `confirmed`
+    // means settled, a value in `cancelled` means cancelled, neither = pending.
+    statusWhenSet: { active: "confirmed", failed: "cancelled" },
     amountTolerance: 0.05,
     dateWindowMins: 240,
     depositTypes: ["SELL"],
@@ -85,6 +89,9 @@ export const DEFAULT_PSPS: PspConfig[] = [
     fields: { ...FORUMPAY_FIELDS },
     activeStatuses: ["true", "1", "yes", "confirmed"],
     failedStatuses: ["false", "0", "no", "cancelled"],
+    // ForumPay records datetimes, not status words: a value in `confirmed`
+    // means settled, a value in `cancelled` means cancelled, neither = pending.
+    statusWhenSet: { active: "confirmed", failed: "cancelled" },
     amountTolerance: 0.05,
     dateWindowMins: 240,
     depositTypes: ["SELL"],
