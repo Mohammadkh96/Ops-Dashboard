@@ -26,7 +26,7 @@ import { useToast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 
 import { parseFile } from "@/lib/recon/parse";
-import { loadPsps, savePsps, resetPsps, DEFAULT_PSPS, emptyPsp, missingColumns, CRM_MAP, CASHIER_MAP } from "@/lib/recon/registry";
+import { loadPsps, savePsps, resetPsps, DEFAULT_PSPS, emptyPsp, missingColumns, uploadTargets, detectTargets, CRM_MAP, CASHIER_MAP } from "@/lib/recon/registry";
 import { runReconciliation, providerCoverage } from "@/lib/recon/engine";
 import { reconRowsToCsv, downloadText } from "@/lib/recon/export";
 import { loadPspsRemote, savePspsRemote, saveRunRemote, listRunsRemote, type RunSummaryRow } from "@/lib/recon/api";
@@ -171,21 +171,26 @@ export default function ReconciliationPage() {
     });
   };
 
+  /** Assigns an already-parsed dataset to a slot, with the column check. */
+  const applyDataset = (key: string, ds: Dataset, fileName: string) => {
+    if (ds.rows.length === 0) {
+      toast({ kind: "warning", title: "Empty file", description: `${fileName} has headers but no data rows.` });
+      return;
+    }
+    setData(key, ds);
+    const miss = validateSource(key, ds.headers);
+    setWarnings((w) => ({ ...w, [key]: miss }));
+    const target = uploadTargets(psps).find((t) => t.key === key)?.label ?? key;
+    if (miss.length) {
+      toast({ kind: "warning", title: `${fileName}: column check`, description: `Missing/renamed: ${miss.join(", ")}. Loaded into ${target} anyway.` });
+    } else {
+      toast({ title: `Loaded into ${target}`, description: `${fileName} — ${ds.rows.length} rows, ${ds.headers.length} columns.` });
+    }
+  };
+
   const readFile = async (key: string, file: File) => {
     try {
-      const ds = await parseFile(file);
-      if (ds.rows.length === 0) {
-        toast({ kind: "warning", title: "Empty file", description: "No data rows found." });
-        return;
-      }
-      setData(key, ds);
-      const miss = validateSource(key, ds.headers);
-      setWarnings((w) => ({ ...w, [key]: miss }));
-      if (miss.length) {
-        toast({ kind: "warning", title: `${file.name}: column check`, description: `Missing/renamed: ${miss.join(", ")}. Loaded anyway.` });
-      } else {
-        toast({ title: `${file.name} loaded`, description: `${ds.rows.length} rows, ${ds.headers.length} columns.` });
-      }
+      applyDataset(key, await parseFile(file), file.name);
     } catch {
       toast({ kind: "warning", title: "Could not read file", description: "Use CSV, TSV, XLS or XLSX." });
     }
@@ -340,7 +345,7 @@ export default function ReconciliationPage() {
       </div>
 
       {tab === "sources" ? (
-        <SourcesTab psps={psps} datasets={datasets} warnings={warnings} onFile={readFile} onClear={clearData} />
+        <SourcesTab psps={psps} datasets={datasets} warnings={warnings} onFile={readFile} onClear={clearData} onApply={applyDataset} />
       ) : tab === "psps" ? (
         <PspRegistryTab
           psps={psps}
@@ -373,6 +378,158 @@ export default function ReconciliationPage() {
 }
 
 /* ─────────────── Sources ─────────────── */
+
+/**
+ * Upload one file and say what it is.
+ *
+ * The format can be auto-detected from the headers, but the ENTITY cannot — a
+ * ForumPay Saint Lucia export and a ForumPay Mauritius export have identical
+ * columns. So detection narrows the choice and the operator confirms it.
+ */
+function UploadPanel({
+  psps,
+  onApply,
+}: {
+  psps: PspConfig[];
+  onApply: (key: string, ds: Dataset, fileName: string) => void;
+}) {
+  const targets = useMemo(() => uploadTargets(psps), [psps]);
+  const groups = useMemo(() => {
+    const m = new Map<string, typeof targets>();
+    targets.forEach((t) => m.set(t.group, [...(m.get(t.group) ?? []), t]));
+    return [...m.entries()];
+  }, [targets]);
+
+  const [target, setTarget] = useState("");
+  const [pending, setPending] = useState<{ ds: Dataset; name: string } | null>(null);
+  const [detected, setDetected] = useState<{ keys: string[]; label: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [drag, setDrag] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const take = async (file: File | undefined) => {
+    if (!file) return;
+    setBusy(true);
+    try {
+      const ds = await parseFile(file);
+      const hit = detectTargets(ds.headers, psps);
+      setPending({ ds, name: file.name });
+      setDetected(hit);
+      // One unambiguous match: preselect it. Several (the per-entity case):
+      // preselect the first so the dropdown is primed, but ask for confirmation.
+      if (hit.keys.length) setTarget(hit.keys[0]);
+    } catch {
+      setPending(null);
+      setDetected(null);
+    } finally {
+      setBusy(false);
+      if (inputRef.current) inputRef.current.value = "";
+    }
+  };
+
+  const confirm = () => {
+    if (!pending || !target) return;
+    onApply(target, pending.ds, pending.name);
+    setPending(null);
+    setDetected(null);
+    setTarget("");
+  };
+
+  const ambiguous = (detected?.keys.length ?? 0) > 1;
+
+  return (
+    <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 className="text-xs font-medium uppercase tracking-wider text-muted">Upload a file</h3>
+        <span className="text-xs text-muted">Pick the file, then confirm which source it is.</span>
+      </div>
+
+      <div
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDrag(true);
+        }}
+        onDragLeave={() => setDrag(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDrag(false);
+          void take(e.dataTransfer.files?.[0]);
+        }}
+        onClick={() => inputRef.current?.click()}
+        className={cn(
+          "flex cursor-pointer flex-col items-center gap-1 rounded-lg border border-dashed px-4 py-6 text-center transition-colors",
+          drag ? "border-accent-blue bg-accent-blue-soft" : "border-border hover:border-border-strong",
+        )}
+      >
+        <Upload className="size-5 text-muted" />
+        <span className="text-sm text-muted-foreground">
+          {busy ? "Reading…" : pending ? pending.name : "Drop a CSV / XLSX here, or click to choose"}
+        </span>
+        {pending ? (
+          <span className="text-xs text-muted">
+            {pending.ds.rows.length.toLocaleString()} rows · {pending.ds.headers.length} columns
+          </span>
+        ) : null}
+      </div>
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".csv,.tsv,.txt,.xls,.xlsx"
+        className="hidden"
+        onChange={(e) => void take(e.target.files?.[0])}
+      />
+
+      {pending ? (
+        <div className="flex flex-col gap-2">
+          {detected?.keys.length ? (
+            <p className={cn("text-xs", ambiguous ? "text-accent-orange" : "text-accent-green")}>
+              {ambiguous
+                ? `${detected.label} format detected — it settles per entity, so choose which one this file is.`
+                : `Detected: ${detected.label}. Change it below if that's wrong.`}
+            </p>
+          ) : (
+            <p className="text-xs text-accent-orange">
+              Format not recognised — choose the source manually.
+            </p>
+          )}
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={target}
+              onChange={(e) => setTarget(e.target.value)}
+              className="h-9 min-w-64 cursor-pointer rounded-lg border border-border bg-card px-2.5 text-sm outline-none focus:border-border-strong"
+            >
+              <option value="">Choose the source…</option>
+              {groups.map(([group, items]) => (
+                <optgroup key={group} label={group}>
+                  {items.map((t) => (
+                    <option key={t.key} value={t.key}>
+                      {t.label}
+                      {detected?.keys.includes(t.key) ? "  ·  matches this format" : ""}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+            <Button size="sm" onClick={confirm} disabled={!target}>
+              Load into this source
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setPending(null);
+                setDetected(null);
+                setTarget("");
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function SourceCard({
   title,
@@ -471,15 +628,18 @@ function SourcesTab({
   warnings,
   onFile,
   onClear,
+  onApply,
 }: {
   psps: PspConfig[];
   datasets: Record<string, Dataset>;
   warnings: Record<string, string[]>;
   onFile: (key: string, f: File) => void;
   onClear: (key: string) => void;
+  onApply: (key: string, ds: Dataset, fileName: string) => void;
 }) {
   return (
     <div className="flex flex-col gap-5">
+      <UploadPanel psps={psps} onApply={onApply} />
       <p className="text-xs text-muted">Accepts CSV, TSV, XLS and XLSX. Files are parsed in your browser and never uploaded anywhere.</p>
       <div>
         <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-muted">Core sources (required)</h3>

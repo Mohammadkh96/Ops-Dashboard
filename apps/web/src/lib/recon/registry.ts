@@ -316,6 +316,61 @@ export function missingColumns(cfg: PspConfig, headers: string[]): string[] {
   return missing;
 }
 
+export type UploadTarget = { key: string; label: string; group: string };
+
+/** Every slot a file can be assigned to, grouped for the picker. */
+export function uploadTargets(psps: PspConfig[]): UploadTarget[] {
+  return [
+    { key: "crm", label: "CRM export", group: "Core" },
+    { key: "cashier", label: "Cashier / Paymaxis", group: "Core" },
+    ...psps.map((p) => ({ key: p.id, label: p.label, group: "PSP" })),
+  ];
+}
+
+const CORE_SIGNATURES: Record<string, string[]> = {
+  crm: ["TransactionType", "TransactionStatus Name", "Brand Title", "Psp Transaction ID", "Merchant Trn Ref"],
+  cashier: ["ID", "State", "Reference ID", "Shop", "Provider", "External Id"],
+};
+
+/**
+ * Guesses which source an uploaded file is, from its headers.
+ *
+ * Returns EVERY target that ties for the best score, because per-entity
+ * configs are genuinely indistinguishable by header alone — a ForumPay Saint
+ * Lucia export and a ForumPay Mauritius export have identical columns. The
+ * format can be detected; the entity cannot, so the operator picks it.
+ */
+export function detectTargets(headers: string[], psps: PspConfig[]): { keys: string[]; label: string } {
+  const have = new Set(headers.map((h) => h.toLowerCase().trim()));
+  const score = (cols: (string | undefined)[]) => {
+    const uniq = [
+      ...new Set(
+        cols.flatMap((c) => (c ?? "").split(",")).map((c) => c.trim().toLowerCase()).filter(Boolean),
+      ),
+    ];
+    if (!uniq.length) return 0;
+    return uniq.filter((c) => have.has(c)).length / uniq.length;
+  };
+
+  const cands: { key: string; label: string; s: number }[] = [];
+  Object.entries(CORE_SIGNATURES).forEach(([k, cols]) =>
+    cands.push({ key: k, label: k === "crm" ? "CRM export" : "Cashier / Paymaxis", s: score(cols) }),
+  );
+  psps.forEach((p) =>
+    cands.push({
+      key: p.id,
+      label: p.label,
+      s: score([...p.fields.idCols, p.fields.amountCol, p.fields.statusCol]),
+    }),
+  );
+
+  const best = Math.max(0, ...cands.map((c) => c.s));
+  if (best < 0.6) return { keys: [], label: "" };
+  const winners = cands.filter((c) => c.s === best);
+  // Strip the entity suffix so "ForumPay — Saint Lucia" reads as "ForumPay".
+  return { keys: winners.map((c) => c.key), label: winners[0].label.split(" — ")[0] };
+}
+
 export function emptyPsp(): PspConfig {
   return {
     id: "",
