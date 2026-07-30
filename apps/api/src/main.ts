@@ -5,7 +5,10 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  // rawBody keeps the exact received bytes on req.rawBody. Webhook signatures
+  // are an HMAC over those bytes; re-serialising parsed JSON reorders keys and
+  // changes whitespace, which breaks verification.
+  const app = await NestFactory.create(AppModule, { rawBody: true });
 
   app.enableCors({
     origin: process.env.WEB_ORIGIN ?? 'http://localhost:3000',

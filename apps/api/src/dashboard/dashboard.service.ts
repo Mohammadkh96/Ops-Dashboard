@@ -1,7 +1,8 @@
 import { Injectable, MessageEvent } from '@nestjs/common';
-import { interval, map, Observable } from 'rxjs';
+import { filter, interval, map, merge, Observable } from 'rxjs';
 
 import { PrismaService } from '../prisma/prisma.service';
+import { LiveBus } from '../live/live-bus.service';
 
 const LIVE_TYPES = ['Deposit', 'Withdrawal', 'KYC Review', 'Ticket'] as const;
 
@@ -12,7 +13,10 @@ const LIVE_TYPES = ['Deposit', 'Withdrawal', 'KYC Review', 'Ticket'] as const;
  */
 @Injectable()
 export class DashboardService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly bus: LiveBus,
+  ) {}
 
   async getSummary() {
     const [
@@ -275,10 +279,21 @@ export class DashboardService {
    * Server-Sent Events stream of live operational ticks (a new queue item plus
    * jittered metrics) emitted every 4s. Consumed by the dashboard's live feed.
    */
+  /**
+   * Real provider events merged with the simulator.
+   *
+   * Once any real callback has arrived the simulator stands down permanently —
+   * a live dashboard must never mix invented rows into real operational data.
+   * Set LIVE_SIMULATE=false to disable the simulator outright.
+   */
   liveStream(): Observable<MessageEvent> {
-    return interval(4000).pipe(
+    const real = this.bus.stream().pipe(map((tick): MessageEvent => ({ data: tick })));
+    if (process.env.LIVE_SIMULATE === 'false') return real;
+    const simulated = interval(4000).pipe(
+      filter(() => !this.bus.hasLiveTraffic()),
       map((seq): MessageEvent => ({ data: this.makeTick(seq) })),
     );
+    return merge(real, simulated);
   }
 
   private makeTick(seq: number) {

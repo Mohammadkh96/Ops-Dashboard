@@ -308,6 +308,36 @@ model ReconCase {
   @@index([priority])
 }
 
+// A payment callback received from a provider (today: Paymaxis).
+//
+// The raw payload and headers are stored verbatim alongside the normalised
+// columns. Provider payloads change without notice and the normalisation is
+// best-effort, so keeping the original means nothing is ever lost to a mapping
+// gap — the columns can be re-derived later.
+model PaymentEvent {
+  id          String    @id @default(cuid())
+  provider    String
+  receivedAt  DateTime  @default(now())
+  /// False when the callback arrived without a valid signature (capture mode).
+  signatureOk Boolean   @default(false)
+  eventType   String?
+  paymentId   String?
+  reference   String?
+  shop        String?
+  state       String?
+  type        String?
+  amount      Float     @default(0)
+  currency    String?
+  customer    String?
+  occurredAt  DateTime?
+  headers     Json
+  payload     Json
+
+  @@index([receivedAt])
+  @@index([provider, paymentId])
+  @@index([reference])
+}
+
 // ---------- Audit ----------
 
 model AuditLog {

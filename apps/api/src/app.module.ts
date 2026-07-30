@@ -9,6 +9,8 @@ import { HealthModule } from './health/health.module';
 import { ModulesModule } from './modules/modules.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ReconModule } from './recon/recon.module';
+import { LiveModule } from './live/live.module';
+import { WebhooksModule } from './webhooks/webhooks.module';
 import { UsersModule } from './users/users.module';
 
 @Module({
@@ -21,6 +23,8 @@ import { UsersModule } from './users/users.module';
     DashboardModule,
     ModulesModule,
     ReconModule,
+    LiveModule,
+    WebhooksModule,
   ],
   controllers: [AppController],
   providers: [AppService],
