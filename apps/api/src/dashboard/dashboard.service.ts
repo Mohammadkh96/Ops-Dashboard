@@ -482,12 +482,25 @@ export class DashboardService {
    */
   liveStream(): Observable<MessageEvent> {
     const real = this.bus.stream().pipe(map((tick): MessageEvent => ({ data: tick })));
-    if (process.env.LIVE_SIMULATE === 'false') return real;
+
+    // Keep-alive. With the simulator off, this stream is silent between real
+    // payments — which can be many minutes at night. Reverse proxies and CDNs
+    // close an idle connection (Cloudflare at ~100s, most load balancers at 60s),
+    // so the dashboard would show "disconnected" during exactly the quiet spells
+    // it is meant to sit through. A named event is deliberate: EventSource's
+    // onmessage only fires for unnamed events, so the client ignores these with
+    // no change on its side.
+    const seconds = Math.max(5, Number(process.env.LIVE_HEARTBEAT_SECONDS ?? 20));
+    const heartbeat = interval(seconds * 1000).pipe(
+      map((): MessageEvent => ({ type: 'ping', data: '' })),
+    );
+
+    if (process.env.LIVE_SIMULATE === 'false') return merge(real, heartbeat);
     const simulated = interval(4000).pipe(
       filter(() => !this.bus.hasLiveTraffic()),
       map((seq): MessageEvent => ({ data: this.makeTick(seq) })),
     );
-    return merge(real, simulated);
+    return merge(real, simulated, heartbeat);
   }
 
   private makeTick(seq: number) {
