@@ -45,14 +45,16 @@ export class DashboardService {
             ],
           },
           select: {
-            occurredAt: true, receivedAt: true, type: true,
-            state: true, amount: true, entity: true,
+            occurredAt: true, receivedAt: true, type: true, state: true,
+            amount: true, entity: true, psp: true,
+            errorCode: true, errorMessage: true,
           },
           take: 50_000,
         }),
       [] as {
         occurredAt: Date | null; receivedAt: Date; type: string | null;
         state: string | null; amount: number; entity: string | null;
+        psp: string | null; errorCode: string | null; errorMessage: string | null;
       }[],
     );
     if (!rows.length) return null;
@@ -134,9 +136,52 @@ export class DashboardService {
       };
     });
 
+    // Why payments failed, biggest first. This is the most actionable view on a
+    // payments dashboard: "Declined by 3DS" and "insufficient funds" call for
+    // completely different responses, and a total decline count says neither.
+    const reasons = new Map<string, { count: number; amount: number }>();
+    current
+      .filter((r) => isFailedState(r.state ?? ''))
+      .forEach((r) => {
+        const label = r.errorMessage || r.errorCode || r.state || 'Unknown';
+        const e = reasons.get(label) ?? { count: 0, amount: 0 };
+        e.count += 1;
+        e.amount += Math.abs(r.amount);
+        reasons.set(label, e);
+      });
+    const declineReasons = [...reasons.entries()]
+      .map(([reason, v]) => ({ reason, count: v.count, amount: Number(v.amount.toFixed(2)) }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 6);
+
+    // Per-PSP health, so a single failing provider is visible rather than
+    // averaged away in the overall success rate.
+    const pspNames = [...new Set(current.map((r) => r.psp).filter(Boolean))] as string[];
+    const byPsp = pspNames
+      .map((name) => {
+        const scoped = current.filter((r) => r.psp === name);
+        const ok = scoped.filter((r) => isSettledState(r.state ?? '')).length;
+        const bad = scoped.filter((r) => isFailedState(r.state ?? '')).length;
+        return {
+          psp: name,
+          settled: ok,
+          declined: bad,
+          successRate: ok + bad ? Number(((ok / (ok + bad)) * 100).toFixed(1)) : null,
+          volume: Number(
+            scoped
+              .filter((r) => isSettledState(r.state ?? ''))
+              .reduce((s, r) => s + Math.abs(r.amount), 0)
+              .toFixed(2),
+          ),
+        };
+      })
+      .sort((a, b) => b.volume - a.volume);
+
     return {
       window: '24h',
       events: current.length,
+      declineReasons,
+      byPsp,
       today: [
         tile('volume', 'Total Volume', dep + wdr, depPrev + wdrPrev, 'blue', 'all'),
         tile('deposits', 'Deposits', dep, depPrev, 'green', 'deposits'),
@@ -198,6 +243,8 @@ export class DashboardService {
       live: !!live,
       window: live?.window ?? null,
       byEntity: live?.byEntity ?? null,
+      byPsp: live?.byPsp ?? null,
+      declineReasons: live?.declineReasons ?? null,
     };
 
     return {

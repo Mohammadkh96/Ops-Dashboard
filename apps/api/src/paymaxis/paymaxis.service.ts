@@ -124,6 +124,8 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
                   psp: p.psp || null,
                   parentPaymentId: p.parentPaymentId || null,
                   cryptoTxHash: p.cryptoTxHash || null,
+                  errorCode: p.errorCode || null,
+                  errorMessage: p.errorMessage || null,
                   reference: p.reference || null,
                   shop: p.shop || shop.shopId,
                   entity: p.entity || null,

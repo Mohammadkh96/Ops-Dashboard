@@ -340,6 +340,10 @@ model PaymentEvent {
   parentPaymentId String?
   /// On-chain hash for a crypto payment — the join to a crypto PSP's export.
   cryptoTxHash    String?
+  /// Provider error code on a failure, e.g. "5.00".
+  errorCode       String?
+  /// Human-readable failure reason, e.g. "Declined by 3DS".
+  errorMessage    String?
   reference       String?
   shop            String?
   /// Jurisdiction derived from the shop, so live data slices the same way the

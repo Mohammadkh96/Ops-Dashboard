@@ -108,6 +108,10 @@ export type NormalizedPayment = {
   parentPaymentId: string;
   /** On-chain hash for a crypto payment — the link to a crypto PSP's export. */
   cryptoTxHash: string;
+  /** Provider error code on a failure, e.g. "5.00". */
+  errorCode: string;
+  /** Human-readable failure reason, e.g. "Declined by 3DS". */
+  errorMessage: string;
   reference: string;
   state: string;
   type: string;
@@ -157,6 +161,14 @@ export function normalizePayment(inner: Record<string, unknown>): NormalizedPaym
     'externalRefs.cryptoTransactionHash', 'cryptoTransactionHash',
     'additionalParameters.cryptoTransactionHash', 'hash',
   ]);
+  // Why a payment failed is the most actionable thing on a declined row:
+  // "Declined by 3DS" and "insufficient funds" call for completely different
+  // responses. externalResultCode carries the acquirer's own detail and is used
+  // when the provider gives no friendly message.
+  const errorCode = pick(inner, ['errorCode', 'error_code', 'resultCode']);
+  const errorMessage =
+    pick(inner, ['errorMessage', 'error_message', 'declineReason', 'resultDescription']) ||
+    pick(inner, ['externalResultCode']).split('|').slice(1).join('|').trim();
   // The customer block is NESTED in the real payload, so flat names alone
   // silently yielded nothing.
   const customer = pick(inner, [
@@ -175,6 +187,8 @@ export function normalizePayment(inner: Record<string, unknown>): NormalizedPaym
     psp: pspForTerminal(terminal),
     parentPaymentId,
     cryptoTxHash,
+    errorCode,
+    errorMessage,
     reference,
     state,
     type,
