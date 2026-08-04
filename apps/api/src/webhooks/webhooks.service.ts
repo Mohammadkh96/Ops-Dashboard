@@ -65,23 +65,57 @@ export class WebhooksService {
     }
     if (!raw?.length) return { ok: false, reason: 'raw body unavailable' };
 
-    const headerName = (process.env.PAYMAXIS_SIGNATURE_HEADER ?? 'x-signature').toLowerCase();
-    const provided = headers[headerName];
-    if (!provided) return { ok: false, reason: `signature header "${headerName}" absent` };
-
     const algo = process.env.PAYMAXIS_SIGNATURE_ALGO ?? 'sha256';
-    const given = Buffer.from(provided.trim().replace(/^sha256=/i, ''));
+    const configured = process.env.PAYMAXIS_SIGNATURE_HEADER?.toLowerCase();
+
+    // Which header carries the signature is provider-specific and easy to get
+    // wrong. Rather than depend on a guess, compute the expected HMAC and look
+    // for ANY header whose value equals it. That is not a weakening: a header
+    // only "matches" if it already equals an HMAC produced with a key we hold,
+    // which an attacker cannot forge. When the header IS configured it is tried
+    // first, and the header that matched is reported so it can be pinned.
+    const candidates: [string, string][] = configured
+      ? Object.entries(headers).filter(([h]) => h.toLowerCase() === configured)
+      : [];
+    if (!candidates.length) {
+      candidates.push(
+        ...Object.entries(headers).filter(
+          ([h, v]) =>
+            typeof v === 'string' &&
+            v.length >= 32 && // an HMAC digest is never shorter than this
+            !['authorization', 'cookie'].includes(h.toLowerCase()),
+        ),
+      );
+    }
+    if (!candidates.length) {
+      return { ok: false, reason: 'no header looks like a signature' };
+    }
+
     for (const { label, key } of keys) {
       // Accept either encoding — providers differ and the header rarely says
       // which. A fresh Hmac per attempt: digest() finalises the instance.
       for (const enc of ['hex', 'base64'] as const) {
         const expected = Buffer.from(createHmac(algo, key).update(raw).digest(enc));
-        if (expected.length === given.length && timingSafeEqual(expected, given)) {
-          return { ok: true, shopHint: label };
+        for (const [header, value] of candidates) {
+          const given = Buffer.from(String(value).trim().replace(/^sha256=/i, ''));
+          if (expected.length === given.length && timingSafeEqual(expected, given)) {
+            if (!configured) {
+              this.log.log(
+                `Signature verified from header "${header}" (${enc}). ` +
+                  `Pin it with PAYMAXIS_SIGNATURE_HEADER=${header}`,
+              );
+            }
+            return { ok: true, shopHint: label };
+          }
         }
       }
     }
-    return { ok: false, reason: `signature matched none of the ${keys.length} configured key(s)` };
+    return {
+      ok: false,
+      reason:
+        `signature matched none of the ${keys.length} configured key(s) ` +
+        `across ${candidates.length} candidate header(s)`,
+    };
   }
 
   async handlePaymaxis(
