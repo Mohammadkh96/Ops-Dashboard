@@ -39,6 +39,31 @@ export function entityForShop(shop: string): string {
   return '';
 }
 
+/**
+ * Terminal name -> PSP. Paymaxis names the terminal, not the provider:
+ * "Paystrax_Tradin SL", "MT_Tradin SL" (MatchTrade, i.e. Match2pay),
+ * "ForumPay_Tradin SL". Resolving it gives live data the same PSP dimension the
+ * reconciliation uses, so the two can be compared.
+ */
+const TERMINAL_PSP: [RegExp, string][] = [
+  [/paystrax/i, 'Paystrax'],
+  [/forumpay|forum/i, 'ForumPay'],
+  [/\bmt[_\s-]|matchtrade|match2pay/i, 'Match2pay'],
+  [/virtualpay/i, 'VirtualPay'],
+  [/beem/i, 'Beem'],
+  [/rapyd/i, 'Rapyd'],
+  [/hero/i, 'Hero Payments'],
+  [/limepay|lime/i, 'LimePay'],
+];
+
+export function pspForTerminal(terminal: string): string {
+  if (!terminal) return '';
+  for (const [re, name] of TERMINAL_PSP) if (re.test(terminal)) return name;
+  // Unknown terminal: fall back to its leading token rather than inventing a
+  // name, so a new provider shows up as itself instead of silently as "other".
+  return terminal.split(/[_\s]/)[0];
+}
+
 function deepGet(obj: unknown, path: string): unknown {
   return path
     .split('.')
@@ -77,6 +102,12 @@ export type NormalizedPayment = {
   externalId: string;
   /** Terminal/connector name, e.g. "Paystrax_Tradin SL" — identifies the PSP. */
   terminal: string;
+  /** PSP resolved from the terminal, e.g. "Paystrax", "Match2pay", "ForumPay". */
+  psp: string;
+  /** For a REFUND, the payment being refunded. */
+  parentPaymentId: string;
+  /** On-chain hash for a crypto payment — the link to a crypto PSP's export. */
+  cryptoTxHash: string;
   reference: string;
   state: string;
   type: string;
@@ -117,6 +148,15 @@ export function normalizePayment(inner: Record<string, unknown>): NormalizedPaym
   // Paystrax UniqueId), which is what links live data to a PSP settlement file.
   const externalId = pick(inner, ['externalId', 'externalRefs.paymentId', 'external_id']);
   const terminal = pick(inner, ['terminalName', 'terminal', 'connectorName']);
+  // A refund carries the payment it reverses; without this a refund cannot be
+  // tied back to the deposit it belongs to.
+  const parentPaymentId = pick(inner, ['parentPaymentId', 'parentPaymentID', 'parentId']);
+  // Crypto payments settle on-chain; the hash is what a crypto PSP's export is
+  // keyed on, so it is the join for those providers.
+  const cryptoTxHash = pick(inner, [
+    'externalRefs.cryptoTransactionHash', 'cryptoTransactionHash',
+    'additionalParameters.cryptoTransactionHash', 'hash',
+  ]);
   // The customer block is NESTED in the real payload, so flat names alone
   // silently yielded nothing.
   const customer = pick(inner, [
@@ -132,6 +172,9 @@ export function normalizePayment(inner: Record<string, unknown>): NormalizedPaym
     paymentId,
     externalId,
     terminal,
+    psp: pspForTerminal(terminal),
+    parentPaymentId,
+    cryptoTxHash,
     reference,
     state,
     type,

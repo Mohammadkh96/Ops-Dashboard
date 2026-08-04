@@ -315,37 +315,44 @@ model ReconCase {
 // best-effort, so keeping the original means nothing is ever lost to a mapping
 // gap — the columns can be re-derived later.
 model PaymentEvent {
-  id          String    @id @default(cuid())
-  provider    String
+  id              String    @id @default(cuid())
+  provider        String
   /// "webhook" (pushed to us) or "poll" (we read it from the API).
-  source      String    @default("webhook")
+  source          String    @default("webhook")
   /// Identity of a payment IN A GIVEN STATE. A payment reappearing as
   /// PENDING -> COMPLETED is news; re-reading it unchanged is not. Unique, so
   /// repeated polls store nothing and the live feed never repeats itself.
-  dedupeKey   String?   @unique
-  receivedAt  DateTime  @default(now())
+  dedupeKey       String?   @unique
+  receivedAt      DateTime  @default(now())
   /// False when the callback arrived without a valid signature (capture mode).
-  signatureOk Boolean   @default(false)
-  eventType   String?
-  paymentId   String?
+  signatureOk     Boolean   @default(false)
+  eventType       String?
+  paymentId       String?
   /// The PSP's own id for the same payment (Paymaxis externalId == e.g. the
   /// Paystrax UniqueId) — the link between live data and a PSP settlement file.
-  externalId  String?
+  externalId      String?
   /// Terminal/connector name, e.g. "Paystrax_Tradin SL" — identifies the PSP.
-  terminal    String?
-  reference   String?
-  shop        String?
+  terminal        String?
+  /// PSP resolved from the terminal, so live data carries the same PSP
+  /// dimension the reconciliation groups by.
+  psp             String?
+  /// For a REFUND, the payment being refunded.
+  parentPaymentId String?
+  /// On-chain hash for a crypto payment — the join to a crypto PSP's export.
+  cryptoTxHash    String?
+  reference       String?
+  shop            String?
   /// Jurisdiction derived from the shop, so live data slices the same way the
   /// reconciliation does. Paymaxis shop 5141 is Mauritius, 6321 Saint Lucia.
-  entity      String?
-  state       String?
-  type        String?
-  amount      Float     @default(0)
-  currency    String?
-  customer    String?
-  occurredAt  DateTime?
-  headers     Json
-  payload     Json
+  entity          String?
+  state           String?
+  type            String?
+  amount          Float     @default(0)
+  currency        String?
+  customer        String?
+  occurredAt      DateTime?
+  headers         Json
+  payload         Json
 
   @@index([receivedAt])
   @@index([provider, paymentId])
