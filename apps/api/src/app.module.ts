@@ -11,6 +11,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { ReconModule } from './recon/recon.module';
 import { LiveModule } from './live/live.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
+import { PaymaxisModule } from './paymaxis/paymaxis.module';
 import { UsersModule } from './users/users.module';
 
 @Module({
@@ -25,6 +26,7 @@ import { UsersModule } from './users/users.module';
     ReconModule,
     LiveModule,
     WebhooksModule,
+    PaymaxisModule,
   ],
   controllers: [AppController],
   providers: [AppService],

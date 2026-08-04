@@ -317,6 +317,12 @@ model ReconCase {
 model PaymentEvent {
   id          String    @id @default(cuid())
   provider    String
+  /// "webhook" (pushed to us) or "poll" (we read it from the API).
+  source      String    @default("webhook")
+  /// Identity of a payment IN A GIVEN STATE. A payment reappearing as
+  /// PENDING -> COMPLETED is news; re-reading it unchanged is not. Unique, so
+  /// repeated polls store nothing and the live feed never repeats itself.
+  dedupeKey   String?   @unique
   receivedAt  DateTime  @default(now())
   /// False when the callback arrived without a valid signature (capture mode).
   signatureOk Boolean   @default(false)
