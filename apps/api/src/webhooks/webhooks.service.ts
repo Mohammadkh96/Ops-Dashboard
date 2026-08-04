@@ -34,13 +34,35 @@ export class WebhooksService {
   }
 
   /**
-   * Verifies an HMAC over the EXACT received bytes. The raw body is required —
-   * re-serialising parsed JSON reorders keys and changes whitespace, which
-   * breaks every signature scheme.
+   * Every shop has its OWN signing key, and the signature must be checked
+   * before the body can be trusted — so the shop is not yet known. Each
+   * configured key is therefore tried until one verifies. That is still strict
+   * HMAC verification, just against the small set of keys we own.
    */
-  private verify(raw: Buffer | undefined, headers: Record<string, string>): { ok: boolean; reason?: string } {
-    const key = process.env.PAYMAXIS_SIGNING_KEY;
-    if (!key) return { ok: false, reason: 'PAYMAXIS_SIGNING_KEY is not configured' };
+  private signingKeys(): { label: string; key: string }[] {
+    const out: { label: string; key: string }[] = [];
+    // "5141=key,6321=key" — preferred, so logs can name the shop.
+    const multi = process.env.PAYMAXIS_SIGNING_KEYS;
+    if (multi) {
+      multi.split(',').forEach((pair) => {
+        const i = pair.indexOf('=');
+        if (i > 0) out.push({ label: pair.slice(0, i).trim(), key: pair.slice(i + 1).trim() });
+        else if (pair.trim()) out.push({ label: 'shop?', key: pair.trim() });
+      });
+    }
+    const single = process.env.PAYMAXIS_SIGNING_KEY;
+    if (single) out.push({ label: 'default', key: single });
+    return out.filter((k) => k.key);
+  }
+
+  private verify(
+    raw: Buffer | undefined,
+    headers: Record<string, string>,
+  ): { ok: boolean; reason?: string; shopHint?: string } {
+    const keys = this.signingKeys();
+    if (!keys.length) {
+      return { ok: false, reason: 'no signing key configured (PAYMAXIS_SIGNING_KEYS)' };
+    }
     if (!raw?.length) return { ok: false, reason: 'raw body unavailable' };
 
     const headerName = (process.env.PAYMAXIS_SIGNATURE_HEADER ?? 'x-signature').toLowerCase();
@@ -48,16 +70,18 @@ export class WebhooksService {
     if (!provided) return { ok: false, reason: `signature header "${headerName}" absent` };
 
     const algo = process.env.PAYMAXIS_SIGNATURE_ALGO ?? 'sha256';
-    // Accept either encoding — providers differ and the header rarely says which.
-    // A fresh Hmac per attempt: digest() finalises the instance, so it cannot
-    // be reused for a second encoding.
-    for (const enc of ['hex', 'base64'] as const) {
-      const expected = createHmac(algo, key).update(raw).digest(enc);
-      const a = Buffer.from(expected);
-      const b = Buffer.from(provided.trim().replace(/^sha256=/i, ''));
-      if (a.length === b.length && timingSafeEqual(a, b)) return { ok: true };
+    const given = Buffer.from(provided.trim().replace(/^sha256=/i, ''));
+    for (const { label, key } of keys) {
+      // Accept either encoding — providers differ and the header rarely says
+      // which. A fresh Hmac per attempt: digest() finalises the instance.
+      for (const enc of ['hex', 'base64'] as const) {
+        const expected = Buffer.from(createHmac(algo, key).update(raw).digest(enc));
+        if (expected.length === given.length && timingSafeEqual(expected, given)) {
+          return { ok: true, shopHint: label };
+        }
+      }
     }
-    return { ok: false, reason: 'signature mismatch' };
+    return { ok: false, reason: `signature matched none of the ${keys.length} configured key(s)` };
   }
 
   async handlePaymaxis(
@@ -65,7 +89,7 @@ export class WebhooksService {
     headers: Record<string, string>,
     body: Record<string, unknown>,
   ): Promise<WebhookOutcome> {
-    const { ok, reason } = this.verify(raw, headers);
+    const { ok, reason, shopHint } = this.verify(raw, headers);
 
     if (!ok && !this.captureMode) {
       this.log.warn(`Rejected Paymaxis callback: ${reason}`);
@@ -76,6 +100,8 @@ export class WebhooksService {
         `Capture mode: storing UNVERIFIED Paymaxis callback (${reason}). ` +
           `Headers seen: ${Object.keys(headers).join(', ')}`,
       );
+    } else if (shopHint && shopHint !== 'default') {
+      this.log.log(`Verified Paymaxis callback with the ${shopHint} signing key.`);
     }
 
     const p = normalizePayment(unwrapPayment(body));
