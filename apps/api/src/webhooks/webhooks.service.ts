@@ -4,7 +4,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { LiveBus } from '../live/live-bus.service';
-import { normalizePayment, toQueueItem, unwrapPayment } from '../paymaxis/normalize';
+import { normalizePayment, redactPayload, toQueueItem, unwrapPayment } from '../paymaxis/normalize';
 
 function asJson(v: unknown): Prisma.InputJsonValue {
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
@@ -117,6 +117,8 @@ export class WebhooksService {
           dedupeKey: p.dedupeKey,
           eventType: eventType || null,
           paymentId: p.paymentId || null,
+          externalId: p.externalId || null,
+          terminal: p.terminal || null,
           reference: p.reference || null,
           shop: p.shop || null,
           entity: p.entity || null,
@@ -127,7 +129,7 @@ export class WebhooksService {
           customer: p.customer || null,
           occurredAt: p.occurredAt,
           headers: asJson(headers),
-          payload: asJson(body),
+          payload: asJson(redactPayload(body)),
         },
       });
       id = saved.id;

@@ -34,13 +34,27 @@ export function entityForShop(shop: string): string {
   return '';
 }
 
-/** Reads the first present key, case-insensitively, skipping nested objects. */
+function deepGet(obj: unknown, path: string): unknown {
+  return path
+    .split('.')
+    .reduce<unknown>((o, k) => (o && typeof o === 'object' ? (o as Record<string, unknown>)[k] : undefined), obj);
+}
+
+/**
+ * Reads the first present key. Accepts dotted paths, because the real payload
+ * nests the things we need — the customer reference lives at
+ * `customer.referenceId`, not at a flat `customerReferenceId`.
+ */
 export function pick(obj: Record<string, unknown>, keys: string[]): string {
   const lower = new Map(Object.keys(obj).map((k) => [k.toLowerCase(), k]));
   for (const k of keys) {
-    const real = lower.get(k.toLowerCase());
-    if (real === undefined) continue;
-    const v = obj[real];
+    let v: unknown;
+    if (k.includes('.')) v = deepGet(obj, k);
+    else {
+      const real = lower.get(k.toLowerCase());
+      if (real === undefined) continue;
+      v = obj[real];
+    }
     if (v === null || v === undefined || v === '' || typeof v === 'object') continue;
     return String(v);
   }
@@ -54,6 +68,10 @@ export function num(v: string): number {
 
 export type NormalizedPayment = {
   paymentId: string;
+  /** The PSP's own id for this payment — the link to a PSP settlement file. */
+  externalId: string;
+  /** Terminal/connector name, e.g. "Paystrax_Tradin SL" — identifies the PSP. */
+  terminal: string;
   reference: string;
   state: string;
   type: string;
@@ -89,9 +107,17 @@ export function normalizePayment(inner: Record<string, unknown>): NormalizedPaym
     pick(inner, ['amountInShopBaseCurrency', 'amount', 'value', 'totalAmount']),
   );
   const currency = pick(inner, ['currency', 'currencyCode']);
-  const shop = pick(inner, ['shop', 'shopId', 'shopName', 'shop_id']);
+  const shop = pick(inner, ['shopName', 'shop', 'shopId', 'shop_id']);
+  // externalId is the PSP's id for the same payment (Paymaxis externalId ==
+  // Paystrax UniqueId), which is what links live data to a PSP settlement file.
+  const externalId = pick(inner, ['externalId', 'externalRefs.paymentId', 'external_id']);
+  const terminal = pick(inner, ['terminalName', 'terminal', 'connectorName']);
+  // The customer block is NESTED in the real payload, so flat names alone
+  // silently yielded nothing.
   const customer = pick(inner, [
-    'customerReferenceId', 'customerEmail', 'customerAccountNumber', 'customer', 'customerId',
+    'customer.referenceId', 'customerReferenceId',
+    'customer.email', 'customerEmail',
+    'customer.accountNumber', 'customerAccountNumber', 'customerId',
   ]);
   const occurred = pick(inner, ['updatedAt', 'updated', 'finalized', 'createdAt', 'created', 'timestamp']);
   const occurredAt =
@@ -99,6 +125,8 @@ export function normalizePayment(inner: Record<string, unknown>): NormalizedPaym
 
   return {
     paymentId,
+    externalId,
+    terminal,
     reference,
     state,
     type,
@@ -114,6 +142,49 @@ export function normalizePayment(inner: Record<string, unknown>): NormalizedPaym
     // the same unchanged payment is not.
     dedupeKey: `paymaxis:${paymentId || reference}:${state}:${occurredAt?.toISOString() ?? ''}`,
   };
+}
+
+/**
+ * Strips personal data from a payload before it is stored.
+ *
+ * Real payloads carry date of birth, IP address, cardholder name, card expiry
+ * and 3-D Secure material. None of that is needed to run an operations
+ * dashboard or a reconciliation, and storing it turns this database into a
+ * personal-data store with the retention and access obligations that follow —
+ * so it is removed on the way in rather than guarded afterwards.
+ *
+ * Keys are matched by NAME anywhere in the object, so a provider moving a field
+ * cannot quietly reintroduce it. Set PAYMAXIS_STORE_RAW=full to keep everything
+ * (only sensible while debugging), or list your own keys in
+ * PAYMAXIS_REDACT_KEYS.
+ */
+const DEFAULT_REDACT_KEYS = [
+  'dateOfBirth', 'birthDate', 'ip', 'ipAddress',
+  'cardholderName', 'holder', 'givenName', 'surname', 'firstName', 'lastName',
+  'cardExpiryMonth', 'cardExpiryYear', 'expiryMonth', 'expiryYear',
+  'cardToken', 'recurringToken', 'threeDSecure', 'verificationId',
+];
+
+export function redactPayload(value: unknown): unknown {
+  if (process.env.PAYMAXIS_STORE_RAW === 'full') return value;
+  const extra = (process.env.PAYMAXIS_REDACT_KEYS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const deny = new Set([...DEFAULT_REDACT_KEYS, ...extra].map((k) => k.toLowerCase()));
+
+  const walk = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === 'object') {
+      return Object.fromEntries(
+        Object.entries(v as Record<string, unknown>).map(([k, val]) =>
+          deny.has(k.toLowerCase()) ? [k, '«redacted»'] : [k, walk(val)],
+        ),
+      );
+    }
+    return v;
+  };
+  return walk(value);
 }
 
 /** Maps a normalized payment onto the dashboard's live-feed item. */

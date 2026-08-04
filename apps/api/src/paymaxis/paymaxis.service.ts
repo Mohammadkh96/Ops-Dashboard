@@ -4,7 +4,7 @@ import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { LiveBus } from '../live/live-bus.service';
 import { PaymaxisClient } from './paymaxis.client';
-import { normalizePayment, toQueueItem, unwrapPayment } from './normalize';
+import { normalizePayment, redactPayload, toQueueItem, unwrapPayment } from './normalize';
 
 function asJson(v: unknown): Prisma.InputJsonValue {
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
@@ -119,6 +119,8 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
                   signatureOk: true, // authenticated by our own outbound API key
                   dedupeKey: p.dedupeKey,
                   paymentId: p.paymentId || null,
+                  externalId: p.externalId || null,
+                  terminal: p.terminal || null,
                   reference: p.reference || null,
                   shop: p.shop || shop.shopId,
                   entity: p.entity || null,
@@ -129,7 +131,7 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
                   customer: p.customer || null,
                   occurredAt: p.occurredAt,
                   headers: asJson({}),
-                  payload: asJson(raw),
+                  payload: asJson(redactPayload(raw)),
                 },
               ],
               skipDuplicates: true,

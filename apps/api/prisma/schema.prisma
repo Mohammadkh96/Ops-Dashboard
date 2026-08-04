@@ -328,6 +328,11 @@ model PaymentEvent {
   signatureOk Boolean   @default(false)
   eventType   String?
   paymentId   String?
+  /// The PSP's own id for the same payment (Paymaxis externalId == e.g. the
+  /// Paystrax UniqueId) — the link between live data and a PSP settlement file.
+  externalId  String?
+  /// Terminal/connector name, e.g. "Paystrax_Tradin SL" — identifies the PSP.
+  terminal    String?
   reference   String?
   shop        String?
   /// Jurisdiction derived from the shop, so live data slices the same way the
