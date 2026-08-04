@@ -140,7 +140,43 @@ anything at Paymaxis even though the keys carry write permission.
 
 ---
 
-## 4. Point the dashboard at the API
+## 4. Point the dashboard at the API (Vercel)
+
+The dashboard on Vercel is a **static export** — pure browser JavaScript, no
+server. That is fine: it can call an external API and open an SSE stream
+directly from the browser. What it cannot do is host the API itself, because a
+serverless function cannot hold a long-lived SSE connection open or run the
+poller's background timer.
+
+So: **UI on Vercel, API on a host that stays running** (Railway, Render, Fly, or
+your own server), with Postgres alongside it.
+
+In Vercel → Project → Settings → Environment Variables:
+
+```
+NEXT_PUBLIC_API_URL = https://<your api host>/api
+```
+
+Then redeploy — the value is baked in at build time, so an existing deployment
+will not pick it up until it rebuilds.
+
+On the API, allow the Vercel origins. Preview deployments each get their own
+URL, so list the production domain and (if you want previews to work) the
+wildcard:
+
+```ini
+WEB_ORIGIN="https://<your app>.vercel.app,*.vercel.app"
+```
+
+Two things that will otherwise waste an afternoon:
+
+- **The API must be HTTPS.** Vercel serves over HTTPS and a browser blocks
+  plain-HTTP requests from an HTTPS page as mixed content, with no useful error.
+- **Exact origins are safer than the wildcard.** With credentials enabled,
+  `*.vercel.app` lets any site on that domain make credentialed requests. Use it
+  for previews, and pin the production domain.
+
+## 4b. Point the dashboard at the API (any host)
 
 **This step is easy to forget and nothing appears without it.** With
 `NEXT_PUBLIC_API_URL` unset the web app runs in demo mode: it simulates events in
