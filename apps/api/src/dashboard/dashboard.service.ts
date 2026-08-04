@@ -3,6 +3,7 @@ import { filter, interval, map, merge, Observable } from 'rxjs';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { LiveBus } from '../live/live-bus.service';
+import { isFailedState, isSettledState } from '../paymaxis/normalize';
 
 const LIVE_TYPES = ['Deposit', 'Withdrawal', 'KYC Review', 'Ticket'] as const;
 
@@ -18,6 +19,141 @@ export class DashboardService {
     private readonly bus: LiveBus,
   ) {}
 
+  /**
+   * Real KPIs over a rolling 24 hours, derived from ingested payment events.
+   *
+   * Returns null when no events exist, so a fresh environment keeps the
+   * representative defaults instead of showing a dashboard full of zeros.
+   *
+   * Volume counts SETTLED money only — an attempted-but-declined deposit is not
+   * revenue, and counting it would overstate the business. Declines are still
+   * measured, in the success rate.
+   */
+  private async liveMetrics() {
+    const dayMs = 86_400_000;
+    const now = Date.now();
+    const windowStart = new Date(now - dayMs);
+    const priorStart = new Date(now - 2 * dayMs);
+
+    const rows = await this.safeQuery(
+      () =>
+        this.prisma.paymentEvent.findMany({
+          where: {
+            OR: [
+              { occurredAt: { gte: priorStart } },
+              { AND: [{ occurredAt: null }, { receivedAt: { gte: priorStart } }] },
+            ],
+          },
+          select: {
+            occurredAt: true, receivedAt: true, type: true,
+            state: true, amount: true, entity: true,
+          },
+          take: 50_000,
+        }),
+      [] as {
+        occurredAt: Date | null; receivedAt: Date; type: string | null;
+        state: string | null; amount: number; entity: string | null;
+      }[],
+    );
+    if (!rows.length) return null;
+
+    const at = (r: (typeof rows)[number]) => (r.occurredAt ?? r.receivedAt).getTime();
+    const isWithdrawal = (t: string | null) => /withdraw|refund/i.test(t ?? '');
+
+    const sumSettled = (from: number, to: number, withdrawals: boolean) =>
+      rows
+        .filter(
+          (r) =>
+            at(r) >= from && at(r) < to &&
+            isSettledState(r.state ?? '') &&
+            isWithdrawal(r.type) === withdrawals,
+        )
+        .reduce((s, r) => s + Math.abs(r.amount), 0);
+
+    const wStart = windowStart.getTime();
+    const pStart = priorStart.getTime();
+    const dep = sumSettled(wStart, now, false);
+    const wdr = sumSettled(wStart, now, true);
+    const depPrev = sumSettled(pStart, wStart, false);
+    const wdrPrev = sumSettled(pStart, wStart, true);
+
+    const current = rows.filter((r) => at(r) >= wStart);
+    const settled = current.filter((r) => isSettledState(r.state ?? '')).length;
+    const failed = current.filter((r) => isFailedState(r.state ?? '')).length;
+    const decided = settled + failed;
+    const successRate = decided ? Number(((settled / decided) * 100).toFixed(1)) : 100;
+
+    // Eight 3-hour buckets across the window, so the sparkline shows the shape
+    // of the day rather than a meaningless cumulative ramp.
+    const spark = (mode: 'all' | 'deposits' | 'withdrawals' | 'net') => {
+      const buckets = new Array(8).fill(0) as number[];
+      const size = dayMs / 8;
+      current.forEach((r) => {
+        if (!isSettledState(r.state ?? '')) return;
+        const wd = isWithdrawal(r.type);
+        if (mode === 'deposits' && wd) return;
+        if (mode === 'withdrawals' && !wd) return;
+        const i = Math.min(7, Math.floor((at(r) - wStart) / size));
+        // Net flow subtracts withdrawals, so its line matches its own tile
+        // rather than quietly plotting gross volume.
+        buckets[i] += mode === 'net' && wd ? -Math.abs(r.amount) : Math.abs(r.amount);
+      });
+      return buckets.map((n) => Number(n.toFixed(2)));
+    };
+
+    const pct = (nowV: number, prevV: number) =>
+      prevV > 0 ? Number((((nowV - prevV) / prevV) * 100).toFixed(1)) : null;
+    // Scale to whatever unit keeps the tile readable.
+    const scale = (n: number) =>
+      n >= 1e6
+        ? { value: Number((n / 1e6).toFixed(2)), unit: 'M' }
+        : n >= 1e3
+          ? { value: Number((n / 1e3).toFixed(1)), unit: 'K' }
+          : { value: Number(n.toFixed(2)), unit: '' };
+
+    const tile = (
+      key: string, label: string, amount: number, prev: number,
+      tone: string, sparkFor: 'all' | 'deposits' | 'withdrawals' | 'net',
+    ) => {
+      const change = pct(amount, prev);
+      const { value, unit } = scale(amount);
+      return {
+        key, label, value, unit,
+        change: change === null ? '—' : `${change >= 0 ? '+' : ''}${change}%`,
+        positive: (change ?? 0) >= 0,
+        tone, spark: spark(sparkFor),
+      };
+    };
+
+    const byEntity = ['Mauritius', 'Saint Lucia'].map((e) => {
+      const scoped = current.filter((r) => r.entity === e && isSettledState(r.state ?? ''));
+      return {
+        entity: e,
+        count: scoped.length,
+        volume: Number(scoped.reduce((s, r) => s + Math.abs(r.amount), 0).toFixed(2)),
+      };
+    });
+
+    return {
+      window: '24h',
+      events: current.length,
+      today: [
+        tile('volume', 'Total Volume', dep + wdr, depPrev + wdrPrev, 'blue', 'all'),
+        tile('deposits', 'Deposits', dep, depPrev, 'green', 'deposits'),
+        tile('withdrawals', 'Withdrawals', wdr, wdrPrev, 'magenta', 'withdrawals'),
+        tile('net', 'Net Flow', dep - wdr, depPrev - wdrPrev, 'purple', 'net'),
+      ],
+      performance: [
+        { label: 'Success Rate', value: successRate },
+        { label: 'Decline Rate', value: Number((100 - successRate).toFixed(1)) },
+        { label: 'Settled', value: settled },
+        { label: 'Declined', value: failed },
+      ],
+      failedPayments: failed,
+      byEntity,
+    };
+  }
+
   async getSummary() {
     const [
       pendingKyc,
@@ -25,6 +161,7 @@ export class DashboardService {
       highRiskClients,
       gateways,
       onlineShifts,
+      live,
     ] = await Promise.all([
       this.safeCount(() =>
         this.prisma.kycCase.count({
@@ -51,12 +188,22 @@ export class DashboardService {
       this.safeCount(() =>
         this.prisma.shift.count({ where: { status: 'ACTIVE' } }),
       ),
+      this.liveMetrics(),
     ]);
 
-    return {
+    // Real events win over the defaults. `live` tells the UI these numbers are
+    // measured rather than representative.
+    const base = {
       generatedAt: new Date().toISOString(),
+      live: !!live,
+      window: live?.window ?? null,
+      byEntity: live?.byEntity ?? null,
+    };
+
+    return {
+      ...base,
       health: { score: 92, label: 'Healthy', trend: 3 },
-      today: [
+      today: live?.today ?? [
         {
           key: 'volume',
           label: 'Total Volume',
@@ -98,7 +245,7 @@ export class DashboardService {
           spark: [140, 150, 148, 162, 170, 168, 180, 186.4],
         },
       ],
-      performance: [
+      performance: live?.performance ?? [
         { label: 'Success Rate', value: 97.8 },
         { label: 'Approval Rate', value: 94.2 },
         { label: 'Decline Rate', value: 5.8 },
@@ -125,7 +272,7 @@ export class DashboardService {
         },
         {
           label: 'Failed Payments',
-          value: 19,
+          value: live?.failedPayments ?? 19,
           href: '/payments',
           tone: 'orange',
         },

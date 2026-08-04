@@ -10,6 +10,11 @@
 const SETTLED = /complete|success|settle|approv|paid|finish|confirm/i;
 const FAILED = /declin|cancel|fail|reject|expire|error|void|chargeback/i;
 
+/** Shared state predicates, so the dashboard classifies exactly as the
+ *  ingest does. */
+export const isSettledState = (state: string) => SETTLED.test(state ?? '');
+export const isFailedState = (state: string) => FAILED.test(state ?? '');
+
 /** Paymaxis shop -> jurisdiction. Each shop is its own merchant account. */
 const DEFAULT_SHOP_ENTITIES: Record<string, string> = {
   '5141': 'Mauritius',
