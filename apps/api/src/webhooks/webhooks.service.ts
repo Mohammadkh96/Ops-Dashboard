@@ -33,6 +33,35 @@ function num(v: string): number {
 const SETTLED = /complete|success|settle|approv|paid|finish|confirm/i;
 const FAILED = /declin|cancel|fail|reject|expire|error|void|chargeback/i;
 
+/**
+ * Paymaxis shop -> jurisdiction, so live data slices the same way the
+ * reconciliation does. Each shop is a separate merchant account with its own
+ * key and its own callback host (5141 -> my.tradin.com, 6321 -> global.tradin.com).
+ * Override with PAYMAXIS_SHOP_ENTITIES="5141=Mauritius,6321=Saint Lucia".
+ */
+const DEFAULT_SHOP_ENTITIES: Record<string, string> = {
+  '5141': 'Mauritius',
+  '6321': 'Saint Lucia',
+};
+
+function entityForShop(shop: string): string {
+  if (!shop) return '';
+  const overrides = process.env.PAYMAXIS_SHOP_ENTITIES;
+  const map = { ...DEFAULT_SHOP_ENTITIES };
+  if (overrides) {
+    overrides.split(',').forEach((pair) => {
+      const [k, v] = pair.split('=').map((x) => x.trim());
+      if (k && v) map[k] = v;
+    });
+  }
+  if (map[shop]) return map[shop];
+  // Shops are also reported by name ("Cashier_Tradin_SL"), where the _SL suffix
+  // is the jurisdiction marker — the same rule the reconciliation engine uses.
+  if (/_sl\b|saint\s*lucia/i.test(shop)) return 'Saint Lucia';
+  if (/tradin/i.test(shop)) return 'Mauritius';
+  return '';
+}
+
 export type WebhookOutcome = {
   accepted: boolean;
   signatureOk: boolean;
@@ -113,6 +142,7 @@ export class WebhooksService {
     const amount = num(pick(inner, ['amount', 'amountInShopBaseCurrency', 'value']));
     const currency = pick(inner, ['currency', 'currencyCode']);
     const shop = pick(inner, ['shop', 'shopId', 'shopName']);
+    const entity = entityForShop(shop);
     const customer = pick(inner, ['customerEmail', 'customerReferenceId', 'customerAccountNumber', 'customer']);
     const occurred = pick(inner, ['updated', 'finalized', 'created', 'timestamp']);
     const eventType = pick(body, ['event', 'eventType', 'type']);
@@ -129,6 +159,7 @@ export class WebhooksService {
           paymentId: paymentId || null,
           reference: reference || null,
           shop: shop || null,
+          entity: entity || null,
           state: state || null,
           type: type || null,
           amount,

@@ -324,6 +324,9 @@ model PaymentEvent {
   paymentId   String?
   reference   String?
   shop        String?
+  /// Jurisdiction derived from the shop, so live data slices the same way the
+  /// reconciliation does. Paymaxis shop 5141 is Mauritius, 6321 Saint Lucia.
+  entity      String?
   state       String?
   type        String?
   amount      Float     @default(0)
