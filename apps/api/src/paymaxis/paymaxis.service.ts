@@ -315,12 +315,11 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
         // POST /paymaxis/sync, not a slower poll forever.
         // Applies from the very first page: on a steady-state poll the newest
         // page is already known and there is nothing behind it worth walking.
-        if (!storedOnPage) {
-          this.log.debug?.(
-            `Shop ${shop.shopId}: page ${page + 1} was entirely known — caught up.`,
-          );
-          break;
-        }
+        // Deliberately silent. This is the normal outcome of a steady-state
+        // poll — nothing new — and it happens once a minute per shop forever.
+        // Logging it buries the events that matter and, on a metered platform,
+        // is paid-for noise. What a sync stored is reported below instead.
+        if (!storedOnPage) break;
 
         // Stop when a page adds nothing new.
         //
@@ -339,6 +338,13 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
       }
       // Advance only on success, so a failed poll re-reads rather than skipping.
       await this.saveSince(shop.shopId, newest);
+      // The one thing worth a line in the log: real payments arrived. A quiet
+      // poll says nothing, so anything that appears here is a genuine event.
+      if (res.stored > 0) {
+        this.log.log(
+          `Shop ${shop.shopId}: ${res.stored} new payment(s) from ${res.fetched} read.`,
+        );
+      }
     } catch (e) {
       res.error = (e as Error).message;
       this.log.error(`Sync failed for shop ${shop.shopId}: ${res.error}`);
