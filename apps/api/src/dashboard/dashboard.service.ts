@@ -3,6 +3,7 @@ import { filter, interval, map, merge, Observable } from 'rxjs';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { LiveBus } from '../live/live-bus.service';
+import type { LiveTick } from '../live/live.types';
 import {
   isFailedState,
   isSettledState,
@@ -129,8 +130,25 @@ export class DashboardService {
       return buckets.map((n) => Number(n.toFixed(2)));
     };
 
+    // How much settled activity the PREVIOUS 24h actually contains. A
+    // percentage change measured against a nearly-empty prior window is
+    // arithmetic rather than information: on the first day of ingest, $57.9K
+    // against a prior window holding a few dollars produced "+466760.9%" on
+    // the Total Volume tile. `prevV > 0` was not a sufficient guard, because
+    // "barely any data" is still greater than zero.
+    //
+    // Below this floor the tile shows "—", which is the honest answer: there
+    // is nothing to compare against yet. It starts reporting on its own once a
+    // full prior day exists.
+    const priorSettled = rows.filter(
+      (r) => at(r) >= pStart && at(r) < wStart && isSettledState(r.state ?? ''),
+    ).length;
+    const comparable = priorSettled >= 10;
+
     const pct = (nowV: number, prevV: number) =>
-      prevV > 0 ? Number((((nowV - prevV) / prevV) * 100).toFixed(1)) : null;
+      comparable && prevV > 0
+        ? Number((((nowV - prevV) / prevV) * 100).toFixed(1))
+        : null;
     // Scale to whatever unit keeps the tile readable.
     const scale = (n: number) =>
       n >= 1e6
@@ -335,11 +353,23 @@ export class DashboardService {
     const demo = !live;
 
     // The initial queue, from real payments. The live feed takes over from here.
-    const queue = live
-      ? (await this.liveFeed({ limit: 5 })).events
-          .map((e) => e.queueItem)
-          .reverse() // newest first for a queue readout
-      : null;
+    //
+    // One row per payment, showing its LATEST state. A payment progresses
+    // through states and each is stored separately — that history is wanted in
+    // the database, but in a queue readout it surfaced the same payment id
+    // twice, once "processing" and once "failed", which reads as either a
+    // duplicate or a contradiction. Reads more than five so there is something
+    // left after collapsing them.
+    let queue: LiveTick['queueItem'][] | null = null;
+    if (live) {
+      const newestFirst = (await this.liveFeed({ limit: 25 })).events
+        .map((e) => e.queueItem)
+        .reverse();
+      const seenIds = new Set<string>();
+      queue = newestFirst
+        .filter((q) => !seenIds.has(q.id) && seenIds.add(q.id))
+        .slice(0, 5);
+    }
 
     return {
       ...base,
