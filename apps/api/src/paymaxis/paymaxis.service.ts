@@ -212,7 +212,18 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
         if (!records.length) break;
         res.fetched += records.length;
         let fresh = 0;
-        let storedOnPage = 0;
+
+        // Normalise the whole page first, then write it in ONE statement.
+        //
+        // This used to insert a row per record, and each insert was a separate
+        // round trip to the database — measured at ~440ms each against a hosted
+        // Postgres. A 180-record first sync therefore took over a minute, which
+        // on a serverless platform means the function is killed mid-sync before
+        // it ever finishes (Vercel caps a request at 60s).
+        const batch: {
+          payload: Prisma.PaymentEventCreateManyInput;
+          normalized: ReturnType<typeof normalizePayment>;
+        }[] = [];
 
         for (const raw of records) {
           const p = normalizePayment(unwrapPayment(raw));
@@ -224,53 +235,69 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
           if (p.occurredAt && p.occurredAt.toISOString() > newest)
             newest = p.occurredAt.toISOString();
 
-          // createMany + skipDuplicates makes the unique dedupeKey the arbiter,
-          // so a re-poll of unchanged payments stores nothing and — critically —
-          // broadcasts nothing. Without this the feed would repeat every cycle.
-          const created = await this.prisma.paymentEvent
+          batch.push({
+            normalized: p,
+            payload: {
+              provider: 'paymaxis',
+              source: 'poll',
+              signatureOk: true, // authenticated by our own outbound API key
+              dedupeKey: p.dedupeKey,
+              paymentId: p.paymentId || null,
+              externalId: p.externalId || null,
+              terminal: p.terminal || null,
+              psp: p.psp || null,
+              parentPaymentId: p.parentPaymentId || null,
+              cryptoTxHash: p.cryptoTxHash || null,
+              errorCode: p.errorCode || null,
+              errorMessage: p.errorMessage || null,
+              reference: p.reference || null,
+              shop: p.shop || shop.shopId,
+              entity: p.entity || null,
+              state: p.state || null,
+              type: p.type || null,
+              amount: p.amount,
+              currency: p.currency || null,
+              customer: p.customer || null,
+              occurredAt: p.occurredAt,
+              headers: asJson({}),
+              payload: asJson(redactPayload(raw)),
+            },
+          });
+        }
+
+        // Which of these are genuinely new. createMany + skipDuplicates already
+        // makes the unique dedupeKey the arbiter of what gets WRITTEN, but it
+        // reports only a count — not which rows survived — and the feed must
+        // announce exactly the new ones or it repeats itself every cycle.
+        const keys = batch.map((b) => b.payload.dedupeKey).filter(Boolean) as string[];
+        const existing = await this.prisma.paymentEvent
+          .findMany({ where: { dedupeKey: { in: keys } }, select: { dedupeKey: true } })
+          .catch(() => [] as { dedupeKey: string | null }[]);
+        const known = new Set(existing.map((e) => e.dedupeKey));
+        const incoming = batch.filter((b) => !known.has(b.payload.dedupeKey ?? null));
+
+        let storedOnPage = 0;
+        if (incoming.length) {
+          const written = await this.prisma.paymentEvent
             .createMany({
-              data: [
-                {
-                  provider: 'paymaxis',
-                  source: 'poll',
-                  signatureOk: true, // authenticated by our own outbound API key
-                  dedupeKey: p.dedupeKey,
-                  paymentId: p.paymentId || null,
-                  externalId: p.externalId || null,
-                  terminal: p.terminal || null,
-                  psp: p.psp || null,
-                  parentPaymentId: p.parentPaymentId || null,
-                  cryptoTxHash: p.cryptoTxHash || null,
-                  errorCode: p.errorCode || null,
-                  errorMessage: p.errorMessage || null,
-                  reference: p.reference || null,
-                  shop: p.shop || shop.shopId,
-                  entity: p.entity || null,
-                  state: p.state || null,
-                  type: p.type || null,
-                  amount: p.amount,
-                  currency: p.currency || null,
-                  customer: p.customer || null,
-                  occurredAt: p.occurredAt,
-                  headers: asJson({}),
-                  payload: asJson(redactPayload(raw)),
-                },
-              ],
+              data: incoming.map((b) => b.payload),
               skipDuplicates: true,
             })
             .catch((e: unknown) => {
-              this.log.error(`Store failed for ${p.paymentId}: ${errText(e)}`);
+              this.log.error(`Store failed for shop ${shop.shopId}: ${errText(e)}`);
               return { count: 0 };
             });
 
-          if (created.count > 0) {
-            res.stored += created.count;
-            storedOnPage += 1;
-            this.bus.publish(toQueueItem(p), {
-              settled: p.settled,
-              amount: p.amount,
-            });
-            res.broadcast += 1;
+          if (written.count > 0) {
+            res.stored += written.count;
+            storedOnPage = written.count;
+            for (const b of incoming) {
+              this.bus.publish(toQueueItem(b.normalized), {
+                settled: b.normalized.settled,
+                amount: b.normalized.amount,
+              });
+              res.broadcast += 1;
+            }
           }
         }
         if (!hasMore) break;

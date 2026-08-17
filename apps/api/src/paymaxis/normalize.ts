@@ -100,6 +100,28 @@ export function pick(obj: Record<string, unknown>, keys: string[]): string {
   return '';
 }
 
+/**
+ * Parses a provider timestamp as an instant in UTC.
+ *
+ * Paymaxis returns "2026-08-17T10:22:21" — no Z, no offset. JavaScript reads a
+ * bare date-time as LOCAL time, so on a UTC+3 host every payment was recorded
+ * three hours early, and on a UTC-5 host it would be five hours late. The same
+ * data therefore meant different things depending on where the poller ran.
+ *
+ * It also broke the poller silently: the watermark is compared against these
+ * timestamps, so a shift into the past meant it never advanced.
+ *
+ * Payment APIs quote UTC unless they say otherwise, so a bare timestamp gets an
+ * explicit Z. Anything that already carries a zone is left exactly as it is.
+ */
+export function parseInstant(value: string): Date | null {
+  const s = (value ?? '').trim();
+  if (!s) return null;
+  const bare = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(s);
+  const t = Date.parse(bare ? `${s.replace(' ', 'T')}Z` : s);
+  return Number.isNaN(t) ? null : new Date(t);
+}
+
 export function num(v: string): number {
   const n = Number.parseFloat(String(v).replace(/[^0-9.-]/g, ''));
   return Number.isNaN(n) ? 0 : n;
@@ -225,8 +247,7 @@ export function normalizePayment(
     'created',
     'timestamp',
   ]);
-  const occurredAt =
-    occurred && !Number.isNaN(Date.parse(occurred)) ? new Date(occurred) : null;
+  const occurredAt = parseInstant(occurred);
 
   return {
     paymentId,
