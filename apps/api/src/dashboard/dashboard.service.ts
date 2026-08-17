@@ -258,6 +258,22 @@ export class DashboardService {
       ],
       failedPayments: failed,
       byEntity,
+      successRate,
+      // The deposits/withdrawals chart, from the same 3-hour buckets the
+      // sparklines use. Previously this was a hardcoded curve, so the chart
+      // disagreed with the tiles above it once real money arrived.
+      volumeSeries: (() => {
+        const dHist = spark('deposits');
+        const wHist = spark('withdrawals');
+        const size = dayMs / 8;
+        return dHist.map((deposits, i) => ({
+          time: new Date(wStart + i * size)
+            .toISOString()
+            .slice(11, 16), // HH:MM, UTC — same basis as every other figure here
+          deposits,
+          withdrawals: wHist[i],
+        }));
+      })(),
     };
   }
 
@@ -309,9 +325,38 @@ export class DashboardService {
       declineReasons: live?.declineReasons ?? null,
     };
 
+    // Once real payments exist, every illustrative block has to go.
+    //
+    // The placeholders make an empty environment look like a product. Beside
+    // real money they are a hazard: an invented "gateway offline" alert or a
+    // $92,000 withdrawal that does not exist is indistinguishable from a real
+    // one, and someone will act on it. Sections with no real source are emptied
+    // rather than filled in, so the dashboard shows nothing instead of fiction.
+    const demo = !live;
+
+    // The initial queue, from real payments. The live feed takes over from here.
+    const queue = live
+      ? (await this.liveFeed({ limit: 5 })).events
+          .map((e) => e.queueItem)
+          .reverse() // newest first for a queue readout
+      : null;
+
     return {
       ...base,
-      health: { score: 92, label: 'Healthy', trend: 3 },
+      // Derived from the measured success rate rather than asserted. A fixed
+      // "92 / Healthy" beside a real 59.8% success rate is worse than no score.
+      health: live
+        ? {
+            score: Math.round(live.successRate),
+            label:
+              live.successRate >= 90
+                ? 'Healthy'
+                : live.successRate >= 75
+                  ? 'Degraded'
+                  : 'Needs attention',
+            trend: 0,
+          }
+        : { score: 92, label: 'Healthy', trend: 3 },
       today: live?.today ?? [
         {
           key: 'volume',
@@ -360,22 +405,31 @@ export class DashboardService {
         { label: 'Decline Rate', value: 5.8 },
         { label: 'Refund Rate', value: 1.4 },
       ],
+      // `|| 34` reads as a default but behaves as a fabrication: a real count of
+      // zero is falsy, so an empty KYC queue displayed as 34 pending cases.
+      // Live counts are shown as they are, zero included.
       pendingWork: [
         {
           label: 'Pending KYC',
-          value: pendingKyc || 34,
+          value: demo ? pendingKyc || 34 : pendingKyc,
           href: '/compliance',
           tone: 'blue',
         },
-        {
-          label: 'Pending Compliance',
-          value: 12,
-          href: '/compliance',
-          tone: 'purple',
-        },
+        // No compliance-queue or refund-queue model exists yet, so there is
+        // nothing to count. Omitted entirely rather than invented.
+        ...(demo
+          ? [
+              {
+                label: 'Pending Compliance',
+                value: 12,
+                href: '/compliance',
+                tone: 'purple',
+              },
+            ]
+          : []),
         {
           label: 'Escalated Tickets',
-          value: escalatedTickets || 7,
+          value: demo ? escalatedTickets || 7 : escalatedTickets,
           href: '/operations',
           tone: 'red',
         },
@@ -385,45 +439,62 @@ export class DashboardService {
           href: '/payments',
           tone: 'orange',
         },
-        { label: 'Pending Refunds', value: 5, href: '/payments', tone: 'blue' },
+        ...(demo
+          ? [
+              {
+                label: 'Pending Refunds',
+                value: 5,
+                href: '/payments',
+                tone: 'blue',
+              },
+            ]
+          : []),
         {
           label: 'High Risk Clients',
-          value: highRiskClients || 3,
+          value: demo ? highRiskClients || 3 : highRiskClients,
           href: '/compliance',
           tone: 'red',
         },
       ],
-      alerts: [
-        {
-          id: 'al-1',
-          severity: 'critical',
-          title: 'ForumPay gateway offline',
-          detail: 'No successful transactions in the last 6 minutes',
-          time: '2m ago',
-        },
-        {
-          id: 'al-2',
-          severity: 'warning',
-          title: 'Decline rate spike — Visa EU',
-          detail: 'Decline rate up 14% over rolling 30 min window',
-          time: '11m ago',
-        },
-        {
-          id: 'al-3',
-          severity: 'warning',
-          title: 'Webhook delay — Coinbase Commerce',
-          detail: 'Average webhook latency 42s (SLA: 10s)',
-          time: '18m ago',
-        },
-        {
-          id: 'al-4',
-          severity: 'info',
-          title: 'Large withdrawal flagged',
-          detail: 'Client #48213 requested $92,000 withdrawal — pending review',
-          time: '26m ago',
-        },
-      ],
-      volumeSeries: [
+      // Empty on live data, and that is the correct answer until real alerting
+      // exists. A fabricated "gateway offline" or "$92,000 withdrawal flagged"
+      // cannot be told apart from a genuine one, and acting on either wastes an
+      // operator's time at best. Real alerts belong here once they are derived
+      // from measurements — a PSP's success rate collapsing, say — not before.
+      alerts: demo
+        ? [
+            {
+              id: 'al-1',
+              severity: 'critical',
+              title: 'ForumPay gateway offline',
+              detail: 'No successful transactions in the last 6 minutes',
+              time: '2m ago',
+            },
+            {
+              id: 'al-2',
+              severity: 'warning',
+              title: 'Decline rate spike — Visa EU',
+              detail: 'Decline rate up 14% over rolling 30 min window',
+              time: '11m ago',
+            },
+            {
+              id: 'al-3',
+              severity: 'warning',
+              title: 'Webhook delay — Coinbase Commerce',
+              detail: 'Average webhook latency 42s (SLA: 10s)',
+              time: '18m ago',
+            },
+            {
+              id: 'al-4',
+              severity: 'info',
+              title: 'Large withdrawal flagged',
+              detail:
+                'Client #48213 requested $92,000 withdrawal — pending review',
+              time: '26m ago',
+            },
+          ]
+        : [],
+      volumeSeries: live?.volumeSeries ?? [
         { time: '00:00', deposits: 120, withdrawals: 80 },
         { time: '03:00', deposits: 90, withdrawals: 60 },
         { time: '06:00', deposits: 140, withdrawals: 95 },
@@ -433,7 +504,7 @@ export class DashboardService {
         { time: '18:00', deposits: 290, withdrawals: 210 },
         { time: '21:00', deposits: 210, withdrawals: 150 },
       ],
-      liveQueue: [
+      liveQueue: queue ?? [
         {
           id: 'TX-88213',
           type: 'Withdrawal',
@@ -470,64 +541,81 @@ export class DashboardService {
           status: 'escalated',
         },
       ],
-      systemStatus:
-        gateways.length > 0
-          ? [
-              { name: 'Core API', status: 'operational', latency: '84ms' },
+      // Only components this service actually observes.
+      //
+      // CRM and the trading platform are not monitored from here, and reporting
+      // them "operational" with an invented latency answers a question nobody
+      // checked — the worst kind of entry on a status board, because it is
+      // trusted. They appear in demo mode only. Add them back for real when
+      // something here probes them.
+      systemStatus: demo
+        ? [
+            { name: 'Core API', status: 'operational', latency: '84ms' },
+            {
+              name: 'Payment Gateways',
+              status: 'degraded',
+              latency: '412ms',
+            },
+            { name: 'CRM', status: 'operational', latency: '132ms' },
+            {
+              name: 'Trading Platform (MT5)',
+              status: 'operational',
+              latency: '61ms',
+            },
+          ]
+        : [
+            // True by construction: this response is being served.
+            { name: 'Core API', status: 'operational', latency: null },
+            // Measured — the query behind `live` succeeded.
+            { name: 'Database', status: 'operational', latency: null },
+            // Only when there are real gateway records to derive it from.
+            ...(gateways.length > 0
+              ? [
+                  {
+                    name: 'Payment Gateways',
+                    status: gateways.some((g) => g.status === 'DOWN')
+                      ? 'down'
+                      : gateways.some((g) => g.status === 'DEGRADED')
+                        ? 'degraded'
+                        : 'operational',
+                    latency: `${Math.round(gateways.reduce((a, g) => a + g.avgLatencyMs, 0) / gateways.length) || 0}ms`,
+                  },
+                ]
+              : []),
+          ],
+      // Named people with invented workloads. There is no roster to read, and
+      // inventing colleagues is the least defensible placeholder of the lot.
+      team: demo
+        ? {
+            online: onlineShifts || 4,
+            members: [
               {
-                name: 'Payment Gateways',
-                status: gateways.some((g) => g.status === 'DOWN')
-                  ? 'down'
-                  : gateways.some((g) => g.status === 'DEGRADED')
-                    ? 'degraded'
-                    : 'operational',
-                latency: `${Math.round(gateways.reduce((a, g) => a + g.avgLatencyMs, 0) / gateways.length) || 0}ms`,
+                name: 'Sara Ahmed',
+                role: 'Operations',
+                workload: 4,
+                initials: 'SA',
               },
-              { name: 'CRM', status: 'operational', latency: '132ms' },
               {
-                name: 'Trading Platform (MT5)',
-                status: 'operational',
-                latency: '61ms',
+                name: 'David Chen',
+                role: 'Compliance',
+                workload: 7,
+                initials: 'DC',
               },
-            ]
-          : [
-              { name: 'Core API', status: 'operational', latency: '84ms' },
               {
-                name: 'Payment Gateways',
-                status: 'degraded',
-                latency: '412ms',
+                name: 'Fatima Noor',
+                role: 'Support',
+                workload: 2,
+                initials: 'FN',
               },
-              { name: 'CRM', status: 'operational', latency: '132ms' },
               {
-                name: 'Trading Platform (MT5)',
-                status: 'operational',
-                latency: '61ms',
+                name: 'Yusuf Ali',
+                role: 'Operations',
+                workload: 5,
+                initials: 'YA',
               },
             ],
-      team: {
-        online: onlineShifts || 4,
-        members: [
-          {
-            name: 'Sara Ahmed',
-            role: 'Operations',
-            workload: 4,
-            initials: 'SA',
-          },
-          {
-            name: 'David Chen',
-            role: 'Compliance',
-            workload: 7,
-            initials: 'DC',
-          },
-          { name: 'Fatima Noor', role: 'Support', workload: 2, initials: 'FN' },
-          {
-            name: 'Yusuf Ali',
-            role: 'Operations',
-            workload: 5,
-            initials: 'YA',
-          },
-        ],
-      },
+          }
+        : { online: onlineShifts, members: [] },
     };
   }
 
