@@ -21,6 +21,32 @@ function asJson(v: unknown): Prisma.InputJsonValue {
   return (v ?? {}) as Prisma.InputJsonValue;
 }
 
+/**
+ * Something printable for any thrown value.
+ *
+ * Prisma's connection errors carry an empty `.message`, so logging `e.message`
+ * alone produced "Store failed for pm-77421:" and nothing else — which reads
+ * like a mapping bug when the real cause was an unreachable database.
+ */
+function errText(e: unknown): string {
+  const err = e as { message?: string; code?: string; name?: string };
+  return err?.message || err?.code || err?.name || String(e);
+}
+
+/**
+ * Paymaxis API host.
+ *
+ * NOT api.paymaxis.com — that hostname does not exist (NXDOMAIN), and an earlier
+ * default pointing there meant every poll failed with an unhelpful "fetch
+ * failed". app.paymaxis.com is the host Paymaxis itself uses for the webhook
+ * endpoints, and is the only one confirmed to resolve.
+ *
+ * The path, auth header and pagination params are all still configurable —
+ * `scripts/discover-paymaxis.mjs` finds the working combination and prints the
+ * exact settings to use.
+ */
+const PAYMAXIS_DEFAULT_BASE_URL = 'https://app.paymaxis.com';
+
 export type ShopConfig = { shopId: string; apiKey: string };
 
 export type SyncResult = {
@@ -137,9 +163,9 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
         create: { key: this.wmKey(shopId), since },
         update: { since },
       })
-      .catch((e: Error) => {
+      .catch((e: unknown) => {
         this.log.warn(
-          `Could not persist watermark for ${shopId}: ${e.message}`,
+          `Could not persist watermark for ${shopId}: ${errText(e)}`,
         );
         return null;
       });
@@ -157,7 +183,7 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
       broadcast: 0,
     };
     const client = new PaymaxisClient(
-      process.env.PAYMAXIS_BASE_URL ?? 'https://api.paymaxis.com',
+      process.env.PAYMAXIS_BASE_URL ?? PAYMAXIS_DEFAULT_BASE_URL,
       shop.apiKey,
       process.env.PAYMAXIS_AUTH_HEADER ?? 'X-Api-Key',
     );
@@ -222,8 +248,8 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
               ],
               skipDuplicates: true,
             })
-            .catch((e: Error) => {
-              this.log.error(`Store failed for ${p.paymentId}: ${e.message}`);
+            .catch((e: unknown) => {
+              this.log.error(`Store failed for ${p.paymentId}: ${errText(e)}`);
               return { count: 0 };
             });
 
@@ -262,7 +288,7 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
       enabled: this.enabled,
       // Driven by cron on serverless, by an in-process timer otherwise.
       schedule: this.serverless ? 'cron' : 'interval',
-      baseUrl: process.env.PAYMAXIS_BASE_URL ?? 'https://api.paymaxis.com',
+      baseUrl: process.env.PAYMAXIS_BASE_URL ?? PAYMAXIS_DEFAULT_BASE_URL,
       pollSeconds: Number(process.env.PAYMAXIS_POLL_SECONDS ?? 60),
       // Shop ids only — never the keys.
       shops: this.shops.map((s) => ({

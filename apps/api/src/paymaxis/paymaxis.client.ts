@@ -19,26 +19,61 @@ export class PaymaxisClient {
   ) {}
 
   /** Issues a GET and returns parsed JSON. The only request this class can make. */
-  private async get(path: string, params: Record<string, string | number | undefined>): Promise<unknown> {
-    const url = new URL(path.replace(/^\//, ''), this.baseUrl.replace(/\/?$/, '/'));
+  private async get(
+    path: string,
+    params: Record<string, string | number | undefined>,
+  ): Promise<unknown> {
+    const url = new URL(
+      path.replace(/^\//, ''),
+      this.baseUrl.replace(/\/?$/, '/'),
+    );
     Object.entries(params).forEach(([k, v]) => {
       if (v !== undefined && v !== '') url.searchParams.set(k, String(v));
     });
 
     const headers: Record<string, string> = { Accept: 'application/json' };
-    if (/^authorization$/i.test(this.authHeader)) headers.Authorization = `Bearer ${this.apiKey}`;
+    if (/^authorization$/i.test(this.authHeader))
+      headers.Authorization = `Bearer ${this.apiKey}`;
     else headers[this.authHeader] = this.apiKey;
 
-    const res = await fetch(url, {
-      method: 'GET',
-      headers,
-      signal: AbortSignal.timeout(Number(process.env.PAYMAXIS_TIMEOUT_MS ?? 20000)),
-    });
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'GET',
+        headers,
+        signal: AbortSignal.timeout(
+          Number(process.env.PAYMAXIS_TIMEOUT_MS ?? 20000),
+        ),
+      });
+    } catch (e) {
+      // Distinguish "the host does not exist" from "the request failed". A wrong
+      // PAYMAXIS_BASE_URL is the single most likely misconfiguration and its
+      // native error ("fetch failed") says nothing useful. Note that
+      // api.paymaxis.com does NOT exist — the host is app.paymaxis.com.
+      const cause = (e as { cause?: { code?: string } }).cause?.code ?? '';
+      if (cause === 'ENOTFOUND' || cause === 'EAI_AGAIN') {
+        throw new Error(
+          `Paymaxis host "${url.host}" does not resolve — check PAYMAXIS_BASE_URL. ` +
+            `Run apps/api/scripts/discover-paymaxis.mjs to find the right one.`,
+        );
+      }
+      throw new Error(
+        `Paymaxis GET ${path} failed: ${(e as Error).message}${cause ? ` (${cause})` : ''}`,
+      );
+    }
 
     if (!res.ok) {
       const body = await res.text().catch(() => '');
       // Never log the key or the full URL (it can carry identifiers).
-      throw new Error(`Paymaxis GET ${path} -> HTTP ${res.status} ${body.slice(0, 200)}`);
+      const hint =
+        res.status === 401 || res.status === 403
+          ? ' — key rejected, or the auth header name is wrong (PAYMAXIS_AUTH_HEADER)'
+          : res.status === 404
+            ? ' — path not found (PAYMAXIS_PAYMENTS_PATH); Paymaxis may not expose a list endpoint at all'
+            : '';
+      throw new Error(
+        `Paymaxis GET ${path} -> HTTP ${res.status}${hint} ${body.slice(0, 200)}`,
+      );
     }
     return res.json();
   }
@@ -83,7 +118,14 @@ export function extractRecords(json: unknown): Record<string, unknown>[] {
   if (configured && Array.isArray(obj[configured])) {
     return obj[configured] as Record<string, unknown>[];
   }
-  for (const key of ['content', 'data', 'items', 'results', 'payments', 'records']) {
+  for (const key of [
+    'content',
+    'data',
+    'items',
+    'results',
+    'payments',
+    'records',
+  ]) {
     if (Array.isArray(obj[key])) return obj[key] as Record<string, unknown>[];
   }
   const anyArray = Object.values(obj).find(

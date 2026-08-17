@@ -135,6 +135,25 @@ use two-label names (`ops.tradin.com`, `ops-api.tradin.com`).
 
 ---
 
+## Using the Paymaxis API keys
+
+The keys alone do not connect anything — the poller also needs the host, path,
+auth header and pagination parameters. Find them once, from any machine with
+internet access:
+
+```bash
+cd apps/api
+PAYMAXIS_API_KEY=<one of the keys> node scripts/discover-paymaxis.mjs
+```
+
+GET requests only, key never printed, PII redacted. On success it prints the
+environment variables to paste into Vercel. See `DEPLOY-LIVE-DATA.md` §3C —
+including the two things already established: `api.paymaxis.com` does not exist
+(it is `app.paymaxis.com`), and Paymaxis may not expose a list endpoint at all.
+
+Add `PAYMAXIS_SHOPS="5141:<key>,6321:<key>"` and `PAYMAXIS_POLL_ENABLED="1"`.
+On Vercel the cron drives it; there is no in-process timer.
+
 ## Getting events flowing
 
 Unchanged by the move to Vercel — see `DEPLOY-LIVE-DATA.md` §3. In short: either

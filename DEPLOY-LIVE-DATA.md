@@ -123,15 +123,40 @@ Ask Paymaxis to add `https://<opsos-host>/api/webhooks/paymaxis` **alongside**
 the existing URL. No CRM change at all. Only viable if they support more than one
 destination per shop — worth asking, because it is the cleanest option.
 
-### C. Polling (only if there is a read API)
+### C. Polling with the API keys
 
-If Paymaxis confirms a REST endpoint for listing payments:
+The keys are not enough on their own — the poller also needs the host, path,
+auth header name and pagination parameters. **Find them first**, from any
+machine with internet access:
+
+```bash
+cd apps/api
+PAYMAXIS_API_KEY=<one of the keys> node scripts/discover-paymaxis.mjs
+```
+
+It issues GET requests only, never prints the key, and redacts PII from the
+sample. On success it prints the exact environment variables to set. Paste its
+output here and the settings can be applied.
+
+Two known facts, so time is not lost re-discovering them:
+
+- **`api.paymaxis.com` does not exist** (NXDOMAIN). The host is
+  `app.paymaxis.com` — the same host as the webhook endpoints.
+- Paymaxis may expose *get payment by id* but **no list endpoint**. If the script
+  reports 404 everywhere, polling cannot discover new payments at all (you can
+  only look one up if you already know its id) and webhooks are the only route.
+  Ask them directly: *"Is there a GET endpoint that lists or searches payments by
+  date range?"*
+
+Once known:
 
 ```ini
-PAYMAXIS_SHOPS="5141=<api key>,6321=<api key>"   # note: shopId:apiKey
+PAYMAXIS_SHOPS="5141:<api key>,6321:<api key>"   # shopId:apiKey
 PAYMAXIS_POLL_ENABLED="1"
-PAYMAXIS_BASE_URL="https://<their api host>"
-PAYMAXIS_PAYMENTS_PATH="/api/v1/payment"
+PAYMAXIS_BASE_URL="https://app.paymaxis.com"
+PAYMAXIS_PAYMENTS_PATH="<from the script>"
+PAYMAXIS_AUTH_HEADER="<from the script>"
+PAYMAXIS_SINCE_PARAM="<the date-range parameter>"
 ```
 
 Then `POST /api/paymaxis/sync` to run one read and see `{fetched, stored,
