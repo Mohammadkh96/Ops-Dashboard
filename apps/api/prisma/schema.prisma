@@ -363,6 +363,22 @@ model PaymentEvent {
   @@index([reference])
 }
 
+// How far a polling source has been read.
+//
+// The poller used to hold this in memory, which is correct for a long-running
+// process and wrong for a serverless one: every invocation starts with an empty
+// map, so each run would re-read the default look-back window instead of only
+// what changed. Persisting it makes the poller stateless.
+model PollWatermark {
+  /// Source and shop, e.g. "paymaxis:5141".
+  key       String   @id
+  /// ISO timestamp of the newest record seen. Stored as text because it is
+  /// echoed straight back to the provider as a query parameter.
+  since     String
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+}
+
 // ---------- Audit ----------
 
 model AuditLog {

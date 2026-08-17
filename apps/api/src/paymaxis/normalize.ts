@@ -7,6 +7,8 @@
  * change without notice.
  */
 
+import type { LiveTick } from '../live/live.types';
+
 const SETTLED = /complete|success|settle|approv|paid|finish|confirm/i;
 const FAILED = /declin|cancel|fail|reject|expire|error|void|chargeback/i;
 
@@ -67,7 +69,13 @@ export function pspForTerminal(terminal: string): string {
 function deepGet(obj: unknown, path: string): unknown {
   return path
     .split('.')
-    .reduce<unknown>((o, k) => (o && typeof o === 'object' ? (o as Record<string, unknown>)[k] : undefined), obj);
+    .reduce<unknown>(
+      (o, k) =>
+        o && typeof o === 'object'
+          ? (o as Record<string, unknown>)[k]
+          : undefined,
+      obj,
+    );
 }
 
 /**
@@ -85,7 +93,8 @@ export function pick(obj: Record<string, unknown>, keys: string[]): string {
       if (real === undefined) continue;
       v = obj[real];
     }
-    if (v === null || v === undefined || v === '' || typeof v === 'object') continue;
+    if (v === null || v === undefined || v === '' || typeof v === 'object')
+      continue;
     return String(v);
   }
   return '';
@@ -128,7 +137,9 @@ export type NormalizedPayment = {
 };
 
 /** Unwraps the common envelope shapes a provider might use. */
-export function unwrapPayment(body: Record<string, unknown>): Record<string, unknown> {
+export function unwrapPayment(
+  body: Record<string, unknown>,
+): Record<string, unknown> {
   return (
     (body.payment as Record<string, unknown>) ??
     (body.data as Record<string, unknown>) ??
@@ -136,10 +147,21 @@ export function unwrapPayment(body: Record<string, unknown>): Record<string, unk
   );
 }
 
-export function normalizePayment(inner: Record<string, unknown>): NormalizedPayment {
-  const paymentId = pick(inner, ['id', 'paymentId', 'payment_id', 'transactionId']);
+export function normalizePayment(
+  inner: Record<string, unknown>,
+): NormalizedPayment {
+  const paymentId = pick(inner, [
+    'id',
+    'paymentId',
+    'payment_id',
+    'transactionId',
+  ]);
   const reference = pick(inner, [
-    'referenceId', 'reference_id', 'reference', 'merchantReference', 'orderId',
+    'referenceId',
+    'reference_id',
+    'reference',
+    'merchantReference',
+    'orderId',
   ]);
   const state = pick(inner, ['state', 'status', 'paymentState']);
   const type = pick(inner, ['type', 'paymentType', 'transactionType']);
@@ -150,16 +172,26 @@ export function normalizePayment(inner: Record<string, unknown>): NormalizedPaym
   const shop = pick(inner, ['shopName', 'shop', 'shopId', 'shop_id']);
   // externalId is the PSP's id for the same payment (Paymaxis externalId ==
   // Paystrax UniqueId), which is what links live data to a PSP settlement file.
-  const externalId = pick(inner, ['externalId', 'externalRefs.paymentId', 'external_id']);
+  const externalId = pick(inner, [
+    'externalId',
+    'externalRefs.paymentId',
+    'external_id',
+  ]);
   const terminal = pick(inner, ['terminalName', 'terminal', 'connectorName']);
   // A refund carries the payment it reverses; without this a refund cannot be
   // tied back to the deposit it belongs to.
-  const parentPaymentId = pick(inner, ['parentPaymentId', 'parentPaymentID', 'parentId']);
+  const parentPaymentId = pick(inner, [
+    'parentPaymentId',
+    'parentPaymentID',
+    'parentId',
+  ]);
   // Crypto payments settle on-chain; the hash is what a crypto PSP's export is
   // keyed on, so it is the join for those providers.
   const cryptoTxHash = pick(inner, [
-    'externalRefs.cryptoTransactionHash', 'cryptoTransactionHash',
-    'additionalParameters.cryptoTransactionHash', 'hash',
+    'externalRefs.cryptoTransactionHash',
+    'cryptoTransactionHash',
+    'additionalParameters.cryptoTransactionHash',
+    'hash',
   ]);
   // Why a payment failed is the most actionable thing on a declined row:
   // "Declined by 3DS" and "insufficient funds" call for completely different
@@ -167,16 +199,32 @@ export function normalizePayment(inner: Record<string, unknown>): NormalizedPaym
   // when the provider gives no friendly message.
   const errorCode = pick(inner, ['errorCode', 'error_code', 'resultCode']);
   const errorMessage =
-    pick(inner, ['errorMessage', 'error_message', 'declineReason', 'resultDescription']) ||
+    pick(inner, [
+      'errorMessage',
+      'error_message',
+      'declineReason',
+      'resultDescription',
+    ]) ||
     pick(inner, ['externalResultCode']).split('|').slice(1).join('|').trim();
   // The customer block is NESTED in the real payload, so flat names alone
   // silently yielded nothing.
   const customer = pick(inner, [
-    'customer.referenceId', 'customerReferenceId',
-    'customer.email', 'customerEmail',
-    'customer.accountNumber', 'customerAccountNumber', 'customerId',
+    'customer.referenceId',
+    'customerReferenceId',
+    'customer.email',
+    'customerEmail',
+    'customer.accountNumber',
+    'customerAccountNumber',
+    'customerId',
   ]);
-  const occurred = pick(inner, ['updatedAt', 'updated', 'finalized', 'createdAt', 'created', 'timestamp']);
+  const occurred = pick(inner, [
+    'updatedAt',
+    'updated',
+    'finalized',
+    'createdAt',
+    'created',
+    'timestamp',
+  ]);
   const occurredAt =
     occurred && !Number.isNaN(Date.parse(occurred)) ? new Date(occurred) : null;
 
@@ -198,7 +246,11 @@ export function normalizePayment(inner: Record<string, unknown>): NormalizedPaym
     entity: entityForShop(shop),
     customer,
     occurredAt,
-    settled: SETTLED.test(state) ? true : FAILED.test(state) ? false : undefined,
+    settled: SETTLED.test(state)
+      ? true
+      : FAILED.test(state)
+        ? false
+        : undefined,
     // State is part of the identity: a payment legitimately appears again when
     // it moves PENDING -> COMPLETED, and that transition IS news. Re-polling
     // the same unchanged payment is not.
@@ -221,10 +273,24 @@ export function normalizePayment(inner: Record<string, unknown>): NormalizedPaym
  * PAYMAXIS_REDACT_KEYS.
  */
 const DEFAULT_REDACT_KEYS = [
-  'dateOfBirth', 'birthDate', 'ip', 'ipAddress',
-  'cardholderName', 'holder', 'givenName', 'surname', 'firstName', 'lastName',
-  'cardExpiryMonth', 'cardExpiryYear', 'expiryMonth', 'expiryYear',
-  'cardToken', 'recurringToken', 'threeDSecure', 'verificationId',
+  'dateOfBirth',
+  'birthDate',
+  'ip',
+  'ipAddress',
+  'cardholderName',
+  'holder',
+  'givenName',
+  'surname',
+  'firstName',
+  'lastName',
+  'cardExpiryMonth',
+  'cardExpiryYear',
+  'expiryMonth',
+  'expiryYear',
+  'cardToken',
+  'recurringToken',
+  'threeDSecure',
+  'verificationId',
 ];
 
 export function redactPayload(value: unknown): unknown {
@@ -233,7 +299,9 @@ export function redactPayload(value: unknown): unknown {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
-  const deny = new Set([...DEFAULT_REDACT_KEYS, ...extra].map((k) => k.toLowerCase()));
+  const deny = new Set(
+    [...DEFAULT_REDACT_KEYS, ...extra].map((k) => k.toLowerCase()),
+  );
 
   const walk = (v: unknown): unknown => {
     if (Array.isArray(v)) return v.map(walk);
@@ -250,15 +318,41 @@ export function redactPayload(value: unknown): unknown {
 }
 
 /** Maps a normalized payment onto the dashboard's live-feed item. */
-export function toQueueItem(p: NormalizedPayment) {
+/**
+ * Maps a payment to the dashboard's feed row.
+ *
+ * Takes only the fields it reads rather than a whole NormalizedPayment, so a row
+ * read back out of the database can be mapped by the same function the ingest
+ * path uses — one definition of what a feed row looks like.
+ */
+export type QueueItemSource = Pick<
+  NormalizedPayment,
+  | 'paymentId'
+  | 'reference'
+  | 'type'
+  | 'customer'
+  | 'amount'
+  | 'currency'
+  | 'settled'
+>;
+
+// Annotated rather than inferred: the status ternary infers as `string` on its
+// own, which then fails to satisfy LiveTick's status union at every call site.
+export function toQueueItem(p: QueueItemSource): LiveTick['queueItem'] {
   return {
     id: p.paymentId || p.reference || 'unknown',
-    type: /withdraw/i.test(p.type) ? 'Withdrawal' : /refund/i.test(p.type) ? 'Refund' : 'Deposit',
+    type: /withdraw/i.test(p.type)
+      ? 'Withdrawal'
+      : /refund/i.test(p.type)
+        ? 'Refund'
+        : 'Deposit',
     client: p.customer || '—',
     amount: p.amount ? `${p.currency || '$'}${p.amount.toLocaleString()}` : '—',
-    status: (p.settled === true ? 'settled' : p.settled === false ? 'failed' : 'processing') as
-      | 'settled'
-      | 'failed'
-      | 'processing',
+    status:
+      p.settled === true
+        ? 'settled'
+        : p.settled === false
+          ? 'failed'
+          : 'processing',
   };
 }

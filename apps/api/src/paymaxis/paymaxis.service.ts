@@ -1,10 +1,20 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
 
 import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { LiveBus } from '../live/live-bus.service';
 import { PaymaxisClient } from './paymaxis.client';
-import { normalizePayment, redactPayload, toQueueItem, unwrapPayment } from './normalize';
+import {
+  normalizePayment,
+  redactPayload,
+  toQueueItem,
+  unwrapPayment,
+} from './normalize';
 
 function asJson(v: unknown): Prisma.InputJsonValue {
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
@@ -45,7 +55,10 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
       .filter(Boolean)
       .map((pair) => {
         const i = pair.indexOf(':');
-        return { shopId: pair.slice(0, i).trim(), apiKey: pair.slice(i + 1).trim() };
+        return {
+          shopId: pair.slice(0, i).trim(),
+          apiKey: pair.slice(i + 1).trim(),
+        };
       })
       .filter((s) => s.shopId && s.apiKey);
   }
@@ -54,13 +67,34 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
     return process.env.PAYMAXIS_POLL_ENABLED === '1' && this.shops.length > 0;
   }
 
+  /**
+   * True on a platform that discards the process between requests (Vercel).
+   * There, a setInterval would be killed the moment the invocation that created
+   * it returns, so the schedule has to come from outside — see the cron entry in
+   * apps/api/vercel.json, which calls GET /api/paymaxis/sync.
+   */
+  get serverless(): boolean {
+    return !!process.env.VERCEL;
+  }
+
   onModuleInit() {
     if (!this.enabled) {
-      this.log.log('Polling disabled (set PAYMAXIS_POLL_ENABLED=1 and PAYMAXIS_SHOPS).');
+      this.log.log(
+        'Polling disabled (set PAYMAXIS_POLL_ENABLED=1 and PAYMAXIS_SHOPS).',
+      );
+      return;
+    }
+    if (this.serverless) {
+      this.log.log(
+        'Serverless runtime: no in-process timer. Polling is driven by the ' +
+          'scheduled GET /api/paymaxis/sync (see vercel.json crons).',
+      );
       return;
     }
     const secs = Math.max(15, Number(process.env.PAYMAXIS_POLL_SECONDS ?? 60));
-    this.log.log(`Polling ${this.shops.length} shop(s) every ${secs}s (read-only).`);
+    this.log.log(
+      `Polling ${this.shops.length} shop(s) every ${secs}s (read-only).`,
+    );
     // Fire once on boot so the dashboard is populated without waiting a cycle.
     void this.syncAll();
     this.timer = setInterval(() => void this.syncAll(), secs * 1000);
@@ -76,9 +110,52 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
     return out;
   }
 
+  private wmKey(shopId: string) {
+    return `paymaxis:${shopId}`;
+  }
+
+  /**
+   * Where to resume from. Memory first (a warm instance already knows), then the
+   * database — which is the only copy that survives a serverless cold start.
+   */
+  private async loadSince(shopId: string): Promise<string | undefined> {
+    const mem = this.since.get(shopId);
+    if (mem) return mem;
+    const row = await this.prisma.pollWatermark
+      .findUnique({ where: { key: this.wmKey(shopId) } })
+      .catch(() => null);
+    return row?.since ?? undefined;
+  }
+
+  /** Advances the watermark in both places. A failed write is not fatal: the
+   * next poll re-reads a little more, and dedupeKey discards the overlap. */
+  private async saveSince(shopId: string, since: string): Promise<void> {
+    this.since.set(shopId, since);
+    await this.prisma.pollWatermark
+      .upsert({
+        where: { key: this.wmKey(shopId) },
+        create: { key: this.wmKey(shopId), since },
+        update: { since },
+      })
+      .catch((e: Error) => {
+        this.log.warn(
+          `Could not persist watermark for ${shopId}: ${e.message}`,
+        );
+        return null;
+      });
+  }
+
   /** Reads one shop's recent payments and stores/broadcasts only what is new. */
-  async syncShop(shop: ShopConfig, overrideSince?: string): Promise<SyncResult> {
-    const res: SyncResult = { shop: shop.shopId, fetched: 0, stored: 0, broadcast: 0 };
+  async syncShop(
+    shop: ShopConfig,
+    overrideSince?: string,
+  ): Promise<SyncResult> {
+    const res: SyncResult = {
+      shop: shop.shopId,
+      fetched: 0,
+      stored: 0,
+      broadcast: 0,
+    };
     const client = new PaymaxisClient(
       process.env.PAYMAXIS_BASE_URL ?? 'https://api.paymaxis.com',
       shop.apiKey,
@@ -89,7 +166,7 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
     const lookbackMins = Number(process.env.PAYMAXIS_LOOKBACK_MINUTES ?? 60);
     const since =
       overrideSince ??
-      this.since.get(shop.shopId) ??
+      (await this.loadSince(shop.shopId)) ??
       new Date(Date.now() - lookbackMins * 60_000).toISOString();
 
     const maxPages = Number(process.env.PAYMAXIS_MAX_PAGES ?? 20);
@@ -98,14 +175,18 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
 
     try {
       for (; page < maxPages; page++) {
-        const { records, hasMore } = await client.listPayments({ updatedSince: since, page });
+        const { records, hasMore } = await client.listPayments({
+          updatedSince: since,
+          page,
+        });
         if (!records.length) break;
         res.fetched += records.length;
 
         for (const raw of records) {
           const p = normalizePayment(unwrapPayment(raw));
           if (!p.paymentId && !p.reference) continue; // nothing to key on
-          if (p.occurredAt && p.occurredAt.toISOString() > newest) newest = p.occurredAt.toISOString();
+          if (p.occurredAt && p.occurredAt.toISOString() > newest)
+            newest = p.occurredAt.toISOString();
 
           // createMany + skipDuplicates makes the unique dedupeKey the arbiter,
           // so a re-poll of unchanged payments stores nothing and — critically —
@@ -148,14 +229,17 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
 
           if (created.count > 0) {
             res.stored += created.count;
-            this.bus.publish(toQueueItem(p), { settled: p.settled, amount: p.amount });
+            this.bus.publish(toQueueItem(p), {
+              settled: p.settled,
+              amount: p.amount,
+            });
             res.broadcast += 1;
           }
         }
         if (!hasMore) break;
       }
       // Advance only on success, so a failed poll re-reads rather than skipping.
-      this.since.set(shop.shopId, newest);
+      await this.saveSince(shop.shopId, newest);
     } catch (e) {
       res.error = (e as Error).message;
       this.log.error(`Sync failed for shop ${shop.shopId}: ${res.error}`);
@@ -163,13 +247,29 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
     return res;
   }
 
-  status() {
+  async status() {
+    const marks: { key: string; since: string }[] =
+      await this.prisma.pollWatermark
+        .findMany({
+          where: { key: { startsWith: 'paymaxis:' } },
+          select: { key: true, since: true },
+        })
+        .catch(() => []);
+    const bySkey = new Map(
+      marks.map((m): [string, string] => [m.key, m.since]),
+    );
     return {
       enabled: this.enabled,
+      // Driven by cron on serverless, by an in-process timer otherwise.
+      schedule: this.serverless ? 'cron' : 'interval',
       baseUrl: process.env.PAYMAXIS_BASE_URL ?? 'https://api.paymaxis.com',
       pollSeconds: Number(process.env.PAYMAXIS_POLL_SECONDS ?? 60),
       // Shop ids only — never the keys.
-      shops: this.shops.map((s) => ({ shopId: s.shopId, since: this.since.get(s.shopId) ?? null })),
+      shops: this.shops.map((s) => ({
+        shopId: s.shopId,
+        since:
+          this.since.get(s.shopId) ?? bySkey.get(this.wmKey(s.shopId)) ?? null,
+      })),
     };
   }
 }

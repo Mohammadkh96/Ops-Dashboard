@@ -3,7 +3,11 @@ import { filter, interval, map, merge, Observable } from 'rxjs';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { LiveBus } from '../live/live-bus.service';
-import { isFailedState, isSettledState } from '../paymaxis/normalize';
+import {
+  isFailedState,
+  isSettledState,
+  toQueueItem,
+} from '../paymaxis/normalize';
 
 const LIVE_TYPES = ['Deposit', 'Withdrawal', 'KYC Review', 'Ticket'] as const;
 
@@ -41,32 +45,51 @@ export class DashboardService {
           where: {
             OR: [
               { occurredAt: { gte: priorStart } },
-              { AND: [{ occurredAt: null }, { receivedAt: { gte: priorStart } }] },
+              {
+                AND: [
+                  { occurredAt: null },
+                  { receivedAt: { gte: priorStart } },
+                ],
+              },
             ],
           },
           select: {
-            occurredAt: true, receivedAt: true, type: true, state: true,
-            amount: true, entity: true, psp: true,
-            errorCode: true, errorMessage: true,
+            occurredAt: true,
+            receivedAt: true,
+            type: true,
+            state: true,
+            amount: true,
+            entity: true,
+            psp: true,
+            errorCode: true,
+            errorMessage: true,
           },
           take: 50_000,
         }),
       [] as {
-        occurredAt: Date | null; receivedAt: Date; type: string | null;
-        state: string | null; amount: number; entity: string | null;
-        psp: string | null; errorCode: string | null; errorMessage: string | null;
+        occurredAt: Date | null;
+        receivedAt: Date;
+        type: string | null;
+        state: string | null;
+        amount: number;
+        entity: string | null;
+        psp: string | null;
+        errorCode: string | null;
+        errorMessage: string | null;
       }[],
     );
     if (!rows.length) return null;
 
-    const at = (r: (typeof rows)[number]) => (r.occurredAt ?? r.receivedAt).getTime();
+    const at = (r: (typeof rows)[number]) =>
+      (r.occurredAt ?? r.receivedAt).getTime();
     const isWithdrawal = (t: string | null) => /withdraw|refund/i.test(t ?? '');
 
     const sumSettled = (from: number, to: number, withdrawals: boolean) =>
       rows
         .filter(
           (r) =>
-            at(r) >= from && at(r) < to &&
+            at(r) >= from &&
+            at(r) < to &&
             isSettledState(r.state ?? '') &&
             isWithdrawal(r.type) === withdrawals,
         )
@@ -83,7 +106,9 @@ export class DashboardService {
     const settled = current.filter((r) => isSettledState(r.state ?? '')).length;
     const failed = current.filter((r) => isFailedState(r.state ?? '')).length;
     const decided = settled + failed;
-    const successRate = decided ? Number(((settled / decided) * 100).toFixed(1)) : 100;
+    const successRate = decided
+      ? Number(((settled / decided) * 100).toFixed(1))
+      : 100;
 
     // Eight 3-hour buckets across the window, so the sparkline shows the shape
     // of the day rather than a meaningless cumulative ramp.
@@ -98,7 +123,8 @@ export class DashboardService {
         const i = Math.min(7, Math.floor((at(r) - wStart) / size));
         // Net flow subtracts withdrawals, so its line matches its own tile
         // rather than quietly plotting gross volume.
-        buckets[i] += mode === 'net' && wd ? -Math.abs(r.amount) : Math.abs(r.amount);
+        buckets[i] +=
+          mode === 'net' && wd ? -Math.abs(r.amount) : Math.abs(r.amount);
       });
       return buckets.map((n) => Number(n.toFixed(2)));
     };
@@ -114,25 +140,37 @@ export class DashboardService {
           : { value: Number(n.toFixed(2)), unit: '' };
 
     const tile = (
-      key: string, label: string, amount: number, prev: number,
-      tone: string, sparkFor: 'all' | 'deposits' | 'withdrawals' | 'net',
+      key: string,
+      label: string,
+      amount: number,
+      prev: number,
+      tone: string,
+      sparkFor: 'all' | 'deposits' | 'withdrawals' | 'net',
     ) => {
       const change = pct(amount, prev);
       const { value, unit } = scale(amount);
       return {
-        key, label, value, unit,
+        key,
+        label,
+        value,
+        unit,
         change: change === null ? '—' : `${change >= 0 ? '+' : ''}${change}%`,
         positive: (change ?? 0) >= 0,
-        tone, spark: spark(sparkFor),
+        tone,
+        spark: spark(sparkFor),
       };
     };
 
     const byEntity = ['Mauritius', 'Saint Lucia'].map((e) => {
-      const scoped = current.filter((r) => r.entity === e && isSettledState(r.state ?? ''));
+      const scoped = current.filter(
+        (r) => r.entity === e && isSettledState(r.state ?? ''),
+      );
       return {
         entity: e,
         count: scoped.length,
-        volume: Number(scoped.reduce((s, r) => s + Math.abs(r.amount), 0).toFixed(2)),
+        volume: Number(
+          scoped.reduce((s, r) => s + Math.abs(r.amount), 0).toFixed(2),
+        ),
       };
     });
 
@@ -150,13 +188,19 @@ export class DashboardService {
         reasons.set(label, e);
       });
     const declineReasons = [...reasons.entries()]
-      .map(([reason, v]) => ({ reason, count: v.count, amount: Number(v.amount.toFixed(2)) }))
+      .map(([reason, v]) => ({
+        reason,
+        count: v.count,
+        amount: Number(v.amount.toFixed(2)),
+      }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 6);
 
     // Per-PSP health, so a single failing provider is visible rather than
     // averaged away in the overall success rate.
-    const pspNames = [...new Set(current.map((r) => r.psp).filter(Boolean))] as string[];
+    const pspNames = [
+      ...new Set(current.map((r) => r.psp).filter(Boolean)),
+    ] as string[];
     const byPsp = pspNames
       .map((name) => {
         const scoped = current.filter((r) => r.psp === name);
@@ -166,7 +210,8 @@ export class DashboardService {
           psp: name,
           settled: ok,
           declined: bad,
-          successRate: ok + bad ? Number(((ok / (ok + bad)) * 100).toFixed(1)) : null,
+          successRate:
+            ok + bad ? Number(((ok / (ok + bad)) * 100).toFixed(1)) : null,
           volume: Number(
             scoped
               .filter((r) => isSettledState(r.state ?? ''))
@@ -183,14 +228,31 @@ export class DashboardService {
       declineReasons,
       byPsp,
       today: [
-        tile('volume', 'Total Volume', dep + wdr, depPrev + wdrPrev, 'blue', 'all'),
+        tile(
+          'volume',
+          'Total Volume',
+          dep + wdr,
+          depPrev + wdrPrev,
+          'blue',
+          'all',
+        ),
         tile('deposits', 'Deposits', dep, depPrev, 'green', 'deposits'),
-        tile('withdrawals', 'Withdrawals', wdr, wdrPrev, 'magenta', 'withdrawals'),
+        tile(
+          'withdrawals',
+          'Withdrawals',
+          wdr,
+          wdrPrev,
+          'magenta',
+          'withdrawals',
+        ),
         tile('net', 'Net Flow', dep - wdr, depPrev - wdrPrev, 'purple', 'net'),
       ],
       performance: [
         { label: 'Success Rate', value: successRate },
-        { label: 'Decline Rate', value: Number((100 - successRate).toFixed(1)) },
+        {
+          label: 'Decline Rate',
+          value: Number((100 - successRate).toFixed(1)),
+        },
         { label: 'Settled', value: settled },
         { label: 'Declined', value: failed },
       ],
@@ -481,7 +543,9 @@ export class DashboardService {
    * Set LIVE_SIMULATE=false to disable the simulator outright.
    */
   liveStream(): Observable<MessageEvent> {
-    const real = this.bus.stream().pipe(map((tick): MessageEvent => ({ data: tick })));
+    const real = this.bus
+      .stream()
+      .pipe(map((tick): MessageEvent => ({ data: tick })));
 
     // Keep-alive. With the simulator off, this stream is silent between real
     // payments — which can be many minutes at night. Reverse proxies and CDNs
@@ -490,7 +554,10 @@ export class DashboardService {
     // it is meant to sit through. A named event is deliberate: EventSource's
     // onmessage only fires for unnamed events, so the client ignores these with
     // no change on its side.
-    const seconds = Math.max(5, Number(process.env.LIVE_HEARTBEAT_SECONDS ?? 20));
+    const seconds = Math.max(
+      5,
+      Number(process.env.LIVE_HEARTBEAT_SECONDS ?? 20),
+    );
     const heartbeat = interval(seconds * 1000).pipe(
       map((): MessageEvent => ({ type: 'ping', data: '' })),
     );
@@ -501,6 +568,162 @@ export class DashboardService {
       map((seq): MessageEvent => ({ data: this.makeTick(seq) })),
     );
     return merge(real, simulated, heartbeat);
+  }
+
+  /**
+   * The same live feed as `liveStream`, but pull instead of push and read from
+   * Postgres instead of the in-memory bus.
+   *
+   * This is what makes the feed work on a serverless platform. There, the
+   * webhook that receives a payment and the request that serves the dashboard
+   * run in different processes, so an in-memory bus can never carry an event
+   * between them — and no invocation lives long enough to hold an SSE
+   * connection open. Reading committed rows sidesteps both problems, and has a
+   * bonus the stream never had: a browser that was closed overnight can ask for
+   * everything it missed rather than starting blank.
+   *
+   * `cursor` is `receivedAt|id`. The id is part of it because two callbacks can
+   * land in the same millisecond, and a timestamp-only cursor would either skip
+   * one of them or replay it forever.
+   */
+  async liveFeed(opts: { since?: string; limit?: number } = {}) {
+    const limit = Math.min(100, Math.max(1, opts.limit ?? 25));
+
+    const [atRaw, idRaw] = (opts.since ?? '').split('|');
+    const at = atRaw ? new Date(atRaw) : null;
+    const cursor =
+      at && !Number.isNaN(at.getTime()) ? { at, id: idRaw ?? '' } : null;
+
+    const select = {
+      id: true,
+      receivedAt: true,
+      paymentId: true,
+      reference: true,
+      type: true,
+      state: true,
+      amount: true,
+      currency: true,
+      customer: true,
+    } as const;
+
+    const rows = await this.safeQuery(
+      () =>
+        this.prisma.paymentEvent.findMany({
+          where: cursor
+            ? {
+                OR: [
+                  { receivedAt: { gt: cursor.at } },
+                  {
+                    AND: [{ receivedAt: cursor.at }, { id: { gt: cursor.id } }],
+                  },
+                ],
+              }
+            : {},
+          // No cursor means a fresh page load: take the newest rows so the feed
+          // is populated immediately, then flip them back into reading order.
+          // With a cursor, take the oldest unseen rows so nothing is skipped
+          // when more arrived than fit in one page.
+          orderBy: cursor
+            ? [{ receivedAt: 'asc' as const }, { id: 'asc' as const }]
+            : [{ receivedAt: 'desc' as const }, { id: 'desc' as const }],
+          take: limit,
+          select,
+        }),
+      [] as {
+        id: string;
+        receivedAt: Date;
+        paymentId: string | null;
+        reference: string | null;
+        type: string | null;
+        state: string | null;
+        amount: number;
+        currency: string | null;
+        customer: string | null;
+      }[],
+    );
+    if (!cursor) rows.reverse();
+
+    // Success rate over a rolling window rather than the returned page, which
+    // may be a single event — one declined payment must not read as 0%.
+    const window = await this.safeQuery(
+      () =>
+        this.prisma.paymentEvent.findMany({
+          orderBy: { receivedAt: 'desc' as const },
+          take: 200,
+          select: { state: true },
+        }),
+      [] as { state: string | null }[],
+    );
+    const settled = window.filter((r) => isSettledState(r.state ?? '')).length;
+    const failed = window.filter((r) => isFailedState(r.state ?? '')).length;
+    const decided = settled + failed;
+    const successRate = decided
+      ? Number(((settled / decided) * 100).toFixed(1))
+      : 100;
+
+    // No events have ever been ingested. Keep the simulator's behaviour from the
+    // SSE path so a freshly deployed dashboard does not look broken before the
+    // first callback — and stop the moment real data exists.
+    if (!window.length) {
+      if (process.env.LIVE_SIMULATE === 'false') {
+        return {
+          events: [],
+          cursor: opts.since ?? null,
+          live: false,
+          simulated: false,
+        };
+      }
+      // One tick per poll, matching the 4s cadence the stream used.
+      return {
+        events: [this.makeTick(Math.floor(Date.now() / 4000))],
+        cursor: opts.since ?? null,
+        live: false,
+        simulated: true,
+      };
+    }
+
+    let prevAmount = 0;
+    const events = rows.map((r) => {
+      const state = r.state ?? '';
+      const volumeDelta =
+        prevAmount && r.amount
+          ? Number(((r.amount - prevAmount) / prevAmount).toFixed(3))
+          : 0;
+      if (r.amount) prevAmount = r.amount;
+      return {
+        ts: r.receivedAt.toISOString(),
+        // Monotonic and unique enough for a feed key; the client only uses it
+        // to tell one tick from the next.
+        seq: r.receivedAt.getTime(),
+        queueItem: toQueueItem({
+          paymentId: r.paymentId ?? '',
+          reference: r.reference ?? '',
+          type: r.type ?? '',
+          customer: r.customer ?? '',
+          amount: r.amount,
+          currency: r.currency ?? '',
+          settled: isSettledState(state)
+            ? true
+            : isFailedState(state)
+              ? false
+              : undefined,
+        }),
+        metrics: { successRate, volumeDelta },
+        live: true,
+      };
+    });
+
+    const last = rows[rows.length - 1];
+    return {
+      events,
+      // Unchanged when nothing new arrived, so the client keeps polling from the
+      // same point instead of losing its place.
+      cursor: last
+        ? `${last.receivedAt.toISOString()}|${last.id}`
+        : (opts.since ?? null),
+      live: true,
+      simulated: false,
+    };
   }
 
   private makeTick(seq: number) {

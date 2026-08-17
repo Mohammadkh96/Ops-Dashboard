@@ -14,8 +14,14 @@ import type { Request } from 'express';
 
 import { WebhooksService } from './webhooks.service';
 
-/** Express request augmented with the raw body (enabled via rawBody in main.ts). */
-type RawRequest = Request & { rawBody?: Buffer };
+/**
+ * Express request augmented with the raw body.
+ *
+ * `rawBody` is populated by Nest (enabled in bootstrap.ts). `platformRawBody` is
+ * the serverless fallback: Vercel's runtime may drain the stream before Nest's
+ * parser sees it, in which case the entry point stashes the bytes there.
+ */
+type RawRequest = Request & { rawBody?: Buffer; platformRawBody?: Buffer };
 
 @ApiTags('webhooks')
 @Controller('webhooks')
@@ -37,10 +43,14 @@ export class WebhooksController {
     @Headers() headers: Record<string, string>,
     @Body() body: Record<string, unknown>,
   ) {
-    const out = await this.webhooks.handlePaymaxis(req.rawBody, headers, body ?? {});
+    // Prefer whatever actually holds bytes: on a long-running host that is
+    // rawBody, on Vercel it can be the platform fallback.
+    const raw = req.rawBody?.length ? req.rawBody : req.platformRawBody;
+    const out = await this.webhooks.handlePaymaxis(raw, headers, body ?? {});
     // A bad signature must be refused, otherwise anyone who finds the URL can
     // inject payment events into the dashboard.
-    if (!out.accepted) throw new UnauthorizedException(out.reason ?? 'invalid signature');
+    if (!out.accepted)
+      throw new UnauthorizedException(out.reason ?? 'invalid signature');
     // 200 with a small ack: providers retry on anything else, and a retry storm
     // is worse than a dropped duplicate.
     return { ok: true, id: out.id, verified: out.signatureOk };

@@ -142,14 +142,14 @@ anything at Paymaxis even though the keys carry write permission.
 
 ## 4. Point the dashboard at the API (Vercel)
 
-The dashboard on Vercel is a **static export** — pure browser JavaScript, no
-server. That is fine: it can call an external API and open an SSE stream
-directly from the browser. What it cannot do is host the API itself, because a
-serverless function cannot hold a long-lived SSE connection open or run the
-poller's background timer.
+Two arrangements work:
 
-So: **UI on Vercel, API on a host that stays running** (Railway, Render, Fly, or
-your own server), with Postgres alongside it.
+- **Everything on Vercel** — two Vercel projects from this repo, the API as a
+  serverless function with polling instead of SSE and cron instead of a
+  background timer. See **`DEPLOY-VERCEL.md`**, which is the complete guide.
+- **UI on Vercel, API on an always-on host** (Railway, Render, Fly, your own
+  server). Keeps the SSE push feed and a normal in-process poller. The steps
+  below cover this one.
 
 In Vercel → Project → Settings → Environment Variables:
 
