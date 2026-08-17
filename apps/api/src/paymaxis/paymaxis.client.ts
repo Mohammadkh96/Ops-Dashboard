@@ -101,8 +101,12 @@ export class PaymaxisClient {
     })) as Record<string, unknown> | unknown[];
 
     const records = extractRecords(json);
-    // Absent explicit paging metadata, a full page implies there may be more.
-    const hasMore = records.length >= (opts.limit ?? 100);
+    // Paymaxis returns an explicit hasMore boolean; trust it over the guess.
+    // The fallback — "a full page implies more" — is wrong at the boundary,
+    // claiming another page whenever the last one happens to be exactly full.
+    const reported = !Array.isArray(json) ? json?.hasMore : undefined;
+    const hasMore =
+      typeof reported === 'boolean' ? reported : records.length >= (opts.limit ?? 100);
     return { records, hasMore };
   }
 }

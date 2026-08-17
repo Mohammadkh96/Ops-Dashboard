@@ -200,6 +200,8 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
     const maxPages = Number(process.env.PAYMAXIS_MAX_PAGES ?? 20);
     let page = 0;
     let newest = since;
+    // Every payment seen in THIS sync, to detect a page that repeats itself.
+    const seen = new Set<string>();
 
     try {
       for (; page < maxPages; page++) {
@@ -209,10 +211,15 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
         });
         if (!records.length) break;
         res.fetched += records.length;
+        let fresh = 0;
 
         for (const raw of records) {
           const p = normalizePayment(unwrapPayment(raw));
           if (!p.paymentId && !p.reference) continue; // nothing to key on
+          const identity = p.dedupeKey || p.paymentId || p.reference;
+          if (seen.has(identity)) continue;
+          seen.add(identity);
+          fresh += 1;
           if (p.occurredAt && p.occurredAt.toISOString() > newest)
             newest = p.occurredAt.toISOString();
 
@@ -265,6 +272,20 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
           }
         }
         if (!hasMore) break;
+        // Stop when a page adds nothing new.
+        //
+        // Paymaxis reports hasMore but exposes no page/offset/cursor parameter
+        // that we have been able to find, so the page number is ignored and
+        // every request returns the same newest records. Without this guard the
+        // loop would re-fetch that identical page maxPages times on every run —
+        // harmless to the data (dedupeKey discards it) but 20x the API calls.
+        if (!fresh) {
+          this.log.warn(
+            `Shop ${shop.shopId}: page ${page + 1} repeated the previous page — ` +
+              'no pagination parameter is taking effect, stopping.',
+          );
+          break;
+        }
       }
       // Advance only on success, so a failed poll re-reads rather than skipping.
       await this.saveSince(shop.shopId, newest);
