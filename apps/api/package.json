@@ -6,6 +6,8 @@
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
+    "//postinstall": "The Prisma client is generated code and is not committed, so a fresh clone has no ../generated/prisma to import. Without this, `npm install` succeeds and the very next build fails with 41 type errors about a missing module — which reads like broken code rather than a missing step.",
+    "postinstall": "prisma generate",
     "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
