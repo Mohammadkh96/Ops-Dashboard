@@ -90,23 +90,38 @@ export class PaymaxisClient {
     // Confirmed against the live API: GET /api/v1/payments, records under
     // "result". The singular /api/v1/payment (an earlier guess) returns 404.
     const path = process.env.PAYMAXIS_PAYMENTS_PATH ?? '/api/v1/payments';
-    const sinceParam = process.env.PAYMAXIS_SINCE_PARAM ?? 'updatedAtFrom';
-    const pageParam = process.env.PAYMAXIS_PAGE_PARAM ?? 'page';
     const limitParam = process.env.PAYMAXIS_LIMIT_PARAM ?? 'limit';
+    // `offset` is the only pagination parameter the API honours. `page`, `skip`,
+    // `after`, `startingAfter` and `startId` are all accepted and ignored, which
+    // is why a page-numbered poller silently re-read the same records forever.
+    const pageParam = process.env.PAYMAXIS_PAGE_PARAM ?? 'offset';
+    const byOffset = (process.env.PAYMAXIS_PAGE_MODE ?? 'offset') === 'offset';
 
-    const json = (await this.get(path, {
-      [sinceParam]: opts.updatedSince,
-      [pageParam]: opts.page,
-      [limitParam]: opts.limit ?? 100,
-    })) as Record<string, unknown> | unknown[];
+    const limit = opts.limit ?? Number(process.env.PAYMAXIS_LIMIT ?? 100);
+    const page = opts.page ?? 0;
+    const cursor = byOffset ? page * limit : page;
+
+    const params: Record<string, string | number | undefined> = {
+      [limitParam]: limit,
+      // Omitted on the first request: offset=0 is the default anyway.
+      [pageParam]: cursor || undefined,
+    };
+
+    // No date-range filter exists on this endpoint — nine candidate names were
+    // all accepted and silently ignored. Sending one would be noise pretending
+    // to be a filter, so it goes only when explicitly configured, ready for the
+    // day they add one.
+    const sinceParam = process.env.PAYMAXIS_SINCE_PARAM;
+    if (sinceParam && opts.updatedSince) params[sinceParam] = opts.updatedSince;
+
+    const json = (await this.get(path, params)) as Record<string, unknown> | unknown[];
 
     const records = extractRecords(json);
     // Paymaxis returns an explicit hasMore boolean; trust it over the guess.
     // The fallback — "a full page implies more" — is wrong at the boundary,
     // claiming another page whenever the last one happens to be exactly full.
     const reported = !Array.isArray(json) ? json?.hasMore : undefined;
-    const hasMore =
-      typeof reported === 'boolean' ? reported : records.length >= (opts.limit ?? 100);
+    const hasMore = typeof reported === 'boolean' ? reported : records.length >= limit;
     return { records, hasMore };
   }
 }

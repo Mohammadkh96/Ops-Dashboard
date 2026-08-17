@@ -137,22 +137,35 @@ use two-label names (`ops.tradin.com`, `ops-api.tradin.com`).
 
 ## Using the Paymaxis API keys
 
-The keys alone do not connect anything — the poller also needs the host, path,
-auth header and pagination parameters. Find them once, from any machine with
-internet access:
+The read API has been probed and the defaults are already correct, so only the
+keys are needed:
 
-```bash
-cd apps/api
-PAYMAXIS_API_KEY=<one of the keys> node scripts/discover-paymaxis.mjs
+```ini
+PAYMAXIS_SHOPS="5141:<key>,6321:<key>"   # shopId:apiKey
+PAYMAXIS_POLL_ENABLED="1"
 ```
 
-GET requests only, key never printed, PII redacted. On success it prints the
-environment variables to paste into Vercel. See `DEPLOY-LIVE-DATA.md` §3C —
-including the two things already established: `api.paymaxis.com` does not exist
-(it is `app.paymaxis.com`), and Paymaxis may not expose a list endpoint at all.
+On Vercel the cron drives the poll; there is no in-process timer.
 
-Add `PAYMAXIS_SHOPS="5141:<key>,6321:<key>"` and `PAYMAXIS_POLL_ENABLED="1"`.
-On Vercel the cron drives it; there is no in-process timer.
+What was established, so none of it has to be rediscovered:
+
+| | |
+|---|---|
+| Host | `https://app.paymaxis.com` — **not** `api.paymaxis.com`, which does not exist |
+| Path | `GET /api/v1/payments` — the singular `/payment` 404s |
+| Auth | `Authorization: Bearer <key>` — `X-Api-Key` returns 401 |
+| Records | under `result` (singular) |
+| Order | newest first |
+| Page size | `limit`, up to 200 |
+| Paging | `offset` only — `page`, `skip`, `after`, `startId` are accepted and ignored |
+| More pages | `hasMore` boolean |
+| Date filter | **none exists** — nine candidate names were all silently ignored |
+
+Because there is no date filter, the poller reads from the newest end and stops
+as soon as a page is entirely known. Steady state is one request per poll per
+shop; a cold start pages through the history once.
+
+`scripts/discover-paymaxis.mjs` re-runs the whole probe if the API ever changes.
 
 ## Getting events flowing
 

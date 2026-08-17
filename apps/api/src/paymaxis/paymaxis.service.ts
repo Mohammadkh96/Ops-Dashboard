@@ -212,6 +212,7 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
         if (!records.length) break;
         res.fetched += records.length;
         let fresh = 0;
+        let storedOnPage = 0;
 
         for (const raw of records) {
           const p = normalizePayment(unwrapPayment(raw));
@@ -264,6 +265,7 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
 
           if (created.count > 0) {
             res.stored += created.count;
+            storedOnPage += 1;
             this.bus.publish(toQueueItem(p), {
               settled: p.settled,
               amount: p.amount,
@@ -272,11 +274,32 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
           }
         }
         if (!hasMore) break;
+
+        // Caught up. The list is ordered newest-first and there is no date
+        // filter, so "this whole page was already in the database" means
+        // everything past it is older and already known. Without this the
+        // poller would walk the entire payment history on every single run
+        // just to rediscover that it had seen all of it.
+        //
+        // The trade-off is deliberate: a payment inserted far down the list
+        // after we passed that point would be missed. Nothing can insert into
+        // the past of a newest-first feed, so that only applies to a bulk
+        // backfill by the provider — for which the answer is a manual
+        // POST /paymaxis/sync, not a slower poll forever.
+        // Applies from the very first page: on a steady-state poll the newest
+        // page is already known and there is nothing behind it worth walking.
+        if (!storedOnPage) {
+          this.log.debug?.(
+            `Shop ${shop.shopId}: page ${page + 1} was entirely known — caught up.`,
+          );
+          break;
+        }
+
         // Stop when a page adds nothing new.
         //
-        // Paymaxis reports hasMore but exposes no page/offset/cursor parameter
-        // that we have been able to find, so the page number is ignored and
-        // every request returns the same newest records. Without this guard the
+        // A defence against the pagination parameter silently not working: if
+        // `offset` ever stops being honoured the API returns the same newest
+        // records every time. Without this guard the
         // loop would re-fetch that identical page maxPages times on every run —
         // harmless to the data (dedupeKey discards it) but 20x the API calls.
         if (!fresh) {
