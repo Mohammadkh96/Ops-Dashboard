@@ -28,26 +28,28 @@ if (!KEY) {
   process.exit(1);
 }
 
-// api.paymaxis.com is deliberately absent: it does not exist (NXDOMAIN).
-// app.paymaxis.com is the host Paymaxis uses for its own webhook endpoints.
+// api.paymaxis.com and gate.paymaxis.com are deliberately absent: neither
+// resolves. app.paymaxis.com is the host Paymaxis uses for its own webhook
+// endpoints and is the one that answers.
 const BASES = process.env.PAYMAXIS_BASE_URL
   ? [process.env.PAYMAXIS_BASE_URL.replace(/\/$/, '')]
-  : ['https://app.paymaxis.com', 'https://gate.paymaxis.com', 'https://api.gate.paymaxis.com'];
+  : ['https://app.paymaxis.com'];
 
+// Confirmed working first; the rest are kept in case the API changes.
 const PATHS = [
   '/api/v1/payments',
-  '/api/v1/payment',
   '/api/v1/payments/search',
-  '/api/v1/payment/list',
+  '/api/v1/payment',
   '/api/v1/transactions',
   '/v1/payments',
-  '/api/payments',
 ];
 
 // Header styles differ between providers and even between their own docs.
+// Bearer is first because that is what Paymaxis actually accepts — X-Api-Key,
+// the more common convention and the previous first guess, returns 401.
 const AUTHS = [
-  { name: 'X-Api-Key', headers: { 'X-Api-Key': KEY } },
   { name: 'Authorization: Bearer', headers: { Authorization: `Bearer ${KEY}` } },
+  { name: 'X-Api-Key', headers: { 'X-Api-Key': KEY } },
   { name: 'apikey', headers: { apikey: KEY } },
   { name: 'X-API-KEY', headers: { 'X-API-KEY': KEY } },
 ];

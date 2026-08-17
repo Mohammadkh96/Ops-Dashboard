@@ -185,7 +185,9 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
     const client = new PaymaxisClient(
       process.env.PAYMAXIS_BASE_URL ?? PAYMAXIS_DEFAULT_BASE_URL,
       shop.apiKey,
-      process.env.PAYMAXIS_AUTH_HEADER ?? 'X-Api-Key',
+      // Bearer, confirmed against the live API. X-Api-Key — the previous
+      // default and the more common convention — returns 401 here.
+      process.env.PAYMAXIS_AUTH_HEADER ?? 'Authorization',
     );
 
     // Default look-back on first run, then advance the watermark.

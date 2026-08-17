@@ -87,7 +87,9 @@ export class PaymaxisClient {
     page?: number;
     limit?: number;
   }): Promise<{ records: Record<string, unknown>[]; hasMore: boolean }> {
-    const path = process.env.PAYMAXIS_PAYMENTS_PATH ?? '/api/v1/payment';
+    // Confirmed against the live API: GET /api/v1/payments, records under
+    // "result". The singular /api/v1/payment (an earlier guess) returns 404.
+    const path = process.env.PAYMAXIS_PAYMENTS_PATH ?? '/api/v1/payments';
     const sinceParam = process.env.PAYMAXIS_SINCE_PARAM ?? 'updatedAtFrom';
     const pageParam = process.env.PAYMAXIS_PAGE_PARAM ?? 'page';
     const limitParam = process.env.PAYMAXIS_LIMIT_PARAM ?? 'limit';
@@ -118,7 +120,10 @@ export function extractRecords(json: unknown): Record<string, unknown>[] {
   if (configured && Array.isArray(obj[configured])) {
     return obj[configured] as Record<string, unknown>[];
   }
+  // "result" (singular) first — that is where Paymaxis actually puts the array.
+  // It sat behind the plural "results" for a while, which never matched.
   for (const key of [
+    'result',
     'content',
     'data',
     'items',
