@@ -1,4 +1,4 @@
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication, Logger, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import type { ExpressAdapter } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
@@ -29,13 +29,20 @@ export async function createApp(
   // list because there is a production domain AND a distinct preview URL per
   // deployment; a single value silently breaks every preview with a CORS error.
   //
-  // A leading "*." allows a subdomain wildcard (e.g. "*.vercel.app") for those
-  // previews. Prefer exact origins in production: with credentials enabled, a
-  // wildcard lets any site on that domain make credentialed requests.
+  // A leading "*" matches by suffix, which allows an entry to be scoped to one
+  // Vercel team rather than the whole platform. Preview URLs are shaped
+  // "<project>-<hash>-<team>.vercel.app", so "*-yourteam.vercel.app" admits
+  // your own previews while "*.vercel.app" admits everybody's — and with
+  // credentials enabled that is every site on the platform allowed to make
+  // credentialed requests to this API. Exact origins remain the right default;
+  // the wildcard exists so the safer narrow form is expressible at all.
   const allowed = (process.env.WEB_ORIGIN ?? 'http://localhost:3000')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+
+  const originAllowed = (origin: string) =>
+    allowed.some((a) => (a.startsWith('*') ? origin.endsWith(a.slice(1)) : a === origin));
 
   app.enableCors({
     origin: (
@@ -45,9 +52,16 @@ export async function createApp(
       // No Origin header: curl, health checks and server-to-server callers,
       // which CORS is not designed to police.
       if (!origin) return cb(null, true);
-      const ok = allowed.some((a) =>
-        a.startsWith('*.') ? origin.endsWith(a.slice(1)) : a === origin,
-      );
+      const ok = originAllowed(origin);
+      // A refusal is otherwise invisible from the server side: the browser
+      // reports only "No Access-Control-Allow-Origin", and the origin it
+      // actually sent is the one thing needed to fix the configuration.
+      if (!ok) {
+        Logger.warn(
+          `CORS refused origin "${origin}". WEB_ORIGIN allows: ${allowed.join(', ')}`,
+          'Bootstrap',
+        );
+      }
       cb(null, ok);
     },
     credentials: true,
