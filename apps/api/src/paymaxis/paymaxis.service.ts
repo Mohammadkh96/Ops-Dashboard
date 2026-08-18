@@ -363,6 +363,23 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
     const bySkey = new Map(
       marks.map((m): [string, string] => [m.key, m.since]),
     );
+    // Every terminal ever seen, with the PSP it resolved to, over all history
+    // rather than the dashboard's 24-hour window.
+    //
+    // "Why is this PSP missing?" has three different answers — it is not routed
+    // through Paymaxis at all, it had no activity in the window, or its terminal
+    // name did not match a known pattern — and they call for completely
+    // different responses. This distinguishes them: a terminal present here but
+    // absent from the dashboard was simply quiet; a terminal whose psp looks
+    // like a raw name fragment needs a pattern adding to TERMINAL_PSP.
+    const terminals = await this.prisma.paymentEvent
+      .groupBy({
+        by: ['psp', 'terminal', 'entity'],
+        _count: { _all: true },
+        _max: { occurredAt: true },
+      })
+      .catch(() => []);
+
     return {
       enabled: this.enabled,
       // Driven by cron on serverless, by an in-process timer otherwise.
@@ -375,6 +392,15 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
         since:
           this.since.get(s.shopId) ?? bySkey.get(this.wmKey(s.shopId)) ?? null,
       })),
+      terminals: terminals
+        .map((t) => ({
+          psp: t.psp,
+          terminal: t.terminal,
+          entity: t.entity,
+          payments: t._count._all,
+          lastSeen: t._max.occurredAt,
+        }))
+        .sort((a, b) => b.payments - a.payments),
     };
   }
 }
