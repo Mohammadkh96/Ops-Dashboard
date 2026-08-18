@@ -10,11 +10,25 @@ import { AuthGate } from "@/components/auth-gate";
 
 const BARE_ROUTES = ["/login"];
 
+/**
+ * Path without a trailing slash, so route checks work in both builds.
+ *
+ * The static export sets `trailingSlash: true`, so the deployed login page is
+ * "/login/" while local dev serves "/login". Comparing the raw pathname matched
+ * only in dev — deployed, the login page fell through to the authenticated
+ * shell and was blocked by the very gate whose job is to send you to it, with
+ * its "sign in" link pointing back at itself. Nothing on the page moved, and no
+ * error was logged, because as far as the app was concerned it had navigated.
+ */
+function normalizePath(pathname: string): string {
+  return pathname.replace(/\/+$/, "") || "/";
+}
+
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
 
   // Auth screens render without the operations chrome.
-  if (BARE_ROUTES.includes(pathname)) {
+  if (BARE_ROUTES.includes(normalizePath(pathname))) {
     return <div className="min-h-screen bg-background">{children}</div>;
   }
 

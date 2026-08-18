@@ -7,12 +7,26 @@ import { Badge } from "@/components/ui/badge";
 import { LiveDot } from "@/components/ui/live-dot";
 import type { QueueItem } from "@/lib/dashboard";
 
-const statusBadge = {
-  review: { variant: "orange" as const, label: "Review" },
-  processing: { variant: "blue" as const, label: "Processing" },
-  pending: { variant: "purple" as const, label: "Pending" },
-  escalated: { variant: "red" as const, label: "Escalated" },
+const statusBadge: Record<string, { variant: "orange" | "blue" | "purple" | "red" | "green"; label: string }> = {
+  review: { variant: "orange", label: "Review" },
+  processing: { variant: "blue", label: "Processing" },
+  pending: { variant: "purple", label: "Pending" },
+  escalated: { variant: "red", label: "Escalated" },
+  // Real payments arrive in these two. Their absence crashed the whole
+  // dashboard — statusBadge[status] was undefined and reading .variant threw
+  // during render, so one unrecognised value took down the entire page.
+  settled: { variant: "green", label: "Settled" },
+  failed: { variant: "red", label: "Failed" },
 };
+
+/**
+ * Never let an unknown status break the page. A provider can introduce a state
+ * at any time, and a payments dashboard going blank is far worse than showing
+ * that state under a neutral badge.
+ */
+function badgeFor(status: string) {
+  return statusBadge[status] ?? { variant: "blue" as const, label: status };
+}
 
 export function LiveQueueCard({ rows, newestId }: { rows: QueueItem[]; newestId?: string }) {
   return (
@@ -57,8 +71,8 @@ export function LiveQueueCard({ rows, newestId }: { rows: QueueItem[]; newestId?
                   <td className="py-2.5 text-muted-foreground">{item.client}</td>
                   <td className="py-2.5 text-foreground">{item.amount}</td>
                   <td className="py-2.5">
-                    <Badge variant={statusBadge[item.status].variant}>
-                      {statusBadge[item.status].label}
+                    <Badge variant={badgeFor(item.status).variant}>
+                      {badgeFor(item.status).label}
                     </Badge>
                   </td>
                 </motion.tr>

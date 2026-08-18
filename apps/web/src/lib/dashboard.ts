@@ -5,7 +5,17 @@
 export type Tone = "blue" | "green" | "magenta" | "purple" | "red" | "orange";
 export type PendingTone = "blue" | "purple" | "red" | "orange";
 export type SystemState = "operational" | "degraded" | "down";
-export type QueueState = "review" | "processing" | "pending" | "escalated";
+// Includes the states real payments arrive in. The API maps a settled payment
+// to "settled" and a declined one to "failed"; this type listed only the four
+// the demo data happened to use, so live data carried states the UI had no
+// entry for and the dashboard crashed on render.
+export type QueueState =
+  | "review"
+  | "processing"
+  | "pending"
+  | "escalated"
+  | "settled"
+  | "failed";
 export type Severity = "critical" | "warning" | "info";
 
 export type KpiMetric = {
@@ -22,7 +32,13 @@ export type KpiMetric = {
 export type PerfMetric = { label: string; value: number };
 export type PendingItem = { label: string; value: number; href: string; tone: PendingTone };
 export type AlertItem = { id: string; severity: Severity; title: string; detail: string; time: string };
-export type SystemStatusItem = { name: string; status: SystemState; latency: string };
+// latency is null for components whose health is known but whose response time
+// is not measured.
+export type SystemStatusItem = {
+  name: string;
+  status: SystemState;
+  latency: string | null;
+};
 export type VolumePoint = { time: string; deposits: number; withdrawals: number };
 export type QueueItem = { id: string; type: string; client: string; amount: string; status: QueueState };
 export type TeamMember = { name: string; role: string; workload: number; initials: string };
