@@ -9,12 +9,29 @@ import { Button } from "@/components/ui/button";
 import { LiveDot } from "@/components/ui/live-dot";
 import { AnimatedNumber } from "@/components/ui/animated-number";
 import { useAuth } from "@/lib/auth";
+import { API_URL, isDemoMode } from "@/lib/api";
 
 const highlights = [
   { icon: Activity, title: "Live operational telemetry", copy: "Payments, KYC, incidents and MT5 health in one command center." },
   { icon: ShieldCheck, title: "Risk-aware by default", copy: "Every transaction scored, every alert routed to the right desk." },
   { icon: Zap, title: "Built for the shift floor", copy: "Sub-second search, keyboard-first, tuned for high-tempo ops." },
 ];
+
+/**
+ * Turns a sign-in failure into something the reader can act on.
+ *
+ * A blocked cross-origin request surfaces as `TypeError: Failed to fetch` and
+ * nothing else — no status, no body, and the CORS detail is only in the browser
+ * console. On a correct password that message points at the credentials, which
+ * is the wrong place to look: the request never reached the server. Naming the
+ * URL and the likely cause turns a dead end into a five-minute fix.
+ */
+function describeSignInError(err: unknown): string {
+  if (err instanceof TypeError) {
+    return `Could not reach the API at ${API_URL || "(not configured)"}. It is usually one of: WEB_ORIGIN on the API does not list this site's address, NEXT_PUBLIC_API_URL is wrong, or the API is down. Check the browser console for the exact CORS message.`;
+  }
+  return err instanceof Error ? err.message : "Sign in failed";
+}
 
 export default function LoginPage() {
   const { login, user, isDemo } = useAuth();
@@ -36,7 +53,7 @@ export default function LoginPage() {
       await login(email, password);
       router.replace("/");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Sign in failed");
+      setError(describeSignInError(err));
     } finally {
       setSubmitting(false);
     }
@@ -189,10 +206,18 @@ export default function LoginPage() {
             </Button>
           </form>
 
-          <p className="mt-5 rounded-lg border border-border bg-card/40 px-3 py-2.5 text-center text-[11px] leading-relaxed text-muted">
-            Seeded dev login: <span className="text-muted-foreground">mohammad@tradin.com</span> /
-            <span className="text-muted-foreground"> OpsOS!2026</span>
-          </p>
+          {/*
+            Demo mode only. This printed a working email and password on the
+            sign-in page of a live deployment — handing the credential to anyone
+            who opened the URL. Useful on a standalone preview with no real data
+            behind it; indefensible in front of payment records.
+          */}
+          {isDemoMode ? (
+            <p className="mt-5 rounded-lg border border-border bg-card/40 px-3 py-2.5 text-center text-[11px] leading-relaxed text-muted">
+              Demo login: <span className="text-muted-foreground">mohammad@tradin.com</span> /
+              <span className="text-muted-foreground"> OpsOS!2026</span>
+            </p>
+          ) : null}
         </motion.div>
       </div>
     </div>
