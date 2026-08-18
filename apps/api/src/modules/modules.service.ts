@@ -1,12 +1,15 @@
 import { Injectable } from '@nestjs/common';
 
 import { PrismaService } from '../prisma/prisma.service';
+import { isFailedState, isSettledState } from '../paymaxis/normalize';
 
 /**
- * Serves the operational module datasets. Where the database has rows they are
- * used and mapped to the frontend's shapes; otherwise representative fallback
- * data is returned so the API is populated (and never errors) in a fresh
- * environment with no database. Shapes mirror the frontend's types.
+ * Serves the operational module datasets.
+ *
+ * Representative fallback data keeps a fresh environment from looking broken,
+ * but every fallback is gated on isLive(): once real payments exist, invented
+ * rows are never served, because beside real money they cannot be told apart
+ * from it.
  */
 @Injectable()
 export class ModulesService {
@@ -140,35 +143,306 @@ export class ModulesService {
     });
   }
 
-  async transactions() {
-    const fallback = this.transactionsFallback();
-    return this.safe(async () => {
-      const rows = await this.prisma.transaction.findMany({
-        include: { client: true, gateway: true },
-        orderBy: { createdAt: 'desc' },
-        take: 60,
-      });
-      if (rows.length === 0) return fallback;
-      return rows.map((t, i) => ({
-        id: `tx-${i + 1}`,
-        reference: t.reference,
-        client: t.client?.fullName ?? 'Unknown',
-        country: t.country ?? t.client?.country ?? '—',
-        gateway: t.gateway?.name ?? '—',
-        method: this.methodLabel(t.method),
-        currency: t.currency,
-        amount: Number(t.amount),
-        type: t.type === 'WITHDRAWAL' ? 'Withdrawal' : 'Deposit',
-        status: this.lower(t.status),
-        risk: this.lower(t.riskLevel),
-        createdAt: this.hhmm(t.createdAt),
-      }));
-    }, fallback);
+  /**
+   * True once any real payment has been ingested.
+   *
+   * Every fallback in this file is gated on it. Invented rows make an empty
+   * environment look like a product, and are indistinguishable from real ones
+   * the moment actual money is on the screen.
+   */
+  private async isLive(): Promise<boolean> {
+    return (await this.safe(() => this.prisma.paymentEvent.count(), 0)) > 0;
+  }
+
+  /** Paymaxis payment method -> the table's four buckets. */
+  private paymentMethodLabel(raw: unknown): 'Card' | 'Crypto' | 'Bank' | 'Local' {
+    const s = String(raw ?? '').toUpperCase();
+    if (/CRYPTO|COIN|USDT|BTC|ETH/.test(s)) return 'Crypto';
+    if (/BANK|SEPA|WIRE|TRANSFER/.test(s)) return 'Bank';
+    if (/CARD/.test(s)) return 'Card';
+    return 'Local';
+  }
+
+  /**
+   * Real payments, newest first.
+   *
+   * Reads PaymentEvent — where Paymaxis data actually lands — rather than the
+   * Transaction table, which nothing writes to and which therefore always fell
+   * through to 42 invented rows.
+   *
+   * A payment is stored once per state it passes through, which is right for an
+   * audit trail and wrong for a ledger view: the same payment would appear
+   * several times, at different statuses. Collapsed here to its latest state.
+   */
+  async transactions(kind?: string) {
+    if (!(await this.isLive())) return this.transactionsFallback();
+
+    const rows = await this.safe(
+      () =>
+        this.prisma.paymentEvent.findMany({
+          orderBy: [{ occurredAt: 'desc' }, { receivedAt: 'desc' }],
+          take: 400,
+          select: {
+            id: true,
+            paymentId: true,
+            reference: true,
+            externalId: true,
+            customer: true,
+            entity: true,
+            psp: true,
+            terminal: true,
+            currency: true,
+            amount: true,
+            type: true,
+            state: true,
+            occurredAt: true,
+            receivedAt: true,
+            // paymentMethod is only in the raw payload; reading it here avoids
+            // a schema change and works on everything already stored.
+            payload: true,
+          },
+        }),
+      [],
+    );
+
+    const wanted = (kind ?? '').toLowerCase();
+    const seen = new Set<string>();
+    const out: ReturnType<typeof this.mapPaymentRow>[] = [];
+
+    for (const r of rows) {
+      const identity = r.paymentId || r.reference || r.id;
+      if (seen.has(identity)) continue; // newest state wins
+      seen.add(identity);
+      const row = this.mapPaymentRow(r);
+      if (wanted && row.type.toLowerCase() !== wanted) continue;
+      out.push(row);
+      if (out.length >= 150) break;
+    }
+    return out;
+  }
+
+  /**
+   * Headline figures for the Payments / Deposits / Withdrawals pages, over a
+   * rolling 24 hours.
+   *
+   * Those pages carried hardcoded tiles — "$2.91M today", "$1,240 average" —
+   * which stayed fixed no matter what the table underneath them showed. Returns
+   * null when there is no real data, so the caller can show nothing rather than
+   * zeros pretending to be measurements.
+   *
+   * Volume counts settled money only: an attempted deposit that was declined is
+   * not revenue, and averaging it in understates the size of a real one.
+   */
+  async paymentStats(kind?: string) {
+    if (!(await this.isLive())) return null;
+    const since = new Date(Date.now() - 86_400_000);
+
+    const rows = await this.safe(
+      () =>
+        this.prisma.paymentEvent.findMany({
+          where: {
+            OR: [
+              { occurredAt: { gte: since } },
+              { AND: [{ occurredAt: null }, { receivedAt: { gte: since } }] },
+            ],
+          },
+          select: {
+            paymentId: true, reference: true, id: true,
+            amount: true, currency: true, type: true, state: true,
+            psp: true, occurredAt: true, receivedAt: true,
+          },
+          take: 50_000,
+        }),
+      [],
+    );
+
+    // One entry per payment at its latest state, so a payment that went
+    // PENDING then COMPLETED is counted once rather than twice.
+    const latest = new Map<string, (typeof rows)[number]>();
+    for (const r of rows) {
+      const key = r.paymentId || r.reference || r.id;
+      const prev = latest.get(key);
+      const at = (x: (typeof rows)[number]) =>
+        (x.occurredAt ?? x.receivedAt).getTime();
+      if (!prev || at(r) > at(prev)) latest.set(key, r);
+    }
+
+    const wanted = (kind ?? '').toLowerCase();
+    const scoped = [...latest.values()].filter((r) => {
+      if (!wanted) return true;
+      const t = r.type ?? '';
+      const label = /refund/i.test(t)
+        ? 'refund'
+        : /withdraw|payout/i.test(t)
+          ? 'withdrawal'
+          : 'deposit';
+      return label === wanted;
+    });
+
+    const settled = scoped.filter((r) => isSettledState(r.state ?? ''));
+    const declined = scoped.filter((r) => isFailedState(r.state ?? ''));
+    const volume = settled.reduce((s, r) => s + Math.abs(r.amount), 0);
+    const decided = settled.length + declined.length;
+
+    const byPsp = new Map<string, number>();
+    settled.forEach((r) =>
+      byPsp.set(r.psp ?? '—', (byPsp.get(r.psp ?? '—') ?? 0) + Math.abs(r.amount)),
+    );
+    const topPsp = [...byPsp.entries()].sort((a, b) => b[1] - a[1])[0];
+
+    return {
+      window: '24h',
+      currency: settled[0]?.currency ?? scoped[0]?.currency ?? '',
+      volume: Number(volume.toFixed(2)),
+      count: scoped.length,
+      settled: settled.length,
+      declined: declined.length,
+      average: settled.length ? Number((volume / settled.length).toFixed(2)) : 0,
+      largest: settled.length
+        ? Number(Math.max(...settled.map((r) => Math.abs(r.amount))).toFixed(2))
+        : 0,
+      successRate: decided
+        ? Number(((settled.length / decided) * 100).toFixed(1))
+        : null,
+      topPsp: topPsp ? { psp: topPsp[0], volume: Number(topPsp[1].toFixed(2)) } : null,
+    };
+  }
+
+  private mapPaymentRow(r: {
+    id: string;
+    paymentId: string | null;
+    reference: string | null;
+    externalId: string | null;
+    customer: string | null;
+    entity: string | null;
+    psp: string | null;
+    terminal: string | null;
+    currency: string | null;
+    amount: number;
+    type: string | null;
+    state: string | null;
+    occurredAt: Date | null;
+    receivedAt: Date;
+    payload: unknown;
+  }) {
+    const state = r.state ?? '';
+    const t = r.type ?? '';
+    const type = /refund/i.test(t)
+      ? 'Refund'
+      : /withdraw|payout/i.test(t)
+        ? 'Withdrawal'
+        : 'Deposit';
+
+    const status = isSettledState(state)
+      ? 'approved'
+      : isFailedState(state)
+        ? 'declined'
+        : /pending|processing|checkout|await/i.test(state)
+          ? 'pending'
+          : 'processing';
+
+    const payload = (r.payload ?? {}) as Record<string, unknown>;
+
+    return {
+      id: r.id,
+      reference: r.paymentId || r.reference || r.externalId || r.id,
+      client: r.customer || '—',
+      // The jurisdiction the payment belongs to. Not the customer's country,
+      // which Paymaxis does not give us — better an accurate different fact
+      // than a guessed one.
+      country: r.entity || '—',
+      gateway: r.psp || r.terminal || '—',
+      method: this.paymentMethodLabel(payload.paymentMethod),
+      currency: r.currency || '',
+      amount: Math.abs(r.amount),
+      type,
+      status,
+      // No risk scoring exists. The column showed a fabricated level for every
+      // row; null renders as "—" so it is plainly absent rather than invented.
+      risk: null,
+      createdAt: this.hhmm(r.occurredAt ?? r.receivedAt),
+    };
   }
 
   // -------- gateways --------
 
+  /**
+   * PSP health, measured from real payments.
+   *
+   * The fallback listed gateways we do not use (Stripe, Nuvei, Coinbase) with
+   * invented success rates and latencies, next to real ones — so a genuinely
+   * failing provider was indistinguishable from decoration. Built from the last
+   * 24 hours of PaymentEvent instead, one row per PSP that actually processed
+   * something.
+   *
+   * Latency and webhook failures are reported as zero because nothing measures
+   * them yet; they are not guessed at.
+   */
+  async gatewaysLive() {
+    const since = new Date(Date.now() - 86_400_000);
+    const rows = await this.safe(
+      () =>
+        this.prisma.paymentEvent.findMany({
+          where: {
+            OR: [
+              { occurredAt: { gte: since } },
+              { AND: [{ occurredAt: null }, { receivedAt: { gte: since } }] },
+            ],
+          },
+          select: {
+            psp: true, state: true, amount: true,
+            occurredAt: true, receivedAt: true,
+          },
+          take: 50_000,
+        }),
+      [],
+    );
+
+    const names = [...new Set(rows.map((r) => r.psp).filter(Boolean))] as string[];
+    return names
+      .map((name, i) => {
+        const scoped = rows.filter((r) => r.psp === name);
+        const ok = scoped.filter((r) => isSettledState(r.state ?? ''));
+        const bad = scoped.filter((r) => isFailedState(r.state ?? ''));
+        const decided = ok.length + bad.length;
+        const successRate = decided
+          ? Number(((ok.length / decided) * 100).toFixed(1))
+          : 0;
+        // Eight 3-hour buckets of success rate, so the trend is visible.
+        const size = 86_400_000 / 8;
+        const start = since.getTime();
+        const spark = Array.from({ length: 8 }, (_, b) => {
+          const inBucket = scoped.filter((r) => {
+            const t = (r.occurredAt ?? r.receivedAt).getTime();
+            return t >= start + b * size && t < start + (b + 1) * size;
+          });
+          const g = inBucket.filter((r) => isSettledState(r.state ?? '')).length;
+          const f = inBucket.filter((r) => isFailedState(r.state ?? '')).length;
+          return g + f ? Number(((g / (g + f)) * 100).toFixed(1)) : 0;
+        });
+        return {
+          id: `psp-${i + 1}`,
+          name,
+          status:
+            successRate >= 90
+              ? ('operational' as const)
+              : successRate >= 70
+                ? ('degraded' as const)
+                : ('down' as const),
+          successRate,
+          avgLatencyMs: 0,
+          todayVolume: Number(
+            ok.reduce((a, r) => a + Math.abs(r.amount), 0).toFixed(2),
+          ),
+          webhookFailures: 0,
+          spark,
+        };
+      })
+      .sort((a, b) => b.todayVolume - a.todayVolume);
+  }
+
   async gateways() {
+    if (await this.isLive()) return this.gatewaysLive();
     const fallback = [
       {
         id: 'g1',
@@ -344,6 +618,9 @@ export class ModulesService {
   }
 
   async kycCases() {
+    // Live: no invented rows. There is no real source for this yet, so an
+    // empty list is the honest answer — see isLive().
+    if (await this.isLive()) return [];
     const fallback = this.kycFallback();
     return this.safe(async () => {
       const rows = await this.prisma.kycCase.findMany({
@@ -435,6 +712,9 @@ export class ModulesService {
   }
 
   async incidents() {
+    // Live: no invented rows. There is no real source for this yet, so an
+    // empty list is the honest answer — see isLive().
+    if (await this.isLive()) return [];
     const fallback = this.incidentsFallback();
     return this.safe(async () => {
       const rows = await this.prisma.incident.findMany({
@@ -588,7 +868,10 @@ export class ModulesService {
   ];
 
   async operations() {
-    const fallbackTickets = this.ticketsFallback();
+    // No ticketing system feeds this yet, so on live data the queue is empty
+    // rather than populated with invented tickets and named assignees.
+    const live = await this.isLive();
+    const fallbackTickets = live ? [] : this.ticketsFallback();
     const tickets = await this.safe(async () => {
       const rows = await this.prisma.ticket.findMany({
         include: { client: true, assignedTo: true },
@@ -619,7 +902,14 @@ export class ModulesService {
       });
     }, fallbackTickets);
 
-    return { tickets, team: this.team, shiftChecklist: this.shiftChecklist };
+    // The roster and shift checklist are invented — there is no HR source and
+    // no shift system. Named colleagues with fabricated handling stats are the
+    // least defensible placeholder here, so on live data both are empty.
+    return {
+      tickets,
+      team: live ? [] : this.team,
+      shiftChecklist: live ? [] : this.shiftChecklist,
+    };
   }
 
   // -------- reports (representative; not a persisted entity) --------
@@ -731,6 +1021,26 @@ export class ModulesService {
   // -------- users --------
 
   async users() {
+    // Real accounts exist the moment anyone can sign in, so an empty list here
+    // means something is wrong rather than "not set up yet".
+    if (await this.isLive()) {
+      return this.safe(
+        () =>
+          this.prisma.user
+            .findMany({ orderBy: { createdAt: 'asc' } })
+            .then((rows) =>
+              rows.map((u, i) => ({
+                id: `u-${i + 1}`,
+                name: `${u.firstName} ${u.lastName}`.trim(),
+                email: u.email,
+                role: this.lower(u.role),
+                status: u.isActive ? 'active' : 'disabled',
+                lastActive: this.ago(u.updatedAt),
+              })),
+            ),
+        [],
+      );
+    }
     const fallback = [
       {
         id: 'u1',
@@ -925,6 +1235,9 @@ export class ModulesService {
   }
 
   async auditLog() {
+    // Live: no invented rows. There is no real source for this yet, so an
+    // empty list is the honest answer — see isLive().
+    if (await this.isLive()) return [];
     const fallback = this.auditFallback();
     return this.safe(async () => {
       const rows = await this.prisma.auditLog.findMany({

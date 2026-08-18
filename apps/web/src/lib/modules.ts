@@ -14,9 +14,13 @@ export type Transaction = {
   method: TxMethod;
   currency: string;
   amount: number;
-  type: "Deposit" | "Withdrawal";
+  // Refund is a real Paymaxis payment type and belongs in its own bucket:
+  // money going back to a customer is not a withdrawal they requested.
+  type: "Deposit" | "Withdrawal" | "Refund";
   status: TxStatus;
-  risk: Risk;
+  // null when nothing scores risk. The column previously showed a level for
+  // every row, all of it invented.
+  risk: Risk | null;
   createdAt: string;
 };
 

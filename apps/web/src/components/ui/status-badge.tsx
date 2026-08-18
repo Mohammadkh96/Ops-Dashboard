@@ -37,7 +37,10 @@ const RISK_MAP: Record<string, { variant: Variant; label: string }> = {
   critical: { variant: "red", label: "Critical" },
 };
 
-export function RiskBadge({ level }: { level: string }) {
+export function RiskBadge({ level }: { level: string | null }) {
+  // Nothing scores risk yet. An em dash says so; a badge reading "low" would be
+  // a claim nobody made.
+  if (!level) return <span className="text-muted">—</span>;
   const cfg = RISK_MAP[level] ?? { variant: "default" as Variant, label: level };
   return (
     <Badge variant={cfg.variant}>

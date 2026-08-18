@@ -53,7 +53,18 @@ function useApi<T>(
   };
 }
 
-export const useTransactions = () => useApi<Transaction[]>("transactions", "/transactions", transactions);
+/**
+ * Real payments. The type filter is applied by the API rather than in the
+ * browser: the endpoint returns a bounded page, so filtering after the fact
+ * meant the Deposits and Withdrawals pages shared one budget of rows and each
+ * showed a fraction of what it should.
+ */
+export const useTransactions = (type?: "Deposit" | "Withdrawal" | "Refund") =>
+  useApi<Transaction[]>(
+    `transactions:${type ?? "all"}`,
+    `/transactions${type ? `?type=${type.toLowerCase()}` : ""}`,
+    type ? transactions.filter((t) => t.type === type) : transactions,
+  );
 export const useGateways = () => useApi<Gateway[]>("gateways", "/gateways", gateways);
 export const useKycCases = () => useApi<KycCase[]>("kyc", "/compliance/kyc", kycCases);
 export const useIncidents = () => useApi<Incident[]>("incidents", "/incidents", incidents);

@@ -4,14 +4,16 @@ import { useState } from "react";
 import { Download } from "lucide-react";
 
 import { PageHeader } from "@/components/ui/page-header";
-import { StatTileRow, type Stat } from "@/components/ui/stat-tile";
+import { type Stat } from "@/components/ui/stat-tile";
+import { PaymentStats } from "@/components/payments/payment-stats";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 import { TransactionsTable } from "@/components/payments/transactions-table";
 import { GatewayGrid } from "@/components/payments/gateway-grid";
 
-const stats: Stat[] = [
+// Shown only when no real payments exist yet — see PaymentStats.
+const demoStats: Stat[] = [
   { label: "Today's Volume", value: "$4.82M", delta: { text: "+8.4% vs yesterday", positive: true }, tone: "blue", spark: [3.1, 3.4, 3.2, 3.9, 4.1, 4.0, 4.5, 4.82] },
   { label: "Success Rate", value: "97.8%", delta: { text: "+0.6 pts", positive: true }, tone: "green", spark: [96, 97, 97, 98, 97, 98, 98, 97.8] },
   { label: "Failed Payments", value: "19", delta: { text: "+7 vs yesterday", positive: false }, tone: "orange", spark: [8, 10, 9, 12, 14, 16, 18, 19] },
@@ -45,7 +47,7 @@ export default function PaymentsPage() {
         }
       />
 
-      <StatTileRow stats={stats} />
+      <PaymentStats demo={demoStats} />
 
       <div className="flex items-center gap-1 border-b border-border">
         {TABS.map((t) => (

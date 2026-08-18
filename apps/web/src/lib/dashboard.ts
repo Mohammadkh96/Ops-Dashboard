@@ -48,6 +48,26 @@ export type TeamMember = { name: string; role: string; workload: number; initial
 
 export type DashboardSummary = {
   generatedAt: string;
+  /**
+   * True once real payments have been ingested. Everything below is measured
+   * rather than illustrative when it is set, and the API stops sending
+   * placeholder alerts, team members and status rows.
+   *
+   * These fields exist on the API response but were missing from this type,
+   * which is the same drift that once let the live queue arrive with statuses
+   * the UI had no entry for and blank the whole page.
+   */
+  live?: boolean;
+  window?: string | null;
+  byEntity?: { entity: string; count: number; volume: number }[] | null;
+  byPsp?: {
+    psp: string;
+    settled: number;
+    declined: number;
+    successRate: number | null;
+    volume: number;
+  }[] | null;
+  declineReasons?: { reason: string; count: number; amount: number }[] | null;
   health: { score: number; label: string; trend: number };
   today: KpiMetric[];
   performance: PerfMetric[];
@@ -65,6 +85,7 @@ export function formatKpi(m: Pick<KpiMetric, "value" | "unit">) {
 
 export const demoSummary: DashboardSummary = {
   generatedAt: new Date(0).toISOString(),
+  live: false,
   health: { score: 92, label: "Healthy", trend: 3 },
   today: [
     { key: "volume", label: "Total Volume", value: 4.82, unit: "M", change: "+8.4%", positive: true, tone: "blue", spark: [3.1, 3.4, 3.2, 3.9, 4.1, 4.0, 4.5, 4.82] },

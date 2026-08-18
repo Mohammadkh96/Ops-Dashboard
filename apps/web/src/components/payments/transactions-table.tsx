@@ -18,18 +18,27 @@ const money = (t: Transaction) => {
   return `${sign}${t.currency === "USD" ? "$" : ""}${v}${t.currency !== "USD" ? " " + t.currency : ""}`;
 };
 
-export function TransactionsTable({ fixedType }: { fixedType?: "Deposit" | "Withdrawal" } = {}) {
+export function TransactionsTable({ fixedType }: { fixedType?: "Deposit" | "Withdrawal" | "Refund" } = {}) {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
   const [method, setMethod] = useState("");
   const [gateway, setGateway] = useState("");
   const [selected, setSelected] = useState<Transaction | null>(null);
-  const { data: transactions, isLoading } = useTransactions();
+  const { data: transactions, isLoading } = useTransactions(fixedType);
   const { toast } = useToast();
 
   const base = useMemo(
     () => (fixedType ? transactions.filter((t) => t.type === fixedType) : transactions),
     [fixedType, transactions],
+  );
+
+  // Only PSPs that actually appear in the data, alphabetically.
+  const pspOptions = useMemo(
+    () =>
+      [...new Set(base.map((t) => t.gateway).filter(Boolean))]
+        .sort()
+        .map((g) => ({ label: g, value: g })),
+    [base],
   );
 
   const filtered = useMemo(
@@ -78,7 +87,10 @@ export function TransactionsTable({ fixedType }: { fixedType?: "Deposit" | "With
             options: ["approved", "processing", "pending", "review", "declined", "failed", "refunded"].map((s) => ({ label: s[0].toUpperCase() + s.slice(1), value: s })),
           },
           { label: "Method", value: method, onChange: setMethod, options: ["Card", "Crypto", "Bank", "Local"].map((m) => ({ label: m, value: m })) },
-          { label: "PSP", value: gateway, onChange: setGateway, options: ["ForumPay", "LimePay", "Paystrax", "Coinbase", "Stripe", "Nuvei", "Bridge"].map((g) => ({ label: g, value: g })) },
+          // Derived from the rows on screen. The list was hardcoded to seven
+          // names including four PSPs this business does not use, so the filter
+          // offered choices that could never match anything.
+          { label: "PSP", value: gateway, onChange: setGateway, options: pspOptions },
         ]}
       >
         <span className="ml-auto text-xs text-muted">

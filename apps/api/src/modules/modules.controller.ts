@@ -1,4 +1,4 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Query } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 
 import { ModulesService } from './modules.service';
@@ -8,9 +8,16 @@ import { ModulesService } from './modules.service';
 export class ModulesController {
   constructor(private readonly modules: ModulesService) {}
 
+  /** Real payments. `type=deposit|withdrawal|refund` narrows the list. */
   @Get('transactions')
-  transactions() {
-    return this.modules.transactions();
+  transactions(@Query('type') type?: string) {
+    return this.modules.transactions(type);
+  }
+
+  /** Headline figures for the payment pages, same filter. */
+  @Get('payments/stats')
+  paymentStats(@Query('type') type?: string) {
+    return this.modules.paymentStats(type);
   }
 
   @Get('gateways')

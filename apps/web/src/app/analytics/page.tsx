@@ -5,6 +5,9 @@ import { useState } from "react";
 import { PageHeader } from "@/components/ui/page-header";
 import { StatTileRow, type Stat } from "@/components/ui/stat-tile";
 import { cn } from "@/lib/utils";
+import { isDemoMode } from "@/lib/api";
+import { useDashboardSummary } from "@/hooks/use-dashboard";
+import { useGateways } from "@/hooks/use-modules";
 import {
   ApprovalsDeclinesChart,
   GatewayPerformanceChart,
@@ -96,6 +99,43 @@ type Range = (typeof RANGES)[number];
 
 export default function AnalyticsPage() {
   const [range, setRange] = useState<Range>("Daily");
+  const { data: summary } = useDashboardSummary();
+  const { data: liveGateways } = useGateways();
+
+  // Live: every figure is measured, and a panel with no real source is left
+  // out rather than filled with a plausible shape. Country volume needs a
+  // customer-country field Paymaxis does not send, and success-over-time needs
+  // history this has not accumulated yet — so neither is drawn.
+  const live = !isDemoMode && summary.live;
+
+  const liveKpis: Stat[] = live
+    ? [
+        {
+          label: "Success Rate · 24h",
+          value: `${summary.performance.find((m) => m.label === "Success Rate")?.value ?? 0}%`,
+          tone: "blue",
+        },
+        {
+          label: "Settled · 24h",
+          value: String(summary.performance.find((m) => m.label === "Settled")?.value ?? 0),
+          tone: "green",
+        },
+        {
+          label: "Declined · 24h",
+          value: String(summary.performance.find((m) => m.label === "Declined")?.value ?? 0),
+          tone: "orange",
+        },
+        {
+          label: "Operational Health",
+          value: `${summary.health.score}`,
+          tone: "purple",
+        },
+      ]
+    : [];
+
+  const livePspRates: GatewayPoint[] = live
+    ? liveGateways.map((g) => ({ gateway: g.name, rate: g.successRate }))
+    : [];
 
   return (
     <div className="flex flex-col gap-6">
@@ -122,14 +162,22 @@ export default function AnalyticsPage() {
         }
       />
 
-      <StatTileRow stats={kpis} />
+      <StatTileRow stats={live ? liveKpis : kpis} />
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <SuccessRateChart data={successRate} />
-        <ApprovalsDeclinesChart data={approvals} />
-        <GatewayPerformanceChart data={gateways} />
-        <VolumeByCountryChart data={countries} />
+        {live ? null : <SuccessRateChart data={successRate} />}
+        {live ? null : <ApprovalsDeclinesChart data={approvals} />}
+        <GatewayPerformanceChart data={live ? livePspRates : gateways} />
+        {live ? null : <VolumeByCountryChart data={countries} />}
       </div>
+
+      {live ? (
+        <p className="text-xs text-muted">
+          Success-rate history and volume by country are not shown: the first
+          needs more history than has been collected, the second needs a
+          customer country the payment provider does not send.
+        </p>
+      ) : null}
     </div>
   );
 }
