@@ -18,9 +18,9 @@ import {
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { LiveDot } from "@/components/ui/live-dot";
 import { openCommandPalette } from "@/components/command-palette";
 import { MobileNav } from "@/components/shell/mobile-nav";
+import { RangePicker } from "@/components/shell/range-picker";
 import { useAuth } from "@/lib/auth";
 import { useTheme } from "@/lib/theme";
 import {
@@ -68,9 +68,14 @@ export function TopBar() {
         </kbd>
       </button>
 
-      <div className="hidden items-center gap-2 rounded-lg border border-accent-green/20 bg-accent-green-soft px-3 py-1.5 md:flex">
-        <LiveDot tone="green" />
-        <span className="tnum text-xs font-medium text-accent-green">Shift · 3h 12m</span>
+      {/*
+        Was a fixed "Shift · 3h 12m" that never moved — no shift system feeds
+        it. Replaced by the window selector, which belongs here for the same
+        reason: it applies to every screen, and every screen should say which
+        period it is describing.
+      */}
+      <div className="hidden md:flex">
+        <RangePicker />
       </div>
 
       <Separator orientation="vertical" className="h-6" />

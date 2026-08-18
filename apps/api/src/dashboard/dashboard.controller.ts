@@ -1,4 +1,6 @@
 import { Controller, Get, MessageEvent, Query, Sse } from '@nestjs/common';
+
+import { parseRange } from '../common/range';
 import { ApiTags } from '@nestjs/swagger';
 import { Observable } from 'rxjs';
 
@@ -9,9 +11,18 @@ import { DashboardService } from './dashboard.service';
 export class DashboardController {
   constructor(private readonly dashboardService: DashboardService) {}
 
+  /**
+   * `range=1h|24h|7d|30d|90d`, or explicit `from`/`to` ISO timestamps.
+   * Everything in the response — tiles, sparklines, PSP and entity breakdowns,
+   * decline reasons — reflects that window.
+   */
   @Get('summary')
-  getSummary() {
-    return this.dashboardService.getSummary();
+  getSummary(
+    @Query('range') range?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.dashboardService.getSummary(parseRange({ range, from, to }));
   }
 
   /**

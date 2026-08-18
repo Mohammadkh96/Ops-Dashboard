@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { StatTileRow, type Stat } from "@/components/ui/stat-tile";
 import { apiFetch, isDemoMode } from "@/lib/api";
+import { useTimeRange, withRange } from "@/lib/time-range";
 
 export type PaymentStats = {
   window: string;
@@ -41,11 +42,15 @@ function money(n: number, ccy: string) {
  * `demo` supplies the illustrative set for an environment with no data yet.
  */
 export function PaymentStats({ type, demo }: { type?: string; demo: Stat[] }) {
+  const { query: rangeQuery, key: rangeKey, label: rangeLabel } = useTimeRange();
   const query = useQuery({
-    queryKey: ["payment-stats", type ?? "all"],
+    queryKey: ["payment-stats", type ?? "all", rangeKey],
     queryFn: () =>
       apiFetch<PaymentStats | null>(
-        `/payments/stats${type ? `?type=${encodeURIComponent(type)}` : ""}`,
+        withRange(
+          `/payments/stats${type ? `?type=${encodeURIComponent(type)}` : ""}`,
+          rangeQuery,
+        ),
       ),
     enabled: !isDemoMode,
     refetchInterval: 30_000,
@@ -56,9 +61,11 @@ export function PaymentStats({ type, demo }: { type?: string; demo: Stat[] }) {
 
   const noun = type ? type[0].toUpperCase() + type.slice(1) : "Payment";
 
+  // The label names the selected window. It read "· 24h" whatever was
+  // selected, so a 30-day figure was presented as a day's takings.
   const stats: Stat[] = [
     {
-      label: `Settled ${noun}s · 24h`,
+      label: `Settled ${noun}s · ${rangeLabel}`,
       value: money(s.volume, s.currency),
       // No delta: comparing against the previous day needs a previous day, and
       // a percentage against a near-empty window is noise, not information.
@@ -75,7 +82,7 @@ export function PaymentStats({ type, demo }: { type?: string; demo: Stat[] }) {
       tone: "orange",
     },
     {
-      label: s.topPsp ? `Top PSP · ${s.topPsp.psp}` : "Attempts · 24h",
+      label: s.topPsp ? `Top PSP · ${s.topPsp.psp}` : `Attempts · ${rangeLabel}`,
       value: s.topPsp
         ? money(s.topPsp.volume, s.currency)
         : s.count.toLocaleString(),

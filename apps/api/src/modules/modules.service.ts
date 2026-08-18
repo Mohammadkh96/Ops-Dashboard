@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { isFailedState, isSettledState } from '../paymaxis/normalize';
+import type { TimeRange } from '../common/range';
 
 /**
  * Serves the operational module datasets.
@@ -144,6 +145,25 @@ export class ModulesService {
   }
 
   /**
+   * Rows inside a window, preferring when the payment actually happened over
+   * when we heard about it. A callback can arrive minutes after the event, and
+   * filtering on arrival time would put a payment in the wrong day.
+   */
+  private inRange(r: TimeRange) {
+    return {
+      OR: [
+        { occurredAt: { gte: r.from, lte: r.to } },
+        {
+          AND: [
+            { occurredAt: null },
+            { receivedAt: { gte: r.from, lte: r.to } },
+          ],
+        },
+      ],
+    };
+  }
+
+  /**
    * True once any real payment has been ingested.
    *
    * Every fallback in this file is gated on it. Invented rows make an empty
@@ -174,12 +194,13 @@ export class ModulesService {
    * audit trail and wrong for a ledger view: the same payment would appear
    * several times, at different statuses. Collapsed here to its latest state.
    */
-  async transactions(kind?: string) {
+  async transactions(kind?: string, range?: TimeRange) {
     if (!(await this.isLive())) return this.transactionsFallback();
 
     const rows = await this.safe(
       () =>
         this.prisma.paymentEvent.findMany({
+          where: range ? this.inRange(range) : {},
           orderBy: [{ occurredAt: 'desc' }, { receivedAt: 'desc' }],
           take: 400,
           select: {
@@ -233,19 +254,13 @@ export class ModulesService {
    * Volume counts settled money only: an attempted deposit that was declined is
    * not revenue, and averaging it in understates the size of a real one.
    */
-  async paymentStats(kind?: string) {
+  async paymentStats(kind?: string, range?: TimeRange) {
     if (!(await this.isLive())) return null;
-    const since = new Date(Date.now() - 86_400_000);
 
     const rows = await this.safe(
       () =>
         this.prisma.paymentEvent.findMany({
-          where: {
-            OR: [
-              { occurredAt: { gte: since } },
-              { AND: [{ occurredAt: null }, { receivedAt: { gte: since } }] },
-            ],
-          },
+          where: range ? this.inRange(range) : {},
           select: {
             paymentId: true, reference: true, id: true,
             amount: true, currency: true, type: true, state: true,
@@ -291,7 +306,7 @@ export class ModulesService {
     const topPsp = [...byPsp.entries()].sort((a, b) => b[1] - a[1])[0];
 
     return {
-      window: '24h',
+      window: range?.label ?? 'all',
       currency: settled[0]?.currency ?? scoped[0]?.currency ?? '',
       volume: Number(volume.toFixed(2)),
       count: scoped.length,
@@ -305,6 +320,108 @@ export class ModulesService {
         ? Number(((settled.length / decided) * 100).toFixed(1))
         : null,
       topPsp: topPsp ? { psp: topPsp[0], volume: Number(topPsp[1].toFixed(2)) } : null,
+    };
+  }
+
+  /**
+   * Everything known about one payment.
+   *
+   * The row detail panel showed six fields and an invented three-step timeline
+   * whose entries all carried the same timestamp. Far more is already stored —
+   * the provider's whole payload is kept verbatim precisely so nothing is lost
+   * to a mapping gap — including billing address, country, the PSP's own
+   * reference, the on-chain hash and the decline reason.
+   *
+   * The timeline is real: a payment is stored once per state it passes through,
+   * so its history is simply the rows sharing its id, oldest first. That is a
+   * genuine audit trail of when it was created, when it was declined and why.
+   */
+  async transactionDetail(id: string) {
+    const anchor = await this.safe(
+      () => this.prisma.paymentEvent.findUnique({ where: { id } }),
+      null,
+    );
+    if (!anchor) return null;
+
+    const key = anchor.paymentId || anchor.reference;
+    const history = key
+      ? await this.safe(
+          () =>
+            this.prisma.paymentEvent.findMany({
+              where: anchor.paymentId
+                ? { paymentId: anchor.paymentId }
+                : { reference: anchor.reference },
+              orderBy: [{ occurredAt: 'asc' }, { receivedAt: 'asc' }],
+              select: {
+                id: true, state: true, errorCode: true, errorMessage: true,
+                amount: true, occurredAt: true, receivedAt: true, source: true,
+              },
+            }),
+          [],
+        )
+      : [];
+
+    const payload = (anchor.payload ?? {}) as Record<string, unknown>;
+    const billing = (payload.billingAddress ?? {}) as Record<string, unknown>;
+    const str = (v: unknown) => (v === null || v === undefined ? null : String(v));
+
+    return {
+      id: anchor.id,
+      // Identity: three different references, all of which get used when
+      // chasing a payment with a provider or a bank.
+      paymentId: anchor.paymentId,
+      reference: anchor.reference,
+      externalId: anchor.externalId,
+      parentPaymentId: anchor.parentPaymentId,
+      cryptoTxHash: anchor.cryptoTxHash,
+
+      type: anchor.type,
+      state: anchor.state,
+      amount: Math.abs(anchor.amount),
+      currency: anchor.currency,
+      method: this.paymentMethodLabel(payload.paymentMethod),
+      description: str(payload.description),
+
+      customer: anchor.customer,
+      customerEmail: str(
+        (payload.customer as Record<string, unknown>)?.['email'],
+      ),
+      country: str(billing.countryCode ?? billing.country),
+      billingAddress: {
+        country: str(billing.countryCode ?? billing.country),
+        state: str(billing.state),
+        city: str(billing.city),
+        addressLine1: str(billing.addressLine1 ?? billing.address),
+        addressLine2: str(billing.addressLine2),
+        postalCode: str(billing.postalCode ?? billing.zip),
+      },
+
+      entity: anchor.entity,
+      shop: anchor.shop,
+      psp: anchor.psp,
+      terminal: anchor.terminal,
+
+      errorCode: anchor.errorCode,
+      errorMessage: anchor.errorMessage,
+
+      occurredAt: anchor.occurredAt,
+      receivedAt: anchor.receivedAt,
+      source: anchor.source,
+      signatureOk: anchor.signatureOk,
+
+      history: history.map((h) => ({
+        state: h.state,
+        amount: Math.abs(h.amount),
+        errorCode: h.errorCode,
+        errorMessage: h.errorMessage,
+        at: h.occurredAt ?? h.receivedAt,
+        source: h.source,
+      })),
+
+      // The provider's own payload, already stripped of card and identity data
+      // on ingest. Kept available because a field nobody mapped yet is exactly
+      // what someone needs when a payment behaves oddly.
+      raw: payload,
     };
   }
 
@@ -378,17 +495,11 @@ export class ModulesService {
    * Latency and webhook failures are reported as zero because nothing measures
    * them yet; they are not guessed at.
    */
-  async gatewaysLive() {
-    const since = new Date(Date.now() - 86_400_000);
+  async gatewaysLive(range?: TimeRange) {
     const rows = await this.safe(
       () =>
         this.prisma.paymentEvent.findMany({
-          where: {
-            OR: [
-              { occurredAt: { gte: since } },
-              { AND: [{ occurredAt: null }, { receivedAt: { gte: since } }] },
-            ],
-          },
+          where: range ? this.inRange(range) : {},
           select: {
             psp: true, state: true, amount: true,
             occurredAt: true, receivedAt: true,
@@ -408,9 +519,11 @@ export class ModulesService {
         const successRate = decided
           ? Number(((ok.length / decided) * 100).toFixed(1))
           : 0;
-        // Eight 3-hour buckets of success rate, so the trend is visible.
-        const size = 86_400_000 / 8;
-        const start = since.getTime();
+        // Eight buckets across the window, so the trend is visible whatever
+        // period was asked for.
+        const span = range ? range.to.getTime() - range.from.getTime() : 86_400_000;
+        const size = span / 8;
+        const start = range ? range.from.getTime() : Date.now() - span;
         const spark = Array.from({ length: 8 }, (_, b) => {
           const inBucket = scoped.filter((r) => {
             const t = (r.occurredAt ?? r.receivedAt).getTime();
@@ -441,8 +554,8 @@ export class ModulesService {
       .sort((a, b) => b.todayVolume - a.todayVolume);
   }
 
-  async gateways() {
-    if (await this.isLive()) return this.gatewaysLive();
+  async gateways(range?: TimeRange) {
+    if (await this.isLive()) return this.gatewaysLive(range);
     const fallback = [
       {
         id: 'g1',

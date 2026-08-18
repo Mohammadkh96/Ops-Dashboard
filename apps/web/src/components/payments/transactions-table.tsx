@@ -6,6 +6,7 @@ import { Copy } from "lucide-react";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { FilterBar } from "@/components/ui/filter-bar";
 import { StatusBadge, RiskBadge } from "@/components/ui/status-badge";
+import { TransactionDetail } from "@/components/payments/transaction-detail";
 import { Drawer } from "@/components/ui/drawer";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/toast";
@@ -161,57 +162,7 @@ export function TransactionsTable({ fixedType }: { fixedType?: "Deposit" | "With
           ) : null
         }
       >
-        {selected ? (
-          <div className="flex flex-col gap-5">
-            <div className="flex items-center justify-between rounded-xl border border-border bg-card p-4">
-              <div className="flex flex-col">
-                <span className="text-xs text-muted">Amount</span>
-                <span className="tnum text-xl font-semibold">{money(selected)}</span>
-              </div>
-              <StatusBadge status={selected.status} />
-            </div>
-
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
-              {[
-                ["Client", selected.client],
-                ["Country", selected.country],
-                ["Method", selected.method],
-                ["Currency", selected.currency],
-                ["Gateway", selected.gateway],
-                ["Time", selected.createdAt],
-              ].map(([k, v]) => (
-                <div key={k} className="flex flex-col gap-0.5">
-                  <dt className="text-xs text-muted">{k}</dt>
-                  <dd>{v}</dd>
-                </div>
-              ))}
-              <div className="flex flex-col gap-0.5">
-                <dt className="text-xs text-muted">Risk</dt>
-                <dd><RiskBadge level={selected.risk} /></dd>
-              </div>
-            </dl>
-
-            <div className="flex flex-col gap-3">
-              <span className="text-xs font-medium uppercase tracking-wider text-muted">Timeline</span>
-              <ol className="flex flex-col gap-3 border-l border-border pl-4">
-                {[
-                  ["Created", selected.createdAt],
-                  ["Risk scored", selected.createdAt],
-                  ["Gateway response", selected.createdAt],
-                  ["Webhook received", selected.createdAt],
-                ].map(([label, time], i) => (
-                  <li key={i} className="relative text-sm">
-                    <span className="absolute -left-[21px] top-1.5 size-2 rounded-full bg-accent-blue" />
-                    <div className="flex justify-between">
-                      <span>{label}</span>
-                      <span className="tnum text-xs text-muted">{time}</span>
-                    </div>
-                  </li>
-                ))}
-              </ol>
-            </div>
-          </div>
-        ) : null}
+        {selected ? <TransactionDetail row={selected} /> : null}
       </Drawer>
     </div>
   );

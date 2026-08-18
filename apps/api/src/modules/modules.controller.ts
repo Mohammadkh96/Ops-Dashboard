@@ -1,28 +1,52 @@
-import { Controller, Get, Query } from '@nestjs/common';
+import { Controller, Get, Param, Query } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 
 import { ModulesService } from './modules.service';
+import { parseRange } from '../common/range';
 
 @ApiTags('modules')
 @Controller()
 export class ModulesController {
   constructor(private readonly modules: ModulesService) {}
 
-  /** Real payments. `type=deposit|withdrawal|refund` narrows the list. */
+  /**
+   * Real payments. `type=deposit|withdrawal|refund` narrows the list;
+   * `range=1h|24h|7d|30d|90d` or `from`/`to` narrows the window.
+   */
   @Get('transactions')
-  transactions(@Query('type') type?: string) {
-    return this.modules.transactions(type);
+  transactions(
+    @Query('type') type?: string,
+    @Query('range') range?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.modules.transactions(type, parseRange({ range, from, to }));
   }
 
-  /** Headline figures for the payment pages, same filter. */
+  /** Everything stored about one payment, including its real state history. */
+  @Get('transactions/:id')
+  transaction(@Param('id') id: string) {
+    return this.modules.transactionDetail(id);
+  }
+
+  /** Headline figures for the payment pages, same filters. */
   @Get('payments/stats')
-  paymentStats(@Query('type') type?: string) {
-    return this.modules.paymentStats(type);
+  paymentStats(
+    @Query('type') type?: string,
+    @Query('range') range?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.modules.paymentStats(type, parseRange({ range, from, to }));
   }
 
   @Get('gateways')
-  gateways() {
-    return this.modules.gateways();
+  gateways(
+    @Query('range') range?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.modules.gateways(parseRange({ range, from, to }));
   }
 
   @Get('compliance/kyc')

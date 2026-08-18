@@ -2,6 +2,7 @@ import { Injectable, MessageEvent } from '@nestjs/common';
 import { filter, interval, map, merge, Observable } from 'rxjs';
 
 import { PrismaService } from '../prisma/prisma.service';
+import { parseRange, precedingRange, type TimeRange } from '../common/range';
 import { LiveBus } from '../live/live-bus.service';
 import type { LiveTick } from '../live/live.types';
 import {
@@ -34,11 +35,14 @@ export class DashboardService {
    * revenue, and counting it would overstate the business. Declines are still
    * measured, in the success rate.
    */
-  private async liveMetrics() {
-    const dayMs = 86_400_000;
-    const now = Date.now();
-    const windowStart = new Date(now - dayMs);
-    const priorStart = new Date(now - 2 * dayMs);
+  private async liveMetrics(range: TimeRange) {
+    // The window is the caller's, not a fixed day. Bucket size and the
+    // comparison period both follow from it, so a 7-day view compares against
+    // the previous 7 days rather than against yesterday.
+    const dayMs = range.spanMs;
+    const now = range.to.getTime();
+    const windowStart = range.from;
+    const priorStart = precedingRange(range).from;
 
     const rows = await this.safeQuery(
       () =>
@@ -241,7 +245,7 @@ export class DashboardService {
       .sort((a, b) => b.volume - a.volume);
 
     return {
-      window: '24h',
+      window: range.label,
       events: current.length,
       declineReasons,
       byPsp,
@@ -298,7 +302,7 @@ export class DashboardService {
     };
   }
 
-  async getSummary() {
+  async getSummary(range: TimeRange) {
     const [
       pendingKyc,
       escalatedTickets,
@@ -332,7 +336,7 @@ export class DashboardService {
       this.safeCount(() =>
         this.prisma.shift.count({ where: { status: 'ACTIVE' } }),
       ),
-      this.liveMetrics(),
+      this.liveMetrics(range),
     ]);
 
     // Real events win over the defaults. `live` tells the UI these numbers are

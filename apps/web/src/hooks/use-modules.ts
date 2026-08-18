@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { apiFetch, isDemoMode } from "@/lib/api";
+import { useTimeRange, withRange } from "@/lib/time-range";
 import {
   transactions,
   gateways,
@@ -38,10 +39,15 @@ function useApi<T>(
   key: string,
   path: string,
   fallback: T,
+  { ranged = false }: { ranged?: boolean } = {},
 ): { data: T; isDemo: boolean; isError: boolean; isLoading: boolean } {
+  // Only endpoints whose data is time-bounded take the window. Sending it to a
+  // user list or a report template would key the cache on something that
+  // cannot change the answer.
+  const { query: rangeQuery, key: rangeKey } = useTimeRange();
   const query = useQuery<T>({
-    queryKey: ["module", key],
-    queryFn: () => apiFetch<T>(path),
+    queryKey: ["module", key, ranged ? rangeKey : "all"],
+    queryFn: () => apiFetch<T>(ranged ? withRange(path, rangeQuery) : path),
     enabled: !isDemoMode,
     refetchInterval: 30_000,
   });
@@ -64,8 +70,10 @@ export const useTransactions = (type?: "Deposit" | "Withdrawal" | "Refund") =>
     `transactions:${type ?? "all"}`,
     `/transactions${type ? `?type=${type.toLowerCase()}` : ""}`,
     type ? transactions.filter((t) => t.type === type) : transactions,
+    { ranged: true },
   );
-export const useGateways = () => useApi<Gateway[]>("gateways", "/gateways", gateways);
+export const useGateways = () =>
+  useApi<Gateway[]>("gateways", "/gateways", gateways, { ranged: true });
 export const useKycCases = () => useApi<KycCase[]>("kyc", "/compliance/kyc", kycCases);
 export const useIncidents = () => useApi<Incident[]>("incidents", "/incidents", incidents);
 
