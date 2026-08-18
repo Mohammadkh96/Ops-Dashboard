@@ -51,7 +51,15 @@ export function DashboardView() {
         : "Live · connecting…";
 
   // Live items stream in ahead of the seeded queue; cap the visible rows.
-  const queueRows = [...liveItems, ...data.liveQueue].slice(0, 6);
+  //
+  // Deduped by id, keeping the streamed copy: both lists are built from the
+  // same payments, so a payment already in the summary's queue arrived again
+  // through the feed and was rendered twice — the same id, sometimes under two
+  // different statuses, which reads as a duplicate or a contradiction.
+  const seenRows = new Set<string>();
+  const queueRows = [...liveItems, ...data.liveQueue]
+    .filter((r) => !seenRows.has(r.id) && seenRows.add(r.id))
+    .slice(0, 6);
   const feedOnline = connected && !isError;
 
   return (

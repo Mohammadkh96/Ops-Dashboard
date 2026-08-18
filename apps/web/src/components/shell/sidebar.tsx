@@ -6,6 +6,7 @@ import { motion } from "framer-motion";
 import { Radar } from "lucide-react";
 
 import { primaryNav, secondaryNav, type NavItem } from "@/config/nav";
+import { useDashboardSummary } from "@/hooks/use-dashboard";
 import { LiveDot } from "@/components/ui/live-dot";
 import { cn } from "@/lib/utils";
 
@@ -47,6 +48,40 @@ function NavLink({ item, active }: { item: NavItem; active: boolean }) {
   );
 }
 
+/**
+ * Reports the components the API actually observes.
+ *
+ * This was hardcoded to "All systems operational · API · CRM · MT5 online" —
+ * green regardless of anything, naming two systems nothing here monitors. A
+ * status line that cannot say "down" is worse than no status line, because it
+ * is read as a check that was made.
+ */
+function SystemStatusFooter() {
+  const { data } = useDashboardSummary();
+  const items = data.systemStatus ?? [];
+  const down = items.filter((s) => s.status === "down");
+  const degraded = items.filter((s) => s.status === "degraded");
+
+  const tone = down.length ? "red" : degraded.length ? "orange" : "green";
+  const headline = down.length
+    ? `${down.length} system${down.length > 1 ? "s" : ""} down`
+    : degraded.length
+      ? `${degraded.length} system${degraded.length > 1 ? "s" : ""} degraded`
+      : "All systems operational";
+
+  return (
+    <div className="flex items-center gap-2.5 rounded-lg border border-border bg-card/50 px-3 py-2.5">
+      <LiveDot tone={tone} />
+      <div className="flex flex-col leading-tight">
+        <span className="text-xs font-medium text-foreground">{headline}</span>
+        <span className="text-[11px] text-muted">
+          {items.length ? items.map((s) => s.name).join(" · ") : "No components reporting"}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export function Sidebar() {
   const pathname = usePathname();
 
@@ -80,13 +115,7 @@ export function Sidebar() {
       </nav>
 
       <div className="border-t border-border p-3">
-        <div className="flex items-center gap-2.5 rounded-lg border border-border bg-card/50 px-3 py-2.5">
-          <LiveDot tone="green" />
-          <div className="flex flex-col leading-tight">
-            <span className="text-xs font-medium text-foreground">All systems operational</span>
-            <span className="text-[11px] text-muted">API · CRM · MT5 online</span>
-          </div>
-        </div>
+        <SystemStatusFooter />
       </div>
     </aside>
   );

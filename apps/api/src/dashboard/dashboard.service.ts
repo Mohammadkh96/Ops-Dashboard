@@ -265,14 +265,17 @@ export class DashboardService {
         ),
         tile('net', 'Net Flow', dep - wdr, depPrev - wdrPrev, 'purple', 'net'),
       ],
+      // `unit` so the UI can tell a rate from a tally. Without it the counts
+      // rendered as percentages — "207.0%" settled, on a full progress bar.
       performance: [
-        { label: 'Success Rate', value: successRate },
+        { label: 'Success Rate', value: successRate, unit: '%' },
         {
           label: 'Decline Rate',
           value: Number((100 - successRate).toFixed(1)),
+          unit: '%',
         },
-        { label: 'Settled', value: settled },
-        { label: 'Declined', value: failed },
+        { label: 'Settled', value: settled, unit: 'count' },
+        { label: 'Declined', value: failed, unit: 'count' },
       ],
       failedPayments: failed,
       byEntity,

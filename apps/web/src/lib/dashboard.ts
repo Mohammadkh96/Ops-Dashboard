@@ -29,7 +29,10 @@ export type KpiMetric = {
   spark: number[];
 };
 
-export type PerfMetric = { label: string; value: number };
+// `unit` distinguishes a percentage from a count. Without it every metric was
+// rendered as "N%" with a progress bar, so a settled-payment count of 207 read
+// as "207.0%" on a bar pinned at full.
+export type PerfMetric = { label: string; value: number; unit?: "%" | "count" };
 export type PendingItem = { label: string; value: number; href: string; tone: PendingTone };
 export type AlertItem = { id: string; severity: Severity; title: string; detail: string; time: string };
 // latency is null for components whose health is known but whose response time

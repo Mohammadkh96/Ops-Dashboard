@@ -76,19 +76,31 @@ export function PerformanceMetrics({ metrics }: { metrics: PerfMetric[] }) {
           Today&apos;s Performance
         </span>
         <div className="flex flex-col gap-4">
-          {metrics.map((m) => (
-            <div key={m.label} className="flex flex-col gap-1.5">
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground">{m.label}</span>
-                <AnimatedNumber
-                  value={m.value}
-                  format={(n) => `${n.toFixed(1)}%`}
-                  className="tnum font-medium text-foreground"
-                />
+          {metrics.map((m) => {
+            // Counts are not percentages. Everything here used to render as
+            // "N%" over a progress bar, so 207 settled payments displayed as
+            // "207.0%" on a bar sitting at full — a number that cannot be read
+            // as anything true.
+            const isCount = m.unit === "count";
+            return (
+              <div key={m.label} className="flex flex-col gap-1.5">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground">{m.label}</span>
+                  <AnimatedNumber
+                    value={m.value}
+                    format={(n) =>
+                      isCount ? n.toLocaleString(undefined, { maximumFractionDigits: 0 }) : `${n.toFixed(1)}%`
+                    }
+                    className="tnum font-medium text-foreground"
+                  />
+                </div>
+                {/* A bar needs a 0–100 scale to mean anything. */}
+                {isCount ? null : (
+                  <Progress value={m.value} indicatorClassName={perfTone(m.label)} />
+                )}
               </div>
-              <Progress value={m.value} indicatorClassName={perfTone(m.label)} />
-            </div>
-          ))}
+            );
+          })}
         </div>
       </CardContent>
     </Card>
