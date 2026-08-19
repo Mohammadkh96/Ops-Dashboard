@@ -1,6 +1,8 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Headers, Post, Res } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
+import type { Response } from 'express';
 
+import { allowedOrigins, configuredOrigins, isOriginAllowed } from '../common/cors';
 import { PrismaService } from '../prisma/prisma.service';
 
 @ApiTags('health')
@@ -23,5 +25,57 @@ export class HealthController {
       timestamp: new Date().toISOString(),
       database,
     };
+  }
+
+  /**
+   * What the API sees when this browser calls it.
+   *
+   * A blocked cross-origin request is invisible from both ends: the browser
+   * reports "Failed to fetch" with no detail, and the server log shows nothing
+   * at all if the preflight never matched a route. This endpoint answers the
+   * three questions that actually resolve it — which origin arrived, whether the
+   * running configuration admits it, and whether the environment the API needs
+   * is present — in one response the dashboard can render as plain sentences.
+   *
+   * Readable from any origin on purpose. A diagnostic subject to the very
+   * misconfiguration it diagnoses reports nothing in exactly the case it is
+   * needed — the browser discards the response before the page can read the
+   * verdict. Nothing here is confidential: booleans for environment variables,
+   * never their values, and an allow-list that is visible in the response
+   * headers of every other route anyway. It stays unauthenticated by
+   * necessity, since it has to work before sign-in.
+   */
+  @Get('connectivity')
+  connectivity(
+    @Res({ passthrough: true }) res: Response,
+    @Headers('origin') origin?: string,
+  ) {
+    if (!res.getHeader('Access-Control-Allow-Origin')) {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    }
+    const allowed = allowedOrigins();
+    return {
+      // Absent when the URL is opened directly in a tab rather than fetched.
+      origin: origin ?? null,
+      originAllowed: origin ? isOriginAllowed(origin, allowed) : null,
+      allowedOrigins: allowed,
+      webOriginConfigured: configuredOrigins().length > 0,
+      env: {
+        DATABASE_URL: Boolean(process.env.DATABASE_URL),
+        JWT_SECRET: Boolean(process.env.JWT_SECRET),
+        PAYMAXIS_SHOPS: Boolean(process.env.PAYMAXIS_SHOPS),
+      },
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Reachable only if a preflight succeeded, which a plain GET never proves —
+   * a POST carrying a JSON content type is what the sign-in request actually
+   * sends, and it is the step that fails when OPTIONS is misrouted.
+   */
+  @Post('connectivity')
+  connectivityPreflight(@Headers('origin') origin?: string) {
+    return { preflight: 'ok', origin: origin ?? null };
   }
 }

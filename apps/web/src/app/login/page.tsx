@@ -6,6 +6,7 @@ import { Radar, Loader2, ShieldCheck, Activity, Zap } from "lucide-react";
 import { motion } from "framer-motion";
 
 import { Button } from "@/components/ui/button";
+import { ConnectionCheck } from "@/components/login/connection-check";
 import { LiveDot } from "@/components/ui/live-dot";
 import { AnimatedNumber } from "@/components/ui/animated-number";
 import { useAuth } from "@/lib/auth";
@@ -28,7 +29,7 @@ const highlights = [
  */
 function describeSignInError(err: unknown): string {
   if (err instanceof TypeError) {
-    return `Could not reach the API at ${API_URL || "(not configured)"}. It is usually one of: WEB_ORIGIN on the API does not list this site's address, NEXT_PUBLIC_API_URL is wrong, or the API is down. Check the browser console for the exact CORS message.`;
+    return `Could not reach the API at ${API_URL || "(not configured)"}. Run the connection check below — it names which step failed and what to change.`;
   }
   return err instanceof Error ? err.message : "Sign in failed";
 }
@@ -212,6 +213,12 @@ export default function LoginPage() {
             who opened the URL. Useful on a standalone preview with no real data
             behind it; indefensible in front of payment records.
           */}
+          {/*
+            Shown once a sign-in has failed, rather than always: on a working
+            deployment it is noise, and on a broken one it is the whole answer.
+          */}
+          {!isDemoMode && error ? <ConnectionCheck /> : null}
+
           {isDemoMode ? (
             <p className="mt-5 rounded-lg border border-border bg-card/40 px-3 py-2.5 text-center text-[11px] leading-relaxed text-muted">
               Demo login: <span className="text-muted-foreground">mohammad@tradin.com</span> /

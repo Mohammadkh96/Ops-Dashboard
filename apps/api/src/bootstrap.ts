@@ -4,6 +4,7 @@ import type { ExpressAdapter } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
 import { AppModule } from './app.module';
+import { allowedOrigins, configuredOrigins, isOriginAllowed } from './common/cors';
 
 /**
  * Builds and configures the application without starting a listener.
@@ -28,21 +29,16 @@ export async function createApp(
   // every call it makes is cross-origin. WEB_ORIGIN accepts a comma-separated
   // list because there is a production domain AND a distinct preview URL per
   // deployment; a single value silently breaks every preview with a CORS error.
-  //
-  // A leading "*" matches by suffix, which allows an entry to be scoped to one
-  // Vercel team rather than the whole platform. Preview URLs are shaped
-  // "<project>-<hash>-<team>.vercel.app", so "*-yourteam.vercel.app" admits
-  // your own previews while "*.vercel.app" admits everybody's — and with
-  // credentials enabled that is every site on the platform allowed to make
-  // credentialed requests to this API. Exact origins remain the right default;
-  // the wildcard exists so the safer narrow form is expressible at all.
-  const allowed = (process.env.WEB_ORIGIN ?? 'http://localhost:3000')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  const originAllowed = (origin: string) =>
-    allowed.some((a) => (a.startsWith('*') ? origin.endsWith(a.slice(1)) : a === origin));
+  const allowed = allowedOrigins();
+  if (!configuredOrigins().length) {
+    // Said at boot, not on the first refusal, because the refusal is what you
+    // are trying to explain and by then you are reading the browser console
+    // rather than the server log.
+    Logger.warn(
+      `WEB_ORIGIN is not set — falling back to ${allowed.join(', ')}. Set it to the dashboard's exact origin.`,
+      'Bootstrap',
+    );
+  }
 
   app.enableCors({
     origin: (
@@ -52,7 +48,7 @@ export async function createApp(
       // No Origin header: curl, health checks and server-to-server callers,
       // which CORS is not designed to police.
       if (!origin) return cb(null, true);
-      const ok = originAllowed(origin);
+      const ok = isOriginAllowed(origin, allowed);
       // A refusal is otherwise invisible from the server side: the browser
       // reports only "No Access-Control-Allow-Origin", and the origin it
       // actually sent is the one thing needed to fix the configuration.
@@ -64,7 +60,11 @@ export async function createApp(
       }
       cb(null, ok);
     },
-    credentials: true,
+    // The dashboard authenticates with a bearer token it holds itself; it never
+    // sends a cookie, so nothing here needs credentialed requests. Leaving them
+    // on would mean any origin the list admits — including a whole wildcard —
+    // could make requests carrying the browser's ambient credentials.
+    credentials: false,
   });
 
   app.setGlobalPrefix('api');
