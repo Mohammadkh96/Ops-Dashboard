@@ -7,9 +7,11 @@ import {
   Headers,
   Post,
   UnauthorizedException,
+  UseGuards,
 } from '@nestjs/common';
-import { ApiExcludeEndpoint, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiExcludeEndpoint, ApiTags } from '@nestjs/swagger';
 
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PaymaxisService } from './paymaxis.service';
 
 /** Constant-time compare so a wrong secret cannot be discovered byte by byte. */
@@ -26,10 +28,43 @@ function secretMatches(presented: string, expected: string): boolean {
 export class PaymaxisController {
   constructor(private readonly paymaxis: PaymaxisService) {}
 
-  /** Config and watermark state. Never exposes API keys. */
+  /**
+   * Config and watermark state. Never exposes API keys.
+   *
+   * Behind the guard: it reports shop ids, every terminal in use and the number
+   * of payments each has taken, which is commercial information even though it
+   * is not a credential. It was reachable unauthenticated, which was an
+   * oversight rather than a decision — nothing needs it before sign-in.
+   */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
   @Get('status')
   status() {
     return this.paymaxis.status();
+  }
+
+  /** How fresh the data is, without triggering a pull. */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Get('freshness')
+  freshness() {
+    return this.paymaxis.freshness();
+  }
+
+  /**
+   * Pulls anything new, if a pull is due, and reports freshness either way.
+   *
+   * Called by the dashboard itself while a tab is open — the only scheduler that
+   * exists on a serverless host between the once-a-day cron runs. Behind the JWT
+   * guard because it spends outbound calls against the live Paymaxis keys, and
+   * rate limited in the service so an open tab per desk does not become a
+   * request per desk.
+   */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Post('refresh')
+  refresh() {
+    return this.paymaxis.refresh();
   }
 
   /**

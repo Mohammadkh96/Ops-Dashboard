@@ -21,6 +21,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { openCommandPalette } from "@/components/command-palette";
 import { MobileNav } from "@/components/shell/mobile-nav";
 import { RangePicker } from "@/components/shell/range-picker";
+import { SyncStatus } from "@/components/shell/sync-status";
 import { useAuth } from "@/lib/auth";
 import { useTheme } from "@/lib/theme";
 import {
@@ -76,6 +77,12 @@ export function TopBar() {
       */}
       <div className="hidden md:flex">
         <RangePicker />
+      </div>
+
+      {/* Beside the window selector on purpose: together they say which period
+          is on screen and how current it is. */}
+      <div className="hidden lg:flex">
+        <SyncStatus />
       </div>
 
       <Separator orientation="vertical" className="h-6" />

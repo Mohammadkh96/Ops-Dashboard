@@ -47,6 +47,46 @@ function errText(e: unknown): string {
  */
 const PAYMAXIS_DEFAULT_BASE_URL = 'https://app.paymaxis.com';
 
+/**
+ * Smallest gap between syncs triggered by an open dashboard.
+ *
+ * Every viewer asking for fresh data would otherwise mean one upstream call per
+ * viewer per page load, against a live payments API. A minute is well inside
+ * "current" for an operations screen and bounds the request rate no matter how
+ * many people are watching.
+ */
+const REFRESH_MIN_SECONDS = 60;
+
+/** Watermark row holding when a sync was last attempted, as opposed to how far
+ * each shop has been read. Shares the table so this needs no migration. */
+const LAST_RUN_KEY = 'paymaxis:lastRun';
+
+/**
+ * When a sync last completed without any shop reporting an error.
+ *
+ * Kept apart from the attempt time because they diverge in the case that
+ * matters: a rejected key or an unreachable host means every attempt "runs" and
+ * fetches nothing, so an indicator built on attempts would report "synced
+ * seconds ago" over data that stopped arriving hours earlier. That is the stale
+ * figure presented as current that the whole freshness display exists to
+ * prevent.
+ */
+const LAST_OK_KEY = 'paymaxis:lastOk';
+
+/** The last error text, so the dashboard can say what is wrong rather than
+ * only that something is. Empty string means the last run was clean. */
+const LAST_ERROR_KEY = 'paymaxis:lastError';
+
+export type RefreshStatus = {
+  /** Whether this call actually reached Paymaxis, or was inside the rate limit. */
+  ran: boolean;
+  lastRunAt: string | null;
+  /** The age that matters: when data last actually arrived. */
+  lastOkAt: string | null;
+  configured: boolean;
+  error: string | null;
+};
+
 export type ShopConfig = { shopId: string; apiKey: string };
 
 export type SyncResult = {
@@ -128,6 +168,108 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
 
   onModuleDestroy() {
     if (this.timer) clearInterval(this.timer);
+  }
+
+  /**
+   * A sync driven by someone having the dashboard open.
+   *
+   * On Vercel there is no process between requests, so an in-process timer dies
+   * the moment the invocation that created it returns, and the daily cron a
+   * Hobby plan allows leaves the screen up to 24 hours out of date. The only
+   * thing reliably running is a browser with the dashboard in it, so that is
+   * what drives the poll — which also means data is freshest exactly when
+   * somebody is looking at it.
+   *
+   * Rate limited through the database rather than a field on this instance:
+   * serverless invocations do not share memory, so an in-process counter would
+   * permit one call per cold start per viewer. The timestamp is written before
+   * the sync rather than after, so two invocations racing on the same tick
+   * cannot both decide they are the one to run.
+   */
+  async refresh(): Promise<RefreshStatus & { results?: SyncResult[] }> {
+    if (!this.shops.length) {
+      return {
+        ran: false,
+        lastRunAt: null,
+        lastOkAt: null,
+        configured: false,
+        error: null,
+      };
+    }
+
+    const marks = await this.marks();
+    const lastRunAt = marks.get(LAST_RUN_KEY) ?? null;
+    const lastOkAt = marks.get(LAST_OK_KEY) ?? null;
+    const ageMs = lastRunAt ? Date.now() - Date.parse(lastRunAt) : Infinity;
+    if (ageMs < REFRESH_MIN_SECONDS * 1000) {
+      return {
+        ran: false,
+        lastRunAt,
+        lastOkAt,
+        configured: true,
+        error: marks.get(LAST_ERROR_KEY) ?? null,
+      };
+    }
+
+    const now = new Date().toISOString();
+    // Written before syncing rather than after, so two invocations racing on the
+    // same tick cannot both decide they are the one to run. A database that
+    // cannot be written to means no rate limit at all, which is not a reason to
+    // start hammering a payments API — so a failed claim declines the run.
+    await this.mark(LAST_RUN_KEY, now);
+
+    const results = await this.syncAll();
+    const failure = results.find((r) => r.error)?.error ?? null;
+    if (failure) {
+      await this.mark(LAST_ERROR_KEY, failure.slice(0, 500));
+    } else {
+      await this.mark(LAST_OK_KEY, now);
+      await this.mark(LAST_ERROR_KEY, '');
+    }
+
+    return {
+      ran: true,
+      lastRunAt: now,
+      lastOkAt: failure ? lastOkAt : now,
+      configured: true,
+      error: failure,
+      results,
+    };
+  }
+
+  /** Freshness without triggering anything, for callers that only want to know. */
+  async freshness(): Promise<RefreshStatus> {
+    const marks = await this.marks();
+    return {
+      ran: false,
+      lastRunAt: marks.get(LAST_RUN_KEY) ?? null,
+      lastOkAt: marks.get(LAST_OK_KEY) ?? null,
+      configured: this.shops.length > 0,
+      error: marks.get(LAST_ERROR_KEY) || null,
+    };
+  }
+
+  private async marks(): Promise<Map<string, string>> {
+    const rows = await this.prisma.pollWatermark
+      .findMany({
+        where: { key: { in: [LAST_RUN_KEY, LAST_OK_KEY, LAST_ERROR_KEY] } },
+        select: { key: true, since: true },
+      })
+      .catch(() => []);
+    return new Map(rows.map((r): [string, string] => [r.key, r.since]));
+  }
+
+  private async mark(key: string, value: string): Promise<void> {
+    await this.prisma.pollWatermark
+      .upsert({
+        where: { key },
+        create: { key, since: value },
+        update: { since: value },
+      })
+      .catch((e: unknown) => {
+        this.log.warn(`Could not write ${key}: ${errText(e)}`);
+        return null;
+      });
   }
 
   async syncAll(): Promise<SyncResult[]> {
@@ -386,6 +528,9 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
       schedule: this.serverless ? 'cron' : 'interval',
       baseUrl: process.env.PAYMAXIS_BASE_URL ?? PAYMAXIS_DEFAULT_BASE_URL,
       pollSeconds: Number(process.env.PAYMAXIS_POLL_SECONDS ?? 60),
+      lastRunAt: bySkey.get(LAST_RUN_KEY) ?? null,
+      lastOkAt: bySkey.get(LAST_OK_KEY) ?? null,
+      lastError: bySkey.get(LAST_ERROR_KEY) || null,
       // Shop ids only — never the keys.
       shops: this.shops.map((s) => ({
         shopId: s.shopId,
