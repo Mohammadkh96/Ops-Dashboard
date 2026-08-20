@@ -17,6 +17,35 @@ const FAILED = /declin|cancel|fail|reject|expire|error|void|chargeback/i;
 export const isSettledState = (state: string) => SETTLED.test(state ?? '');
 export const isFailedState = (state: string) => FAILED.test(state ?? '');
 
+/**
+ * The provider's own name for a value, written the way Paymaxis writes it.
+ *
+ * Used for both payment states and payment methods, which had the same defect
+ * for the same reason.
+ *
+ * The dashboard collapses states into four colours — approved, declined,
+ * pending, processing — which is right for scanning a list and wrong for
+ * reading a row. AWAITING_WEBHOOK, CHECKOUT and RECONCILIATION all landed on
+ * "Pending", so a payment waiting on a callback from the PSP looked identical
+ * to one the customer had not finished paying for. Those need different
+ * actions from whoever is on the desk.
+ *
+ * Only shapes what is already there: underscores become spaces and SHOUTING
+ * becomes Title Case, but a value the provider already wrote for humans is
+ * passed through untouched. Nothing is renamed or mapped, so a state Paymaxis
+ * adds tomorrow shows up under its real name rather than as "Unknown".
+ */
+export function providerLabel(value: string | null | undefined): string | null {
+  const raw = (value ?? '').trim();
+  if (!raw) return null;
+  const spaced = raw.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
+  if (/[a-z]/.test(spaced)) return spaced;
+  return spaced
+    .split(' ')
+    .map((w) => w.charAt(0) + w.slice(1).toLowerCase())
+    .join(' ');
+}
+
 /** Paymaxis shop -> jurisdiction. Each shop is its own merchant account. */
 const DEFAULT_SHOP_ENTITIES: Record<string, string> = {
   '5141': 'Mauritius',
@@ -355,6 +384,7 @@ export type QueueItemSource = Pick<
   | 'amount'
   | 'currency'
   | 'settled'
+  | 'state'
 >;
 
 // Annotated rather than inferred: the status ternary infers as `string` on its
@@ -375,5 +405,6 @@ export function toQueueItem(p: QueueItemSource): LiveTick['queueItem'] {
         : p.settled === false
           ? 'failed'
           : 'processing',
+    stateLabel: providerLabel(p.state),
   };
 }

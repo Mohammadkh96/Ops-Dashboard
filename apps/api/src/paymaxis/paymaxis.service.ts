@@ -57,6 +57,17 @@ const PAYMAXIS_DEFAULT_BASE_URL = 'https://app.paymaxis.com';
  */
 const REFRESH_MIN_SECONDS = 60;
 
+/**
+ * Floor for a refresh somebody asked for by pressing the button.
+ *
+ * Someone pressing Refresh has a reason — they are watching a payment move, or
+ * chasing one a customer is on the phone about — and declining silently because
+ * an automatic poll happened forty seconds ago makes the button look broken.
+ * Still floored, so holding the button down cannot turn into a request per
+ * click against a live payments API.
+ */
+const FORCED_REFRESH_MIN_SECONDS = 10;
+
 /** Watermark row holding when a sync was last attempted, as opposed to how far
  * each shop has been read. Shares the table so this needs no migration. */
 const LAST_RUN_KEY = 'paymaxis:lastRun';
@@ -186,7 +197,9 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
    * the sync rather than after, so two invocations racing on the same tick
    * cannot both decide they are the one to run.
    */
-  async refresh(): Promise<RefreshStatus & { results?: SyncResult[] }> {
+  async refresh(
+    opts: { force?: boolean } = {},
+  ): Promise<RefreshStatus & { results?: SyncResult[] }> {
     if (!this.shops.length) {
       return {
         ran: false,
@@ -201,7 +214,10 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
     const lastRunAt = marks.get(LAST_RUN_KEY) ?? null;
     const lastOkAt = marks.get(LAST_OK_KEY) ?? null;
     const ageMs = lastRunAt ? Date.now() - Date.parse(lastRunAt) : Infinity;
-    if (ageMs < REFRESH_MIN_SECONDS * 1000) {
+    const floor = opts.force
+      ? FORCED_REFRESH_MIN_SECONDS
+      : REFRESH_MIN_SECONDS;
+    if (ageMs < floor * 1000) {
       return {
         ran: false,
         lastRunAt,

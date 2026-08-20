@@ -43,7 +43,16 @@ export type SystemStatusItem = {
   latency: string | null;
 };
 export type VolumePoint = { time: string; deposits: number; withdrawals: number };
-export type QueueItem = { id: string; type: string; client: string; amount: string; status: QueueState };
+export type QueueItem = {
+  id: string;
+  type: string;
+  client: string;
+  amount: string;
+  /** The colour bucket. */
+  status: QueueState;
+  /** What the provider called this state, when there is a provider behind it. */
+  stateLabel?: string | null;
+};
 export type TeamMember = { name: string; role: string; workload: number; initials: string };
 
 export type DashboardSummary = {

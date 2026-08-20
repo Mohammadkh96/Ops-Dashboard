@@ -63,8 +63,10 @@ export class PaymaxisController {
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
   @Post('refresh')
-  refresh() {
-    return this.paymaxis.refresh();
+  refresh(@Body() body?: { force?: boolean }) {
+    // `force` marks the request as one a person made by pressing Refresh, which
+    // gets a shorter floor than the automatic minute-by-minute poll.
+    return this.paymaxis.refresh({ force: body?.force === true });
   }
 
   /**

@@ -11,13 +11,23 @@ export type Transaction = {
   client: string;
   country: string;
   gateway: string;
+  // The bucket the Method filter groups by.
   method: TxMethod;
+  // What the provider called it — "Google Pay", "Basic Card". Absent in demo
+  // mode, where the bucket is all there is.
+  methodLabel?: string | null;
   currency: string;
   amount: number;
   // Refund is a real Paymaxis payment type and belongs in its own bucket:
   // money going back to a customer is not a withdrawal they requested.
   type: "Deposit" | "Withdrawal" | "Refund";
+  // The four-way bucket, which decides the badge colour.
   status: TxStatus;
+  // What the provider itself called this state — "Awaiting Webhook",
+  // "Reconciliation", "Cancelled by Timeout". Absent in demo mode, where there
+  // is no provider to have said anything.
+  state?: string | null;
+  stateLabel?: string | null;
   // null when nothing scores risk. The column previously showed a level for
   // every row, all of it invented.
   risk: Risk | null;

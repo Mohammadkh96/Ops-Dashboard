@@ -1,7 +1,11 @@
 import { Injectable } from '@nestjs/common';
 
 import { PrismaService } from '../prisma/prisma.service';
-import { isFailedState, isSettledState } from '../paymaxis/normalize';
+import {
+  isFailedState,
+  isSettledState,
+  providerLabel,
+} from '../paymaxis/normalize';
 import type { TimeRange } from '../common/range';
 
 /**
@@ -174,12 +178,21 @@ export class ModulesService {
     return (await this.safe(() => this.prisma.paymentEvent.count(), 0)) > 0;
   }
 
-  /** Paymaxis payment method -> the table's four buckets. */
-  private paymentMethodLabel(raw: unknown): 'Card' | 'Crypto' | 'Bank' | 'Local' {
+  /**
+   * Paymaxis payment method -> the four buckets the Method filter offers.
+   *
+   * Wallets count as Card because that is how they settle and how they appear
+   * on a card statement — Google Pay landing under "Local" put it in the same
+   * group as a bank-transfer rail, which is wrong for anyone reconciling
+   * against an acquirer.
+   */
+  private paymentMethodBucket(
+    raw: unknown,
+  ): 'Card' | 'Crypto' | 'Bank' | 'Local' {
     const s = String(raw ?? '').toUpperCase();
     if (/CRYPTO|COIN|USDT|BTC|ETH/.test(s)) return 'Crypto';
     if (/BANK|SEPA|WIRE|TRANSFER/.test(s)) return 'Bank';
-    if (/CARD/.test(s)) return 'Card';
+    if (/CARD|GOOGLE_?PAY|APPLE_?PAY|WALLET/.test(s)) return 'Card';
     return 'Local';
   }
 
@@ -376,10 +389,15 @@ export class ModulesService {
       cryptoTxHash: anchor.cryptoTxHash,
 
       type: anchor.type,
-      state: anchor.state,
+      state: providerLabel(anchor.state),
       amount: Math.abs(anchor.amount),
       currency: anchor.currency,
-      method: this.paymentMethodLabel(payload.paymentMethod),
+      method:
+        providerLabel(
+          typeof payload.paymentMethod === 'string'
+            ? payload.paymentMethod
+            : null,
+        ) ?? this.paymentMethodBucket(payload.paymentMethod),
       description: str(payload.description),
 
       customer: anchor.customer,
@@ -410,7 +428,7 @@ export class ModulesService {
       signatureOk: anchor.signatureOk,
 
       history: history.map((h) => ({
-        state: h.state,
+        state: providerLabel(h.state),
         amount: Math.abs(h.amount),
         errorCode: h.errorCode,
         errorMessage: h.errorMessage,
@@ -469,11 +487,24 @@ export class ModulesService {
       // than a guessed one.
       country: r.entity || '—',
       gateway: r.psp || r.terminal || '—',
-      method: this.paymentMethodLabel(payload.paymentMethod),
+      method: this.paymentMethodBucket(payload.paymentMethod),
+      methodLabel:
+        providerLabel(
+          typeof payload.paymentMethod === 'string'
+            ? payload.paymentMethod
+            : null,
+        ) ?? this.paymentMethodBucket(payload.paymentMethod),
       currency: r.currency || '',
       amount: Math.abs(r.amount),
       type,
+      // Two different things, both needed: `status` is the four-way bucket the
+      // badge colours by, `stateLabel` is what Paymaxis actually called it. The
+      // bucket alone turned "Awaiting Webhook" into "Pending", which reads as
+      // "the customer has not paid yet" when it means "the PSP owes us a
+      // callback".
       status,
+      state: state || null,
+      stateLabel: providerLabel(state),
       // No risk scoring exists. The column showed a fabricated level for every
       // row; null renders as "—" so it is plainly absent rather than invented.
       risk: null,

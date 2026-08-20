@@ -66,11 +66,28 @@ export function TransactionsTable({ fixedType }: { fixedType?: "Deposit" | "With
     { key: "ref", header: "Reference", render: (t) => <span className="font-mono text-xs text-muted-foreground">{t.reference}</span> },
     { key: "client", header: "Client", render: (t) => t.client },
     { key: "type", header: "Type", render: (t) => <span className={t.type === "Withdrawal" ? "text-accent-magenta" : "text-accent-blue"}>{t.type}</span> },
-    { key: "method", header: "Method", render: (t) => <span className="text-muted-foreground">{t.method}</span> },
+    {
+      key: "method",
+      header: "Method",
+      // The provider's own name. The filter above still groups by the four
+      // buckets, so "Card" finds Basic Card and Google Pay alike, while the row
+      // says which of them this actually was.
+      render: (t) => (
+        <span className="text-muted-foreground">{t.methodLabel ?? t.method}</span>
+      ),
+    },
     { key: "gateway", header: "PSP", render: (t) => <span className="text-muted-foreground">{t.gateway}</span> },
     { key: "amount", header: "Amount", align: "right", render: (t) => <span className="tnum font-medium">{money(t)}</span> },
     { key: "risk", header: "Risk", render: (t) => <RiskBadge level={t.risk} /> },
-    { key: "status", header: "Status", render: (t) => <StatusBadge status={t.status} /> },
+    {
+      key: "status",
+      header: "Status",
+      // The provider's own wording, coloured by the bucket it falls into. The
+      // bucket name alone flattened five distinct states onto "Pending".
+      render: (t) => (
+        <StatusBadge status={t.status} label={t.stateLabel ?? undefined} />
+      ),
+    },
     { key: "time", header: "Time", align: "right", render: (t) => <span className="tnum text-muted">{t.createdAt}</span> },
   ];
 

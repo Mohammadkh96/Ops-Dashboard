@@ -28,6 +28,18 @@ function badgeFor(status: string) {
   return statusBadge[status] ?? { variant: "blue" as const, label: status };
 }
 
+/**
+ * Prefers the provider's own wording over the bucket.
+ *
+ * The bucket picks the colour, which is what makes a list scannable; the label
+ * says which of several situations this actually is. "Awaiting Webhook" and
+ * "Checkout" are both amber, and reading either as "Processing" loses the only
+ * detail that decides what to do about it.
+ */
+function labelFor(item: QueueItem) {
+  return item.stateLabel || badgeFor(item.status).label;
+}
+
 export function LiveQueueCard({ rows, newestId }: { rows: QueueItem[]; newestId?: string }) {
   return (
     <Card className="glass card-seam h-full">
@@ -72,7 +84,7 @@ export function LiveQueueCard({ rows, newestId }: { rows: QueueItem[]; newestId?
                   <td className="py-2.5 text-foreground">{item.amount}</td>
                   <td className="py-2.5">
                     <Badge variant={badgeFor(item.status).variant}>
-                      {badgeFor(item.status).label}
+                      {labelFor(item)}
                     </Badge>
                   </td>
                 </motion.tr>

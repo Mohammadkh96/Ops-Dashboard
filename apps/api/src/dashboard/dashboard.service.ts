@@ -827,6 +827,9 @@ export class DashboardService {
           customer: r.customer ?? '',
           amount: r.amount,
           currency: r.currency ?? '',
+          // Passed through so the feed can show what the provider called it,
+          // not just which of four colours it falls into.
+          state,
           settled: isSettledState(state)
             ? true
             : isFailedState(state)

@@ -80,10 +80,10 @@ export function TopBar() {
       </div>
 
       {/* Beside the window selector on purpose: together they say which period
-          is on screen and how current it is. */}
-      <div className="hidden lg:flex">
-        <SyncStatus />
-      </div>
+          is on screen and how current it is. Visible at every width — it is the
+          refresh control as well as the freshness read-out, and hiding it on a
+          phone hid the only way to pull new data. */}
+      <SyncStatus />
 
       <Separator orientation="vertical" className="h-6" />
 
