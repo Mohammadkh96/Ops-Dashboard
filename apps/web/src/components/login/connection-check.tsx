@@ -193,6 +193,27 @@ export function ConnectionCheck() {
   const misconfigured =
     info && (info.originAllowed === false || !info.webOriginConfigured);
 
+  // Vercel mints a fresh hostname per deployment — "<project>-<hash>-<team>" —
+  // alongside the stable production one. Landing on a deployment URL and being
+  // refused looks identical to a broken allow-list, and the obvious remedy of
+  // adding that hostname works exactly once: the next deploy changes the hash.
+  // If the API already admits a different vercel.app origin, that origin is the
+  // production URL and the right answer is to open it.
+  const productionOrigin = info?.allowedOrigins.find(
+    (o) => !o.startsWith("*") && o.endsWith(".vercel.app") && o !== origin,
+  );
+  const onDeploymentUrl =
+    info?.originAllowed === false &&
+    origin.endsWith(".vercel.app") &&
+    Boolean(productionOrigin);
+  // "…-tradify.vercel.app" → "*-tradify.vercel.app": every preview of this
+  // team, and nobody else's.
+  const teamWildcard = (() => {
+    const host = origin.replace(/^https?:\/\//, "").replace(/\.vercel\.app$/, "");
+    const team = host.split("-").pop();
+    return team ? `*-${team}.vercel.app` : null;
+  })();
+
   return (
     <div className="mt-4 flex flex-col gap-3 rounded-lg border border-border bg-card/40 p-3">
       <div className="flex items-center justify-between gap-3">
@@ -229,7 +250,28 @@ export function ConnectionCheck() {
         </ul>
       ) : null}
 
-      {misconfigured ? (
+      {onDeploymentUrl ? (
+        <div className="flex flex-col gap-2 rounded-md border border-accent-orange/20 bg-accent-orange-soft px-2.5 py-2 text-[11px] leading-relaxed text-accent-orange">
+          <span>
+            This is a per-deployment address. Vercel gives every deploy a new one
+            with a fresh hash, so no fixed list can match it — adding this exact
+            hostname would work until the next deploy.
+          </span>
+          <a
+            href={productionOrigin}
+            className="font-medium underline underline-offset-2"
+          >
+            Open {productionOrigin} instead
+          </a>
+          {teamWildcard ? (
+            <span>
+              To keep preview deploys working too, add{" "}
+              <span className="font-medium">{teamWildcard}</span> to WEB_ORIGIN —
+              that admits your team&rsquo;s previews and nobody else&rsquo;s.
+            </span>
+          ) : null}
+        </div>
+      ) : misconfigured ? (
         <p className="rounded-md border border-accent-orange/20 bg-accent-orange-soft px-2.5 py-2 text-[11px] leading-relaxed text-accent-orange">
           Fix: in the API project&rsquo;s environment variables, set{" "}
           <span className="font-medium">WEB_ORIGIN</span> to{" "}
