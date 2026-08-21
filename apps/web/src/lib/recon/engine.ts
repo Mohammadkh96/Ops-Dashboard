@@ -1,5 +1,8 @@
 import { CASHIER_MAP, CRM_MAP } from "./registry";
 import { classifyStatus, type StatusClass } from "./status";
+import { parseMoney } from "./money";
+import { auditCompleteness, type LeakAudit } from "./leaks";
+import { computeTiming } from "./timing";
 import { buildFamilies, uniqueKeys, normKey, type Families } from "./families";
 import { combineVerdict, isInformational, priorityOf } from "./verdict";
 import type {
@@ -16,31 +19,12 @@ import type {
   Row,
 } from "./types";
 
-// ── status classification (generic keyword lists + per-config synonyms) ──
-const FAILED_KEYWORDS = [
-  "CANCEL", "DECLINE", "FAIL", "REJECT", "EXPIRE", "ERROR",
-  "CHARGEBACK", "REVERSED", "VOID", "ABORT", "AWAITING WEBHOOK",
-];
-const ACTIVE_KEYWORDS = [
-  "APPROVED", "APPROVE", "COMPLETED", "COMPLETE", "SUCCESS", "SETTLED",
-  "SETTLE", "CONFIRMED", "CONFIRM", "PAID", "PROCESSED", "CAPTURED",
-  "AUTHORIZED", "AUTHORISED", "PAYMENT",
-];
-
+// Status classification lives in ./status. This file used to carry a second,
+// subtly different copy — its failure list included "AWAITING WEBHOOK", which
+// the shared classifier deliberately treats as in-flight, and it knew none of
+// the PSP vocabularies (Paystrax ACK/NOK, Match2pay DONE, the VirtualPay
+// codes). Two definitions of "did this fail" is one too many.
 const up = (v: unknown) => String(v ?? "").toUpperCase().trim();
-
-function isFailed(status: string, extra?: string[]): boolean {
-  const s = up(status);
-  if (!s) return false;
-  if (extra?.some((k) => s === up(k) || (up(k) && s.includes(up(k))))) return true;
-  return FAILED_KEYWORDS.some((k) => s.includes(k));
-}
-function isActive(status: string, extra?: string[]): boolean {
-  const s = up(status);
-  if (!s) return false;
-  if (extra?.some((k) => s === up(k) || (up(k) && s.includes(up(k))))) return true;
-  return ACTIVE_KEYWORDS.some((k) => s.includes(k));
-}
 
 // ── value helpers ──
 function firstVal(row: Row, cols: string[]): string {
@@ -56,15 +40,9 @@ function fieldVal(row: Row, spec: string | undefined): string {
   if (!spec) return "";
   return firstVal(row, [spec]);
 }
-function num(v: string): number {
-  if (!v) return 0;
-  let s = String(v).trim().replace(/["']/g, "").replace(/\s/g, "");
-  if (s.indexOf(",") > -1 && s.indexOf(".") === -1) s = s.replace(/,/g, ".");
-  else s = s.replace(/,/g, "");
-  s = s.replace(/[^0-9.\-]/g, "");
-  const n = parseFloat(s);
-  return isNaN(n) ? 0 : n;
-}
+// Money parsing lives in ./money so the layers and the completeness audit
+// cannot disagree on an amount.
+const num = (v: string): number => parseMoney(v);
 const round = (n: number) => Math.round((Number(n) || 0) * 100) / 100;
 const norm = (v: string) => String(v || "").replace(/-/g, "").toLowerCase().trim();
 
@@ -430,7 +408,7 @@ function reconcileLayer1(crm: Dataset, cashier: Dataset, tolAbs: number, tolPct:
 
   // Keys are namespaced by kind ("deposit"\0key / "withdrawal"\0key) so a
   // deposit can only ever match a deposit and a withdrawal/refund a withdrawal.
-  const nk = (kind: Kind, key: string) => `${kind} ${key}`;
+  const nk = (kind: Kind, key: string) => `${kind}\u0000${key}`;
 
   const runPass = (which: "hash" | "ref", via: string, requireAmount: boolean) => {
     const crmIndex = new Map<string, number[]>();
@@ -511,10 +489,20 @@ function reconcileLayer1(crm: Dataset, cashier: Dataset, tolAbs: number, tolPct:
     if (v.status === "amount" && via === "Customer ref")
       note += " — matched on customer reference, verify (may be different transactions)";
 
-    rows.push(mkRow(v.status, entity, undefined, via, displayKey(cr),
+    const l1Row = mkRow(v.status, entity, undefined, via, displayKey(cr),
       crmAmt, firstVal(cr, [CRM_MAP.currencyCol ?? ""]), crmStatus,
       firstVal(c, CASHIER_MAP.idCols), cashAmt, firstVal(c, [CASHIER_MAP.currencyCol ?? ""]),
-      cashState, diff, note, v.priority));
+      cashState, diff, note, v.priority);
+    // How long the movement actually took. A chain where every system agrees can
+    // still have taken nine hours to settle, and that never shows up as a
+    // mismatch — so it has to be measured rather than inferred from the verdict.
+    l1Row.timing = computeTiming({
+      crmRequested: firstVal(cr, ["CreatedOn", "Created On"]),
+      crmProcessed: firstVal(cr, ["LastUpdated", "Last Updated"]),
+      cashierCreated: firstVal(c, ["Created"]),
+      cashierFinalized: firstVal(c, ["Finalized", "Updated"]),
+    });
+    rows.push(l1Row);
   });
 
   // ── Aggregation / netting pass ─────────────────────────────────────────
@@ -536,7 +524,11 @@ function reconcileLayer1(crm: Dataset, cashier: Dataset, tolAbs: number, tolPct:
     scope.forEach((ci) => {
       if (matchedCrm.has(ci)) return;
       const cr = crm.rows[ci];
-      if (isFailed(firstVal(cr, [CRM_MAP.statusCol ?? ""]))) return;
+      // Excludes settled failures only. The local classifier this used to call
+      // listed "AWAITING WEBHOOK" as a failure, so a deposit still waiting on a
+      // provider callback was dropped from the netting pass as though it had
+      // already been declined.
+      if (classifyStatus(firstVal(cr, [CRM_MAP.statusCol ?? ""]), "CRM") === "FAILED") return;
       const kind = crmKindOf(cr);
       const s = keysByShape(cr, crmKeyCols(kind));
       [...s.hash, ...s.ref].forEach((k) => bucket(nk(kind, k)).crm.add(ci));
@@ -544,7 +536,11 @@ function reconcileLayer1(crm: Dataset, cashier: Dataset, tolAbs: number, tolPct:
     cashier.rows.forEach((c, ci) => {
       if (usedCash.has(ci)) return;
       const kind = cashKindOf(c);
-      if (!kind || isFailed(firstVal(c, [CASHIER_MAP.statusCol ?? ""]))) return;
+      if (
+        !kind ||
+        classifyStatus(firstVal(c, [CASHIER_MAP.statusCol ?? ""]), "Cashier") === "FAILED"
+      )
+        return;
       const s = keysByShape(c, CASH_KEYS);
       [...s.hash, ...s.ref].forEach((k) => bucket(nk(kind, k)).cash.add(ci));
     });
@@ -885,10 +881,19 @@ function reconcileLayer2(cashier: Dataset, psps: PspConfig[], pspData: Record<st
     });
     const note = v.status === "matched" ? matchKey : `${v.reason} — ${matchKey}`;
 
-    rows.push(mkRow(v.status, entity, matched.label, matchKey, cashId, cashAmt,
+    const l2Row = mkRow(v.status, entity, matched.label, matchKey, cashId, cashAmt,
       firstVal(c, [CASHIER_MAP.currencyCol ?? ""]), cashState,
       fieldVal(matchRow, matched.fields.idCols[0]), pspAmt,
-      fieldVal(matchRow, matched.fields.currencyCol), pspStatus, diff, note, v.priority));
+      fieldVal(matchRow, matched.fields.currencyCol), pspStatus, diff, note, v.priority);
+    l2Row.timing = computeTiming({
+      cashierCreated: firstVal(c, ["Created"]),
+      cashierFinalized: firstVal(c, ["Finalized", "Updated"]),
+      pspRequested: fieldVal(matchRow, matched.fields.dateCol),
+      pspConfirmed: matched.statusWhenSet?.active
+        ? firstVal(matchRow, [matched.statusWhenSet.active])
+        : fieldVal(matchRow, matched.fields.dateCol),
+    });
+    rows.push(l2Row);
   });
 
   // PSP rows never matched to a cashier row
@@ -1061,10 +1066,27 @@ export function runReconciliation(
     a.priority.localeCompare(b.priority) || exposureOf(b) - exposureOf(a);
   l1Rows.sort(sorter);
   l2Rows.sort(sorter);
+  // Close the books: every cashier row either surfaced in a layer above or is
+  // reported by the completeness audit saying why it did not. Without this a
+  // row no pass ever considered is simply absent, and the match rate looks
+  // clean because the row was never counted.
+  const surfacedIds = new Set<string>();
+  l1Rows.forEach((r) => { if (r.rightId) surfacedIds.add(r.rightId); });
+  l2Rows.forEach((r) => { if (r.leftId) surfacedIds.add(r.leftId); });
+  const completeness: LeakAudit = cashierF
+    ? auditCompleteness(cashierF, surfacedIds)
+    : { rows: [], surfaced: 0, dropped: 0, total: 0, balanced: true, flagged: 0 };
+  completeness.rows.sort(sorter);
+
+  // Dropped rows are exceptions in their own right: they are the ones nothing
+  // else reports.
   const all = [...l1Rows, ...l2Rows];
-  const exceptions = all.filter((r) => r.status !== "matched" && !isInformational(r.status));
+  const exceptions = [...all, ...completeness.rows].filter(
+    (r) => r.status !== "matched" && !isInformational(r.status),
+  );
   const matched = all.filter((r) => r.status === "matched");
   return {
+    completeness,
     layer1: { rows: l1Rows, stats: computeStats(l1Rows) },
     layer2: { rows: l2Rows, stats: computeStats(l2Rows) },
     byPsp: groupBy(l2Rows, (r) => r.psp || "Unrouted"),

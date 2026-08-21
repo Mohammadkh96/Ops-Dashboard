@@ -101,6 +101,18 @@ export type ReconRow = {
    * changes character re-opens rather than inheriting a stale "Resolved".
    */
   caseKey: string;
+  /**
+   * Per-stage clock, when the source timestamps allow it. A chain every system
+   * agrees on can still have taken a day to settle; that is an operational
+   * fault no mismatch would ever reveal.
+   */
+  timing?: {
+    stages: { label: string; ms: number | null }[];
+    totalMs: number | null;
+    totalMins: number | null;
+    speed: string;
+    slow: boolean;
+  };
 };
 
 /** Ops workflow attached to a case, preserved across reconciliation runs. */
@@ -160,6 +172,19 @@ export type ReconOptions = {
 };
 
 export type ReconResult = {
+  /**
+   * Proof that every cashier row was accounted for. `dropped` rows are the ones
+   * no layer considered — the dangerous kind of missing, because a row nothing
+   * reports on cannot lower the match rate.
+   */
+  completeness: {
+    rows: ReconRow[];
+    surfaced: number;
+    dropped: number;
+    total: number;
+    balanced: boolean;
+    flagged: number;
+  };
   layer1: { rows: ReconRow[]; stats: LayerStats };
   layer2: { rows: ReconRow[]; stats: LayerStats };
   byPsp: Breakdown[];

@@ -28,6 +28,7 @@ import { cn } from "@/lib/utils";
 import { parseFile } from "@/lib/recon/parse";
 import { loadPsps, savePsps, resetPsps, DEFAULT_PSPS, emptyPsp, missingColumns, uploadTargets, detectTargets, CRM_MAP, CASHIER_MAP } from "@/lib/recon/registry";
 import { runReconciliation, providerCoverage } from "@/lib/recon/engine";
+import { formatDuration } from "@/lib/recon/timing";
 import { reconRowsToCsv, downloadText } from "@/lib/recon/export";
 import { loadPspsRemote, savePspsRemote, saveRunRemote, listRunsRemote, type RunSummaryRow } from "@/lib/recon/api";
 import { loadCases, saveCase, caseTotals, emptyCase } from "@/lib/recon/cases";
@@ -1232,6 +1233,27 @@ function ResultsTab({
       { key: "right", header: "Right ID", render: (r) => <span className="font-mono text-xs">{r.rightId || "—"}</span> },
       { key: "rightAmt", header: "Right Amt", align: "right", render: (r) => <span className="tnum">{money(r.rightAmount)}</span> },
       { key: "diff", header: "Diff", align: "right", render: (r) => <span className={cn("tnum", r.diff && Math.abs(r.diff) > 0.05 ? "text-accent-orange" : "text-muted")}>{money(r.diff)}</span> },
+      {
+        // End-to-end duration. A chain everyone agrees on can still have taken a
+        // day to settle, which no mismatch would ever surface.
+        key: "took",
+        header: "Took",
+        align: "right",
+        render: (r) =>
+          r.timing?.totalMs === null || r.timing === undefined ? (
+            <span className="text-muted">—</span>
+          ) : (
+            <span
+              title={r.timing.stages
+                .filter((st) => st.ms !== null)
+                .map((st) => `${st.label}: ${formatDuration(st.ms)}`)
+                .join("\n")}
+              className={cn("tnum", r.timing.slow ? "text-accent-orange" : "text-muted")}
+            >
+              {formatDuration(r.timing.totalMs)}
+            </span>
+          ),
+      },
       { key: "note", header: "Note", render: (r) => <span className="text-xs text-muted">{r.note}</span> },
     ],
     [],
@@ -1279,6 +1301,40 @@ function ResultsTab({
   return (
     <div className="flex flex-col gap-5">
       <StatTileRow stats={stats} />
+
+      {/*
+        Proof the books close. Every cashier row is either reconciled by a layer
+        or reported by the completeness audit — a row nothing considers cannot
+        lower the match rate, so an unexplained one makes every figure above
+        optimistic. The arithmetic is stated so it can be checked, not trusted.
+      */}
+      {result.completeness.total > 0 ? (
+        <p
+          className={cn(
+            "rounded-lg border px-3 py-2 text-xs",
+            !result.completeness.balanced
+              ? "border-accent-red/25 bg-accent-red-soft text-accent-red"
+              : result.completeness.dropped > 0
+                ? "border-accent-orange/25 bg-accent-orange-soft text-accent-orange"
+                : "border-accent-green/25 bg-accent-green-soft text-accent-green",
+          )}
+        >
+          <span className="font-medium">
+            {result.completeness.total.toLocaleString()} cashier rows ={" "}
+            {result.completeness.surfaced.toLocaleString()} reconciled +{" "}
+            {result.completeness.dropped.toLocaleString()} unexplained
+          </span>
+          {!result.completeness.balanced
+            ? " — these do not add up, so treat this run as unreliable and report it."
+            : result.completeness.dropped > 0
+              ? ` — the unexplained rows are in the queue below, each saying why no layer reached a verdict.${
+                  result.completeness.flagged
+                    ? ` A further ${result.completeness.flagged.toLocaleString()} reconciled row(s) carry an unresolved provider fault.`
+                    : ""
+                }`
+              : " — every row was considered by a layer. Nothing is hiding."}
+        </p>
+      ) : null}
 
       {netted > 0 ? (
         <p className="rounded-lg border border-accent-blue/25 bg-accent-blue-soft px-3 py-2 text-xs text-accent-blue">

@@ -48,8 +48,14 @@ function systemOverride(s: string, system: string): StatusClass | null {
     if (s === "NEW" || s === "PENDING") return "PENDING";
   }
   if (sys.includes("VIRTUALPAY")) {
-    if (s === "1") return "ACTIVE";
-    if (s === "4") return "FAILED";
+    // VirtualPay reports a numeric code, and 4 is a SUCCESS, not a failure —
+    // this previously read it as declined, so every status-4 payment collided
+    // with an approved CRM leg and surfaced as a P1 status mismatch. 0 is the
+    // decline; 2 is neither, so it falls through to PENDING and gets outvoted
+    // by the settled legs rather than inventing a verdict.
+    if (s === "1" || s === "4") return "ACTIVE";
+    if (s === "0") return "FAILED";
+    if (s === "2") return "PENDING";
   }
   if (sys.includes("RAPYD")) {
     if (s.includes("REFUND") || s.includes("REVERSAL")) return "FAILED";
