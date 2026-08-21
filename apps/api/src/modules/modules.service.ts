@@ -6,7 +6,7 @@ import {
   isSettledState,
   providerLabel,
 } from '../paymaxis/normalize';
-import type { TimeRange } from '../common/range';
+import { parseInstant, type TimeRange } from '../common/range';
 import {
   GROUP_LABELS,
   PAYMENT_FIELDS,
@@ -284,25 +284,60 @@ export class ModulesService {
   /**
    * One client's history, keyed by the customer reference the provider sends.
    *
-   * Deliberately not filtered by the dashboard's selected window: "Total
+   * Deliberately NOT filtered by the dashboard's selected window: "Total
    * Deposits" means what this client has ever paid in, and a lifetime figure
    * that quietly changed when someone clicked 24h would be worse than no
    * figure. The window still applies to the table this was opened from.
+   *
+   * The client window carries its own optional from/to instead, because
+   * narrowing a client's history is a different question ("what did they do
+   * last week?") asked at a different moment. Absent them, this is everything
+   * we hold.
+   *
+   * @param from inclusive ISO instant; the client's whole history when absent.
+   * @param to   inclusive ISO instant.
    */
-  async clientProfile(reference: string) {
-    const rows = await this.safe(
-      () =>
-        this.prisma.paymentEvent.findMany({
-          where: { customer: reference },
-          orderBy: [{ occurredAt: 'desc' }, { receivedAt: 'desc' }],
-          // Generous but bounded: a client with more history than this gets
-          // totals over their most recent payments, which is still the answer
-          // to "what has this person been doing".
-          take: 2000,
-        }),
-      [],
-    );
-    if (!rows.length) return null;
+  async clientProfile(reference: string, from?: string, to?: string) {
+    const gte = parseInstant(from);
+    const lte = parseInstant(to);
+    const windowed = Boolean(gte || lte);
+    const where = {
+      customer: reference,
+      ...(windowed
+        ? { occurredAt: { ...(gte ? { gte } : {}), ...(lte ? { lte } : {}) } }
+        : {}),
+    };
+
+    // A hard cap protects the request, so the count is read separately: a
+    // truncated total must be able to SAY it is truncated rather than quietly
+    // report a smaller number under the same label.
+    const EVENT_CAP = 5000;
+    const [rows, events, span] = await Promise.all([
+      this.safe(
+        () =>
+          this.prisma.paymentEvent.findMany({
+            where,
+            orderBy: [{ occurredAt: 'desc' }, { receivedAt: 'desc' }],
+            take: EVENT_CAP,
+          }),
+        [],
+      ),
+      this.safe(() => this.prisma.paymentEvent.count({ where }), 0),
+      // What we hold for this client overall, whatever the window — so the
+      // window control can say how far back there is anything to look at.
+      this.safe(
+        () =>
+          this.prisma.paymentEvent.aggregate({
+            where: { customer: reference },
+            _min: { occurredAt: true },
+            _max: { occurredAt: true },
+          }),
+        null as { _min: { occurredAt: Date | null }; _max: { occurredAt: Date | null } } | null,
+      ),
+    ]);
+    // An empty window is a real answer ("nothing that week"), not a missing
+    // client — but a reference we have never seen still returns null.
+    if (!rows.length && !windowed) return null;
 
     // Collapse to one row per payment, newest state first — the same rule the
     // table uses. Summing every stored state would count a payment once for
@@ -315,7 +350,13 @@ export class ModulesService {
       return true;
     });
 
-    return buildClientProfile(reference, latest as MappedRow[]);
+    return buildClientProfile(reference, latest as MappedRow[], {
+      from: gte ? gte.toISOString() : null,
+      to: lte ? lte.toISOString() : null,
+      truncated: events > EVENT_CAP,
+      heldFrom: span?._min.occurredAt ? span._min.occurredAt.toISOString() : null,
+      heldTo: span?._max.occurredAt ? span._max.occurredAt.toISOString() : null,
+    });
   }
 
   /**

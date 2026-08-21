@@ -66,19 +66,39 @@ export type ClientProfile = {
   psps: { psp: string; count: number; amount: number; successRate: number | null }[];
   /** Why this client's payments fail, most common first. */
   declineReasons: { reason: string; code: string | null; count: number }[];
-  recent: {
-    id: string;
-    reference: string;
-    type: string;
-    /** Colour bucket for the badge; `state` is the provider's own wording. */
-    status: 'approved' | 'declined' | 'pending';
-    state: string | null;
-    amount: number;
-    currency: string | null;
-    psp: string | null;
-    method: string | null;
-    at: string | null;
-  }[];
+  /**
+   * Every payment in the window, newest first — not a sample of it.
+   *
+   * This used to be the twelve most recent, which answered "what happened
+   * lately" but not "show me their deposits and withdrawals", the question
+   * people actually opened it for. A list that stops at twelve without saying so
+   * reads as a complete history that happens to be short.
+   */
+  history: HistoryEntry[];
+  /** The window these figures cover. Null bounds mean the whole history. */
+  window: {
+    from: string | null;
+    to: string | null;
+    /** True when the store held more than this request would read. */
+    truncated: boolean;
+    /** The span we hold ANY payment for, whatever the window asked for. */
+    heldFrom: string | null;
+    heldTo: string | null;
+  };
+};
+
+export type HistoryEntry = {
+  id: string;
+  reference: string;
+  type: 'Deposit' | 'Withdrawal' | 'Refund';
+  /** Colour bucket for the badge; `state` is the provider's own wording. */
+  status: 'approved' | 'declined' | 'pending';
+  state: string | null;
+  amount: number;
+  currency: string | null;
+  psp: string | null;
+  method: string | null;
+  at: string | null;
 };
 
 const tally = (): Tally => ({ count: 0, amount: 0 });
@@ -97,10 +117,19 @@ function kindOf(type: string | null): 'deposit' | 'withdrawal' | 'refund' {
 
 /**
  * @param rows One row per payment, latest state, newest first.
+ * @param window What the caller asked for and what the store actually holds, so
+ *   the figures can be labelled with the period they cover.
  */
 export function buildClientProfile(
   reference: string,
   rows: MappedRow[],
+  window: ClientProfile['window'] = {
+    from: null,
+    to: null,
+    truncated: false,
+    heldFrom: null,
+    heldTo: null,
+  },
 ): ClientProfile {
   const byCurrency = new Map<string, CurrencyTotals>();
   const methods = new Map<string, { count: number; amount: number }>();
@@ -245,7 +274,8 @@ export function buildClientProfile(
       }))
       .sort((a, b) => b.count - a.count),
     declineReasons: [...reasons.values()].sort((a, b) => b.count - a.count).slice(0, 6),
-    recent: rows.slice(0, 12).map((r) => {
+    window,
+    history: rows.map((r) => {
       const f = paymentFieldValues(r);
       return {
         id: r.id,

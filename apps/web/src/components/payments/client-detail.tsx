@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { apiFetch, isDemoMode } from "@/lib/api";
@@ -37,10 +38,11 @@ export type ClientProfile = {
   methods: { label: string; count: number; amount: number }[];
   psps: { psp: string; count: number; amount: number; successRate: number | null }[];
   declineReasons: { reason: string; code: string | null; count: number }[];
-  recent: {
+  /** Every payment in the window, newest first. */
+  history: {
     id: string;
     reference: string;
-    type: string;
+    type: "Deposit" | "Withdrawal" | "Refund";
     status: string;
     state: string | null;
     amount: number;
@@ -49,6 +51,13 @@ export type ClientProfile = {
     method: string | null;
     at: string | null;
   }[];
+  window: {
+    from: string | null;
+    to: string | null;
+    truncated: boolean;
+    heldFrom: string | null;
+    heldTo: string | null;
+  };
 };
 
 const SYMBOLS: Record<string, string> = { USD: "$", EUR: "€", GBP: "£" };
@@ -63,6 +72,49 @@ function money(n: number, ccy: string) {
 }
 
 const day = (s: string | null) => (s ? s.slice(0, 10) : "—");
+
+/** An ISO instant as the operator's own clock reads it. */
+const stamp = (s: string | null) =>
+  s ? new Date(s).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "—";
+
+/**
+ * A Date as a `datetime-local` input value, in the browser's timezone.
+ *
+ * The input has no timezone of its own, so this pair of conversions — local
+ * string in, ISO instant out — is what keeps "from 09:00" meaning nine in the
+ * morning where the operator is sitting rather than nine UTC.
+ */
+function toLocalInput(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+    `T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  );
+}
+
+/** A `datetime-local` value as an ISO instant, or undefined if unset/invalid. */
+function toIso(local: string): string | undefined {
+  if (!local) return undefined;
+  const t = Date.parse(local);
+  return Number.isNaN(t) ? undefined : new Date(t).toISOString();
+}
+
+const HOUR = 3_600_000;
+const PRESETS: { label: string; hours: number | null }[] = [
+  { label: "All time", hours: null },
+  { label: "24h", hours: 24 },
+  { label: "7d", hours: 24 * 7 },
+  { label: "30d", hours: 24 * 30 },
+  { label: "90d", hours: 24 * 90 },
+];
+
+type Kind = "all" | "Deposit" | "Withdrawal" | "Refund";
+const KINDS: { key: Kind; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "Deposit", label: "Deposits" },
+  { key: "Withdrawal", label: "Withdrawals" },
+  { key: "Refund", label: "Refunds" },
+];
 
 function Row({ label, value }: { label: string; value: string | null }) {
   if (!value) return null;
@@ -126,16 +178,112 @@ function Total({
  * payments this dashboard has ingested; Paymaxis reports its own lifetime
  * counters over the account's entire history. Presenting either as the other
  * would be wrong, so both are shown and labelled.
+ *
+ * The window belongs to this panel, not to the page. The filter above the table
+ * answers "what is happening right now"; a client's history is a different
+ * question asked at a different moment, and defaults to everything we hold.
+ * Tying the two together meant opening a client from a 24h view and being told
+ * they had never deposited.
  */
 export function ClientDetail({ reference }: { reference: string }) {
-  const { data, isLoading, isError } = useQuery({
-    queryKey: ["client", reference],
-    queryFn: () =>
-      apiFetch<ClientProfile | null>(
-        `/clients/${encodeURIComponent(reference)}`,
-      ),
+  // Preset buttons write into these rather than being remembered as a preset:
+  // a window computed from Date.now() on every render would change the query key
+  // continuously, and this way the chosen range is visible and editable.
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [kind, setKind] = useState<Kind>("all");
+
+  const fromIso = toIso(from);
+  const toIso_ = toIso(to);
+
+  const { data, isLoading, isError, isFetching } = useQuery({
+    queryKey: ["client", reference, fromIso ?? "", toIso_ ?? ""],
+    queryFn: () => {
+      const q = new URLSearchParams();
+      if (fromIso) q.set("from", fromIso);
+      if (toIso_) q.set("to", toIso_);
+      const qs = q.toString();
+      return apiFetch<ClientProfile | null>(
+        `/clients/${encodeURIComponent(reference)}${qs ? `?${qs}` : ""}`,
+      );
+    },
     enabled: !isDemoMode,
+    // Keeping the previous profile on screen while a new window loads stops the
+    // panel collapsing to "Loading…" every time a bound is nudged.
+    placeholderData: (prev) => prev,
   });
+
+  const applyPreset = (hours: number | null) => {
+    if (hours === null) {
+      setFrom("");
+      setTo("");
+      return;
+    }
+    const now = new Date();
+    setFrom(toLocalInput(new Date(now.getTime() - hours * HOUR)));
+    setTo(toLocalInput(now));
+  };
+
+  const windowControl = (
+    <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="mr-1 text-[11px] uppercase tracking-wider text-muted">Period</span>
+        {PRESETS.map((p) => {
+          const active = p.hours === null ? !from && !to : false;
+          return (
+            <button
+              key={p.label}
+              type="button"
+              onClick={() => applyPreset(p.hours)}
+              className={
+                "rounded-md border px-2 py-1 text-xs transition-colors " +
+                (active
+                  ? "border-accent-blue/40 bg-accent-blue-soft text-accent-blue"
+                  : "border-border text-muted-foreground hover:text-foreground")
+              }
+            >
+              {p.label}
+            </button>
+          );
+        })}
+      </div>
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] text-muted">From</span>
+          <input
+            type="datetime-local"
+            value={from}
+            onChange={(e) => setFrom(e.target.value)}
+            className="rounded-md border border-border bg-surface px-2 py-1 text-xs"
+          />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] text-muted">To</span>
+          <input
+            type="datetime-local"
+            value={to}
+            onChange={(e) => setTo(e.target.value)}
+            className="rounded-md border border-border bg-surface px-2 py-1 text-xs"
+          />
+        </label>
+        {from || to ? (
+          <button
+            type="button"
+            onClick={() => applyPreset(null)}
+            className="rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:text-foreground"
+          >
+            Clear
+          </button>
+        ) : null}
+        {isFetching ? <span className="pb-1 text-[11px] text-muted">Loading…</span> : null}
+      </div>
+      <span className="text-[11px] text-muted">
+        This period applies to this client only — it is independent of the date
+        filter above the table. With nothing set, every figure below covers the
+        client&rsquo;s whole history as we hold it.
+      </span>
+    </div>
+  );
 
   if (isDemoMode)
     return (
@@ -145,9 +293,28 @@ export function ClientDetail({ reference }: { reference: string }) {
     );
   if (isLoading) return <p className="text-xs text-muted">Loading client…</p>;
   if (isError || !data)
-    return <p className="text-xs text-muted">No payments found for this client.</p>;
+    return (
+      <div className="flex flex-col gap-4">
+        {windowControl}
+        <p className="text-xs text-muted">
+          {from || to
+            ? "No payments for this client in the selected period."
+            : "No payments found for this client."}
+        </p>
+      </div>
+    );
 
   const lt = data.providerLifetime;
+  const windowed = Boolean(data.window.from || data.window.to);
+  const counts = {
+    Deposit: data.history.filter((h) => h.type === "Deposit").length,
+    Withdrawal: data.history.filter((h) => h.type === "Withdrawal").length,
+    Refund: data.history.filter((h) => h.type === "Refund").length,
+  };
+  const shown = kind === "all" ? data.history : data.history.filter((h) => h.type === kind);
+  const periodNote = windowed
+    ? `${stamp(data.window.from)} → ${data.window.to ? stamp(data.window.to) : "now"}`
+    : "their whole history";
   const hasProviderLifetime =
     lt.depositsCount !== null ||
     lt.depositsAmount !== null ||
@@ -156,6 +323,23 @@ export function ClientDetail({ reference }: { reference: string }) {
 
   return (
     <div className="flex flex-col gap-6">
+      {windowControl}
+
+      {/*
+        What the store actually holds for this client. Without it, an empty
+        stretch reads as "this client did nothing then" when it can equally mean
+        "we had not started polling yet" — and the two call for opposite actions.
+      */}
+      {data.window.heldFrom ? (
+        <p className="text-[11px] text-muted">
+          Showing <span className="text-muted-foreground">{periodNote}</span>. We hold payments for
+          this client from {stamp(data.window.heldFrom)} to {stamp(data.window.heldTo)}
+          {data.window.truncated
+            ? " — more than this request reads, so the figures below cover the most recent payments in the period, not all of them. Narrow the period for exact totals."
+            : "."}
+        </p>
+      ) : null}
+
       <Section title="Client">
         <div className="grid grid-cols-2 gap-x-4 gap-y-3">
           <Row label="Reference" value={data.reference} />
@@ -175,7 +359,12 @@ export function ClientDetail({ reference }: { reference: string }) {
         <Section
           key={t.currency}
           title={`Settled · ${t.currency}`}
-          note={`From the ${data.payments} payment${data.payments === 1 ? "" : "s"} this dashboard has ingested — not necessarily the account's full history.`}
+          note={
+            `From the ${data.payments} payment${data.payments === 1 ? "" : "s"} ` +
+            (windowed
+              ? "in the selected period."
+              : "this dashboard has ingested — not necessarily the account's full history.")
+          }
         >
           <div className="grid grid-cols-2 gap-2">
             <Total label="Total deposits" tally={t.deposits} currency={t.currency} tone="text-accent-green" />
@@ -262,32 +451,68 @@ export function ClientDetail({ reference }: { reference: string }) {
         </Section>
       ) : null}
 
-      {data.recent.length ? (
-        <Section title="Recent payments">
-          <div className="flex flex-col divide-y divide-border">
-            {data.recent.map((r) => (
-              <div key={r.id} className="flex items-center justify-between gap-3 py-2 text-sm">
-                <div className="flex min-w-0 flex-col">
-                  <span className="truncate">
-                    {r.type}
-                    {r.method ? ` · ${r.method}` : ""}
-                    {r.psp ? ` · ${r.psp}` : ""}
-                  </span>
-                  <span className="tnum text-[11px] text-muted">
-                    {r.at ? r.at.slice(0, 16).replace("T", " ") : "—"}
-                  </span>
+      <Section
+        title="Payment history"
+        note={`Every payment in the period, newest first — deposits, withdrawals and refunds, settled or not.`}
+      >
+        <div className="flex flex-wrap items-center gap-1.5">
+          {KINDS.map((k) => {
+            const n = k.key === "all" ? data.history.length : counts[k.key];
+            return (
+              <button
+                key={k.key}
+                type="button"
+                onClick={() => setKind(k.key)}
+                className={
+                  "rounded-md border px-2 py-1 text-xs transition-colors " +
+                  (kind === k.key
+                    ? "border-accent-blue/40 bg-accent-blue-soft text-accent-blue"
+                    : "border-border text-muted-foreground hover:text-foreground")
+                }
+              >
+                {k.label} <span className="tnum text-muted">{n}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {shown.length ? (
+          // Scrolls inside the panel rather than being cut off at some arbitrary
+          // count: the whole period is here, however long it is.
+          <div className="max-h-[26rem] overflow-y-auto rounded-lg border border-border">
+            <div className="flex flex-col divide-y divide-border">
+              {shown.map((r) => (
+                <div
+                  key={r.id}
+                  className="flex items-center justify-between gap-3 px-3 py-2 text-sm"
+                >
+                  <div className="flex min-w-0 flex-col">
+                    <span className="truncate">
+                      {r.type}
+                      {r.method ? ` · ${r.method}` : ""}
+                      {r.psp ? ` · ${r.psp}` : ""}
+                    </span>
+                    <span className="tnum text-[11px] text-muted">
+                      {stamp(r.at)}
+                      {r.reference ? ` · ${r.reference}` : ""}
+                    </span>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <span className="tnum text-xs">{money(r.amount, r.currency ?? "")}</span>
+                    {r.state ? <StatusBadge status={r.status} label={r.state} /> : null}
+                  </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
-                  <span className="tnum text-xs">
-                    {money(r.amount, r.currency ?? "")}
-                  </span>
-                  {r.state ? <StatusBadge status={r.status} label={r.state} /> : null}
-                </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
-        </Section>
-      ) : null}
+        ) : (
+          <p className="text-xs text-muted">
+            {data.history.length
+              ? "No payments of this type in the period."
+              : "No payments in the selected period."}
+          </p>
+        )}
+      </Section>
     </div>
   );
 }

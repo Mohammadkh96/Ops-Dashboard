@@ -1,6 +1,7 @@
-import { Controller, Get, Param, Query } from '@nestjs/common';
-import { ApiTags } from '@nestjs/swagger';
+import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ModulesService } from './modules.service';
 import { parseRange } from '../common/range';
 
@@ -42,11 +43,26 @@ export class ModulesController {
 
   /**
    * One client's whole history, by the customer reference on their payments.
-   * Not windowed — see clientProfile.
+   *
+   * The page's date filter is deliberately NOT applied here — the client window
+   * carries its own optional from/to (ISO instants), and with neither this is
+   * everything we hold for them. See clientProfile.
+   *
+   * Behind the guard, unlike its neighbours: this is the one endpoint that
+   * returns a named person's email, phone, KYC status and country alongside
+   * their entire payment history, and it answers to any reference you care to
+   * try. The dashboard already signs in before it can open a client, so the
+   * guard costs nothing there.
    */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
   @Get('clients/:reference')
-  client(@Param('reference') reference: string) {
-    return this.modules.clientProfile(reference);
+  client(
+    @Param('reference') reference: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.modules.clientProfile(reference, from, to);
   }
 
   /** Headline figures for the payment pages, same filters. */

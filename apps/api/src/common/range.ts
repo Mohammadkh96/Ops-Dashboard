@@ -71,6 +71,24 @@ export function parseRange(q: {
   };
 }
 
+/**
+ * One bound of an open-ended window, or undefined when it was not given.
+ *
+ * Unlike parseRange there is no default: an absent bound means "no bound". The
+ * client window relies on that — its honest default is the whole history, not
+ * the last 24 hours, so a missing parameter must not quietly become one.
+ *
+ * Anything Date.parse understands is accepted, which in practice is the ISO
+ * instant the UI sends after converting the operator's local date and time.
+ * Unparseable input is treated as absent rather than as an error: a bad value in
+ * a URL should widen the view, never empty it.
+ */
+export function parseInstant(s?: string): Date | undefined {
+  if (!s) return undefined;
+  const t = Date.parse(s);
+  return Number.isNaN(t) ? undefined : new Date(t);
+}
+
 /** The window immediately before this one, for period-on-period comparison. */
 export function precedingRange(r: TimeRange): TimeRange {
   return {
