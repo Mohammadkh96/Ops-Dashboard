@@ -268,6 +268,33 @@ model ReconPspConfig {
   createdAt DateTime @default(now())
 }
 
+// How far back the historical import has walked, per shop.
+//
+// The poller reads Paymaxis newest-first and stops at the first page it already
+// knows, which is right for staying current and useless for reaching backwards:
+// nothing older than the day polling started ever arrives. This cursor lets a
+// separate pass walk the list deeper, a bounded slice at a time, and resume
+// exactly where it stopped — a serverless invocation is killed at 60s, so a
+// backfill that cannot resume can never finish.
+model PaymaxisBackfill {
+  shopId     String    @id
+  /** The next page to read. Pages, not record offsets, so the cursor survives a
+   *  change of page size. */
+  nextPage   Int       @default(0)
+  pages      Int       @default(0)
+  fetched    Int       @default(0)
+  stored     Int       @default(0)
+  /** The oldest payment reached so far — the honest measure of progress, since
+   *  the total is unknown until the walk ends. */
+  oldestSeen DateTime?
+  done       Boolean   @default(false)
+  lastError  String?
+  /** Held while a step runs, so two invocations cannot walk the same pages. */
+  claimedAt  DateTime?
+  startedAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+}
+
 // A saved reconciliation run — summary metrics plus the exceptions payload so
 // the team can review history without re-uploading files.
 model ReconRun {

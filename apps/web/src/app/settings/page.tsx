@@ -9,10 +9,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import { DataCoverage } from "@/components/settings/data-coverage";
 import { cn } from "@/lib/utils";
 
 const TABS = [
   { key: "profile", label: "Profile" },
+  { key: "data", label: "Data" },
   { key: "notifications", label: "Notifications" },
   { key: "integrations", label: "Integrations" },
   { key: "security", label: "Security" },
@@ -350,7 +352,7 @@ export default function SettingsPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Settings"
-        description="Profile, notifications, integrations and security."
+        description="Profile, data coverage, notifications, integrations and security."
         actions={<Button size="sm">Save changes</Button>}
       />
 
@@ -373,6 +375,7 @@ export default function SettingsPage() {
       </div>
 
       {tab === "profile" ? <ProfileTab /> : null}
+      {tab === "data" ? <DataCoverage /> : null}
       {tab === "notifications" ? <NotificationsTab /> : null}
       {tab === "integrations" ? <IntegrationsTab /> : null}
       {tab === "security" ? <SecurityTab /> : null}

@@ -69,6 +69,61 @@ export class PaymaxisController {
     return this.paymaxis.refresh({ force: body?.force === true });
   }
 
+  /** Where the historical import has reached, without moving it. */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Get('backfill')
+  backfillStatus() {
+    return this.paymaxis.backfillStatus();
+  }
+
+  /**
+   * Walks the payment list one bounded slice further back.
+   *
+   * The poll only ever reaches forward, so this is the only way payments older
+   * than the day polling started arrive at all. One call does one step and
+   * returns; the caller loops. That is deliberate — the walk has to survive a
+   * host that kills a request at 60 seconds, and a step that returns is a step
+   * whose progress is safely on disk.
+   *
+   * Guarded: it spends outbound calls against the live keys, and `reset` throws
+   * away a cursor that may represent hours of walking.
+   */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Post('backfill')
+  backfill(@Body() body?: { shop?: string; budgetMs?: number; reset?: boolean }) {
+    const shops = this.paymaxis.shops;
+    if (!shops.length) return { error: 'PAYMAXIS_SHOPS is not configured' };
+    return this.paymaxis.backfillStep({
+      shopId: body?.shop,
+      budgetMs: body?.budgetMs,
+      reset: body?.reset === true,
+    });
+  }
+
+  /**
+   * The same step, reachable by GET for a scheduler — the walk continues by
+   * itself between visits to the dashboard. Same CRON_SECRET guard as the sync:
+   * without it this would be an unauthenticated endpoint making outbound calls
+   * with the live keys.
+   */
+  @Get('backfill/run')
+  @ApiExcludeEndpoint()
+  async cronBackfill(@Headers('authorization') auth?: string) {
+    const expected = process.env.CRON_SECRET;
+    if (!expected)
+      throw new UnauthorizedException('CRON_SECRET is not configured');
+    const presented = (auth ?? '').replace(/^Bearer\s+/i, '');
+    if (!presented || !secretMatches(presented, expected)) {
+      throw new UnauthorizedException('invalid cron secret');
+    }
+    return {
+      ranAt: new Date().toISOString(),
+      results: await this.paymaxis.backfillStep(),
+    };
+  }
+
   /**
    * Runs one read-only sync now and reports what happened. Lets the connection
    * be proved from a terminal before anything is scheduled or deployed.

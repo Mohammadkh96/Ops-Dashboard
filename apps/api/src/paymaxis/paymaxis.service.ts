@@ -100,6 +100,41 @@ export type RefreshStatus = {
 
 export type ShopConfig = { shopId: string; apiKey: string };
 
+/** The stored walk position, as the progress reporter needs to read it. */
+type BackfillCursor = {
+  nextPage: number;
+  pages: number;
+  fetched: number;
+  stored: number;
+  oldestSeen: Date | null;
+  done: boolean;
+  lastError: string | null;
+};
+
+/** Where the historical import has reached, and what we hold because of it. */
+export type BackfillProgress = {
+  shop: string;
+  done: boolean;
+  /** Cursor: the next page to read. */
+  nextPage: number;
+  pages: number;
+  fetched: number;
+  stored: number;
+  /** The oldest payment reached — the only honest progress figure, since the
+   *  length of the list is unknown until the walk ends. */
+  oldestSeen: string | null;
+  error: string | null;
+  /** What THIS step did, as opposed to the walk so far. */
+  ranPages: number;
+  ranStored: number;
+  /** Another invocation is mid-step; nothing was done. */
+  busy: boolean;
+  /** The span of payments actually held for this shop, all sources. */
+  coverageFrom: string | null;
+  coverageTo: string | null;
+  payments: number;
+};
+
 export type SyncResult = {
   shop: string;
   fetched: number;
@@ -123,9 +158,29 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
   /**
    * Shops come from env as "shopId:apiKey" pairs, so adding a shop needs no
    * code change. Keys are never logged.
+   *
+   * A JSON array is accepted too, because it is the obvious thing to try and the
+   * pair parser turns it into nonsense rather than rejecting it: splitting
+   * `[{"shopId":"6321",…}]` on commas yields a "shop" called `[{"shopId"` which
+   * then authenticates with a key called `"6321"`, and the resulting 401 blames
+   * the credentials instead of the format.
    */
   get shops(): ShopConfig[] {
-    const raw = process.env.PAYMAXIS_SHOPS ?? '';
+    const raw = (process.env.PAYMAXIS_SHOPS ?? '').trim();
+    if (raw.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(raw) as { shopId?: unknown; apiKey?: unknown }[];
+        return parsed
+          .map((s) => ({ shopId: String(s?.shopId ?? ''), apiKey: String(s?.apiKey ?? '') }))
+          .filter((s) => s.shopId && s.apiKey);
+      } catch {
+        this.log.error(
+          'PAYMAXIS_SHOPS looks like JSON but does not parse. Expected either ' +
+            '"shopId:apiKey,shopId:apiKey" or [{"shopId":"…","apiKey":"…"}].',
+        );
+        return [];
+      }
+    }
     return raw
       .split(',')
       .map((pair) => pair.trim())
@@ -329,6 +384,129 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
       });
   }
 
+  /**
+   * Normalises one page of provider records and writes what is new.
+   *
+   * Shared by the poll and the historical import so a payment is interpreted,
+   * deduped and stored identically however it arrived — two writers would
+   * eventually disagree about what a payment is, and the disagreement would show
+   * up as reconciliation exceptions nobody could explain.
+   *
+   * @param seen identities already handled in this walk, so a repeated page is
+   *   not counted twice.
+   * @param opts.broadcast whether to announce these on the live feed. Off for
+   *   the historical import: a six-month-old payment is not an event, and
+   *   replaying thousands of them would bury whatever is actually happening now.
+   */
+  private async storePage(
+    shop: ShopConfig,
+    records: Record<string, unknown>[],
+    seen: Set<string>,
+    opts: { broadcast: boolean },
+  ): Promise<{
+    fresh: number;
+    stored: number;
+    broadcast: number;
+    newest: string | null;
+    oldest: Date | null;
+  }> {
+    let fresh = 0;
+    let newest: string | null = null;
+    let oldest: Date | null = null;
+
+    // Normalise the whole page first, then write it in ONE statement.
+    //
+    // This used to insert a row per record, and each insert was a separate
+    // round trip to the database — measured at ~440ms each against a hosted
+    // Postgres. A 180-record first sync therefore took over a minute, which
+    // on a serverless platform means the function is killed mid-sync before
+    // it ever finishes (Vercel caps a request at 60s).
+    const batch: {
+      payload: Prisma.PaymentEventCreateManyInput;
+      normalized: ReturnType<typeof normalizePayment>;
+    }[] = [];
+
+    for (const raw of records) {
+      const p = normalizePayment(unwrapPayment(raw));
+      if (!p.paymentId && !p.reference) continue; // nothing to key on
+      const identity = p.dedupeKey || p.paymentId || p.reference;
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      fresh += 1;
+      if (p.occurredAt) {
+        const iso = p.occurredAt.toISOString();
+        if (!newest || iso > newest) newest = iso;
+        if (!oldest || p.occurredAt < oldest) oldest = p.occurredAt;
+      }
+
+      batch.push({
+        normalized: p,
+        payload: {
+          provider: 'paymaxis',
+          source: 'poll',
+          signatureOk: true, // authenticated by our own outbound API key
+          dedupeKey: p.dedupeKey,
+          paymentId: p.paymentId || null,
+          externalId: p.externalId || null,
+          terminal: p.terminal || null,
+          psp: p.psp || null,
+          parentPaymentId: p.parentPaymentId || null,
+          cryptoTxHash: p.cryptoTxHash || null,
+          errorCode: p.errorCode || null,
+          errorMessage: p.errorMessage || null,
+          reference: p.reference || null,
+          shop: p.shop || shop.shopId,
+          entity: p.entity || null,
+          state: p.state || null,
+          type: p.type || null,
+          amount: p.amount,
+          currency: p.currency || null,
+          customer: p.customer || null,
+          occurredAt: p.occurredAt,
+          headers: asJson({}),
+          payload: asJson(redactPayload(raw)),
+        },
+      });
+    }
+
+    // Which of these are genuinely new. createMany + skipDuplicates already
+    // makes the unique dedupeKey the arbiter of what gets WRITTEN, but it
+    // reports only a count — not which rows survived — and the feed must
+    // announce exactly the new ones or it repeats itself every cycle.
+    const keys = batch.map((b) => b.payload.dedupeKey).filter(Boolean) as string[];
+    const existing = await this.prisma.paymentEvent
+      .findMany({ where: { dedupeKey: { in: keys } }, select: { dedupeKey: true } })
+      .catch(() => [] as { dedupeKey: string | null }[]);
+    const known = new Set(existing.map((e) => e.dedupeKey));
+    const incoming = batch.filter((b) => !known.has(b.payload.dedupeKey ?? null));
+
+    let stored = 0;
+    let broadcast = 0;
+    if (incoming.length) {
+      const written = await this.prisma.paymentEvent
+        .createMany({ data: incoming.map((b) => b.payload), skipDuplicates: true })
+        .catch((e: unknown) => {
+          this.log.error(`Store failed for shop ${shop.shopId}: ${errText(e)}`);
+          return { count: 0 };
+        });
+
+      if (written.count > 0) {
+        stored = written.count;
+        if (opts.broadcast) {
+          for (const b of incoming) {
+            this.bus.publish(toQueueItem(b.normalized), {
+              settled: b.normalized.settled,
+              amount: b.normalized.amount,
+            });
+            broadcast += 1;
+          }
+        }
+      }
+    }
+
+    return { fresh, stored, broadcast, newest, oldest };
+  }
+
   /** Reads one shop's recent payments and stores/broadcasts only what is new. */
   async syncShop(
     shop: ShopConfig,
@@ -369,95 +547,18 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
         });
         if (!records.length) break;
         res.fetched += records.length;
-        let fresh = 0;
 
-        // Normalise the whole page first, then write it in ONE statement.
-        //
-        // This used to insert a row per record, and each insert was a separate
-        // round trip to the database — measured at ~440ms each against a hosted
-        // Postgres. A 180-record first sync therefore took over a minute, which
-        // on a serverless platform means the function is killed mid-sync before
-        // it ever finishes (Vercel caps a request at 60s).
-        const batch: {
-          payload: Prisma.PaymentEventCreateManyInput;
-          normalized: ReturnType<typeof normalizePayment>;
-        }[] = [];
+        // One writer for both the poll and the historical import, so a payment
+        // is normalised, deduped and stored identically however it arrived.
+        const wrote = await this.storePage(shop, records, seen, {
+          broadcast: true,
+        });
+        const fresh = wrote.fresh;
+        const storedOnPage = wrote.stored;
+        res.stored += wrote.stored;
+        res.broadcast += wrote.broadcast;
+        if (wrote.newest && wrote.newest > newest) newest = wrote.newest;
 
-        for (const raw of records) {
-          const p = normalizePayment(unwrapPayment(raw));
-          if (!p.paymentId && !p.reference) continue; // nothing to key on
-          const identity = p.dedupeKey || p.paymentId || p.reference;
-          if (seen.has(identity)) continue;
-          seen.add(identity);
-          fresh += 1;
-          if (p.occurredAt && p.occurredAt.toISOString() > newest)
-            newest = p.occurredAt.toISOString();
-
-          batch.push({
-            normalized: p,
-            payload: {
-              provider: 'paymaxis',
-              source: 'poll',
-              signatureOk: true, // authenticated by our own outbound API key
-              dedupeKey: p.dedupeKey,
-              paymentId: p.paymentId || null,
-              externalId: p.externalId || null,
-              terminal: p.terminal || null,
-              psp: p.psp || null,
-              parentPaymentId: p.parentPaymentId || null,
-              cryptoTxHash: p.cryptoTxHash || null,
-              errorCode: p.errorCode || null,
-              errorMessage: p.errorMessage || null,
-              reference: p.reference || null,
-              shop: p.shop || shop.shopId,
-              entity: p.entity || null,
-              state: p.state || null,
-              type: p.type || null,
-              amount: p.amount,
-              currency: p.currency || null,
-              customer: p.customer || null,
-              occurredAt: p.occurredAt,
-              headers: asJson({}),
-              payload: asJson(redactPayload(raw)),
-            },
-          });
-        }
-
-        // Which of these are genuinely new. createMany + skipDuplicates already
-        // makes the unique dedupeKey the arbiter of what gets WRITTEN, but it
-        // reports only a count — not which rows survived — and the feed must
-        // announce exactly the new ones or it repeats itself every cycle.
-        const keys = batch.map((b) => b.payload.dedupeKey).filter(Boolean) as string[];
-        const existing = await this.prisma.paymentEvent
-          .findMany({ where: { dedupeKey: { in: keys } }, select: { dedupeKey: true } })
-          .catch(() => [] as { dedupeKey: string | null }[]);
-        const known = new Set(existing.map((e) => e.dedupeKey));
-        const incoming = batch.filter((b) => !known.has(b.payload.dedupeKey ?? null));
-
-        let storedOnPage = 0;
-        if (incoming.length) {
-          const written = await this.prisma.paymentEvent
-            .createMany({
-              data: incoming.map((b) => b.payload),
-              skipDuplicates: true,
-            })
-            .catch((e: unknown) => {
-              this.log.error(`Store failed for shop ${shop.shopId}: ${errText(e)}`);
-              return { count: 0 };
-            });
-
-          if (written.count > 0) {
-            res.stored += written.count;
-            storedOnPage = written.count;
-            for (const b of incoming) {
-              this.bus.publish(toQueueItem(b.normalized), {
-                settled: b.normalized.settled,
-                amount: b.normalized.amount,
-              });
-              res.broadcast += 1;
-            }
-          }
-        }
         if (!hasMore) break;
 
         // Caught up. The list is ordered newest-first and there is no date
@@ -508,6 +609,249 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
       this.log.error(`Sync failed for shop ${shop.shopId}: ${res.error}`);
     }
     return res;
+  }
+
+  /**
+   * Walks one shop's payment list backwards, a bounded slice at a time.
+   *
+   * The poller cannot do this, by design: it reads newest-first and stops at the
+   * first page it already knows, which keeps a steady-state poll to one request
+   * and means nothing older than the day polling started is ever fetched. So a
+   * client who deposited in January is simply absent from a dashboard that
+   * started reading in June, and no filter or window can recover them.
+   *
+   * Three things make this survivable on a host that kills a request at 60s:
+   *
+   *   · the cursor is written after EVERY page, so an invocation cut short loses
+   *     one page, not the walk;
+   *   · each step has a wall-clock budget and returns before it is spent, so the
+   *     caller decides whether to continue;
+   *   · a claim stops two invocations walking the same pages at once, which on a
+   *     serverless host is otherwise the normal case rather than a rare one.
+   *
+   * Historical rows are stored but NOT broadcast — see storePage.
+   */
+  async backfillStep(
+    opts: { shopId?: string; budgetMs?: number; reset?: boolean } = {},
+  ): Promise<BackfillProgress[]> {
+    const shops = opts.shopId
+      ? this.shops.filter((s) => s.shopId === opts.shopId)
+      : this.shops;
+    if (!shops.length) return [];
+
+    // Bounded so a caller cannot ask for a step longer than the platform will
+    // allow the request to live.
+    const budgetMs = Math.min(
+      Math.max(opts.budgetMs ?? Number(process.env.PAYMAXIS_BACKFILL_BUDGET_MS ?? 20_000), 1_000),
+      45_000,
+    );
+    const maxPages = Number(process.env.PAYMAXIS_BACKFILL_MAX_PAGES ?? 25);
+
+    const out: BackfillProgress[] = [];
+    for (const shop of shops) {
+      out.push(await this.backfillShop(shop, budgetMs, maxPages, opts.reset === true));
+    }
+    return out;
+  }
+
+  private async backfillShop(
+    shop: ShopConfig,
+    budgetMs: number,
+    maxPages: number,
+    reset: boolean,
+  ): Promise<BackfillProgress> {
+    const started = Date.now();
+    const blank = {
+      nextPage: 0, pages: 0, fetched: 0, stored: 0,
+      oldestSeen: null as Date | null, done: false,
+      lastError: null as string | null, claimedAt: null as Date | null,
+    };
+
+    let cursor =
+      (await this.prisma.paymaxisBackfill
+        .upsert({
+          where: { shopId: shop.shopId },
+          create: { shopId: shop.shopId },
+          update: {},
+        })
+        .catch((e: unknown) => {
+          this.log.warn(`Backfill cursor unavailable for ${shop.shopId}: ${errText(e)}`);
+          return null;
+        })) ?? { shopId: shop.shopId, startedAt: new Date(), updatedAt: new Date(), ...blank };
+
+    if (reset) {
+      cursor = await this.prisma.paymaxisBackfill.update({
+        where: { shopId: shop.shopId },
+        data: { ...blank, startedAt: new Date() },
+      });
+    }
+
+    if (cursor.done) return this.backfillProgress(shop.shopId, cursor, 0, 0);
+
+    // A claim younger than this is assumed live. Longer than any single step can
+    // run, so a step that ended normally never blocks the next one; short enough
+    // that an invocation killed mid-walk unblocks itself within a minute.
+    const CLAIM_TTL_MS = 90_000;
+    if (cursor.claimedAt && Date.now() - cursor.claimedAt.getTime() < CLAIM_TTL_MS) {
+      return { ...(await this.backfillProgress(shop.shopId, cursor, 0, 0)), busy: true };
+    }
+    cursor = await this.prisma.paymaxisBackfill.update({
+      where: { shopId: shop.shopId },
+      data: { claimedAt: new Date(), lastError: null },
+    });
+
+    const client = new PaymaxisClient(
+      process.env.PAYMAXIS_BASE_URL ?? PAYMAXIS_DEFAULT_BASE_URL,
+      shop.apiKey,
+      process.env.PAYMAXIS_AUTH_HEADER ?? 'Authorization',
+    );
+
+    const seen = new Set<string>();
+    let ranPages = 0;
+    let ranStored = 0;
+    let previousPage: string | null = null;
+    let error: string | null = null;
+
+    try {
+      while (ranPages < maxPages && Date.now() - started < budgetMs) {
+        const { records, hasMore } = await client.listPayments({ page: cursor.nextPage });
+
+        if (!records.length) {
+          cursor = await this.finishBackfill(shop.shopId, 'the list ran out');
+          break;
+        }
+
+        // A fingerprint of the page, to catch the pagination parameter silently
+        // not being honoured. Without this the walk would re-read the newest
+        // page until the budget ran out, every time, forever — and report
+        // progress while standing still.
+        const fingerprint = records
+          .map((r) => String((unwrapPayment(r) as { id?: unknown }).id ?? ''))
+          .join(',');
+        if (previousPage !== null && fingerprint === previousPage) {
+          throw new Error(
+            'page repeated itself — the pagination parameter is not taking effect ' +
+              '(check PAYMAXIS_PAGE_PARAM / PAYMAXIS_PAGE_MODE)',
+          );
+        }
+        previousPage = fingerprint;
+
+        const wrote = await this.storePage(shop, records, seen, { broadcast: false });
+        ranPages += 1;
+        ranStored += wrote.stored;
+
+        const oldest =
+          wrote.oldest && (!cursor.oldestSeen || wrote.oldest < cursor.oldestSeen)
+            ? wrote.oldest
+            : cursor.oldestSeen;
+
+        // Written after every page: an invocation killed here loses one page of
+        // work, not the walk.
+        cursor = await this.prisma.paymaxisBackfill.update({
+          where: { shopId: shop.shopId },
+          data: {
+            nextPage: cursor.nextPage + 1,
+            pages: { increment: 1 },
+            fetched: { increment: records.length },
+            stored: { increment: wrote.stored },
+            oldestSeen: oldest,
+            claimedAt: new Date(),
+          },
+        });
+
+        if (!hasMore) {
+          cursor = await this.finishBackfill(shop.shopId, 'the provider reported no more pages');
+          break;
+        }
+      }
+    } catch (e) {
+      error = errText(e);
+      this.log.error(`Backfill failed for shop ${shop.shopId}: ${error}`);
+      cursor = await this.prisma.paymaxisBackfill.update({
+        where: { shopId: shop.shopId },
+        data: { lastError: error, claimedAt: null },
+      });
+    }
+
+    if (!error) {
+      // Release the claim so the next step can start immediately.
+      cursor = await this.prisma.paymaxisBackfill.update({
+        where: { shopId: shop.shopId },
+        data: { claimedAt: null },
+      });
+      if (ranStored > 0) {
+        this.log.log(
+          `Backfill ${shop.shopId}: ${ranStored} older payment(s) from ${ranPages} page(s).`,
+        );
+      }
+    }
+
+    return this.backfillProgress(shop.shopId, cursor, ranPages, ranStored);
+  }
+
+  private async finishBackfill(shopId: string, why: string) {
+    this.log.log(`Backfill ${shopId}: complete — ${why}.`);
+    return this.prisma.paymaxisBackfill.update({
+      where: { shopId },
+      data: { done: true, claimedAt: null },
+    });
+  }
+
+  /** Cursor state plus what we actually hold, which is the point of the walk. */
+  private async backfillProgress(
+    shopId: string,
+    cursor: {
+      nextPage: number; pages: number; fetched: number; stored: number;
+      oldestSeen: Date | null; done: boolean; lastError: string | null;
+    },
+    ranPages: number,
+    ranStored: number,
+  ): Promise<BackfillProgress> {
+    const coverage = await this.prisma.paymentEvent
+      .aggregate({
+        where: { shop: shopId },
+        _min: { occurredAt: true },
+        _max: { occurredAt: true },
+        _count: { _all: true },
+      })
+      .catch(() => null);
+
+    return {
+      shop: shopId,
+      done: cursor.done,
+      nextPage: cursor.nextPage,
+      pages: cursor.pages,
+      fetched: cursor.fetched,
+      stored: cursor.stored,
+      oldestSeen: cursor.oldestSeen ? cursor.oldestSeen.toISOString() : null,
+      error: cursor.lastError,
+      ranPages,
+      ranStored,
+      busy: false,
+      coverageFrom: coverage?._min.occurredAt ? coverage._min.occurredAt.toISOString() : null,
+      coverageTo: coverage?._max.occurredAt ? coverage._max.occurredAt.toISOString() : null,
+      payments: coverage?._count._all ?? 0,
+    };
+  }
+
+  /** Where the historical import has got to, without moving it. */
+  async backfillStatus(): Promise<BackfillProgress[]> {
+    const rows: (BackfillCursor & { shopId: string })[] =
+      await this.prisma.paymaxisBackfill.findMany().catch(() => []);
+    const byShop = new Map(rows.map((r): [string, BackfillCursor] => [r.shopId, r]));
+    return Promise.all(
+      this.shops.map((s) =>
+        this.backfillProgress(
+          s.shopId,
+          byShop.get(s.shopId) ?? {
+            nextPage: 0, pages: 0, fetched: 0, stored: 0,
+            oldestSeen: null, done: false, lastError: null,
+          },
+          0,
+          0,
+        ),
+      ),
+    );
   }
 
   async status() {
