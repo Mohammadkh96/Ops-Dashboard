@@ -1,13 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { Download } from "lucide-react";
 
 import { PageHeader } from "@/components/ui/page-header";
 import { type Stat } from "@/components/ui/stat-tile";
 import { PaymentStats } from "@/components/payments/payment-stats";
-import { Button } from "@/components/ui/button";
-import { useToast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 import { TransactionsTable } from "@/components/payments/transactions-table";
 import { GatewayGrid } from "@/components/payments/gateway-grid";
@@ -27,24 +24,18 @@ const TABS = [
 
 export default function PaymentsPage() {
   const [tab, setTab] = useState<(typeof TABS)[number]["key"]>("transactions");
-  const { toast } = useToast();
 
   return (
     <div className="flex flex-col gap-6">
+      {/*
+        Export moved next to the table. It raised a toast promising a download
+        that never arrived, and it sat in the page header where it had no idea
+        which columns were shown or which filters were applied — the two things
+        that decide what an export should contain.
+      */}
       <PageHeader
         title="Payments"
         description="Every transaction and PSP, monitored in real time."
-        actions={
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() =>
-              toast({ title: "Export started", description: "Your CSV will download shortly." })
-            }
-          >
-            <Download className="size-4" /> Export
-          </Button>
-        }
       />
 
       <PaymentStats demo={demoStats} />

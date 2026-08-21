@@ -32,6 +32,10 @@ export type Transaction = {
   // every row, all of it invented.
   risk: Risk | null;
   createdAt: string;
+  // Every field Paymaxis sent, keyed by the API's catalogue. The table shows a
+  // handful by default and the column picker offers the rest. Absent in demo
+  // mode, where there is no payload behind the row.
+  fields?: Record<string, string | number | boolean | null>;
 };
 
 export type Gateway = {

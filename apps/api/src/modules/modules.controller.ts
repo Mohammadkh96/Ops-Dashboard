@@ -23,6 +23,17 @@ export class ModulesController {
     return this.modules.transactions(type, parseRange({ range, from, to }));
   }
 
+  /**
+   * The available columns and their grouping.
+   *
+   * Declared before the :id route: Nest matches in declaration order, so
+   * "columns" would otherwise be read as a payment id.
+   */
+  @Get('transactions/columns')
+  columns() {
+    return this.modules.columns();
+  }
+
   /** Everything stored about one payment, including its real state history. */
   @Get('transactions/:id')
   transaction(@Param('id') id: string) {

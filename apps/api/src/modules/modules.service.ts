@@ -7,6 +7,12 @@ import {
   providerLabel,
 } from '../paymaxis/normalize';
 import type { TimeRange } from '../common/range';
+import {
+  GROUP_LABELS,
+  PAYMENT_FIELDS,
+  paymentFieldValues,
+  type MappedRow,
+} from './payment-fields';
 
 /**
  * Serves the operational module datasets.
@@ -149,6 +155,15 @@ export class ModulesService {
   }
 
   /**
+   * The field catalogue: which columns exist, what to call them, how to group
+   * them. Served rather than duplicated in the frontend so the table, the
+   * drawer and the export cannot drift from what the API actually returns.
+   */
+  columns() {
+    return { groups: GROUP_LABELS, fields: PAYMENT_FIELDS };
+  }
+
+  /**
    * Rows inside a window, preferring when the payment actually happened over
    * when we heard about it. A callback can arrive minutes after the event, and
    * filtering on arrival time would put a payment in the wrong day.
@@ -231,6 +246,16 @@ export class ModulesService {
             state: true,
             occurredAt: true,
             receivedAt: true,
+            // Read for the full field set behind each row: the drawer and the
+            // column picker offer everything Paymaxis sent, not the nine
+            // columns the table happens to show by default.
+            parentPaymentId: true,
+            cryptoTxHash: true,
+            errorCode: true,
+            errorMessage: true,
+            shop: true,
+            source: true,
+            signatureOk: true,
             // paymentMethod is only in the raw payload; reading it here avoids
             // a schema change and works on everything already stored.
             payload: true,
@@ -427,6 +452,11 @@ export class ModulesService {
       source: anchor.source,
       signatureOk: anchor.signatureOk,
 
+      // The whole catalogue, so the drawer can show every field Paymaxis sent
+      // rather than the dozen someone thought to map. Grouped by the UI using
+      // the same specs the column picker reads.
+      fields: paymentFieldValues(anchor as MappedRow),
+
       history: history.map((h) => ({
         state: providerLabel(h.state),
         amount: Math.abs(h.amount),
@@ -505,6 +535,10 @@ export class ModulesService {
       status,
       state: state || null,
       stateLabel: providerLabel(state),
+      // Everything Paymaxis sent about this payment, under the catalogue's
+      // keys. The table shows a handful by default and lets the reader add any
+      // of the rest; sending them with the row avoids a request per column.
+      fields: paymentFieldValues(r as MappedRow),
       // No risk scoring exists. The column showed a fabricated level for every
       // row; null renders as "—" so it is plainly absent rather than invented.
       risk: null,

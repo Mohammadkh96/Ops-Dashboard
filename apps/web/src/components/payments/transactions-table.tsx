@@ -1,17 +1,84 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Copy } from "lucide-react";
+import { Copy, Download } from "lucide-react";
 
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { FilterBar } from "@/components/ui/filter-bar";
 import { StatusBadge, RiskBadge } from "@/components/ui/status-badge";
+import { ColumnPicker } from "@/components/payments/column-picker";
 import { TransactionDetail } from "@/components/payments/transaction-detail";
 import { Drawer } from "@/components/ui/drawer";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/toast";
 import { type Transaction } from "@/lib/modules";
 import { useTransactions } from "@/hooks/use-modules";
+import {
+  fieldText,
+  useColumnCatalogue,
+  useVisibleColumns,
+  type FieldSpec,
+} from "@/lib/columns";
+
+/** Reads a catalogued value off a row, whichever half of the row holds it. */
+const valueOf = (t: Transaction, key: string) => t.fields?.[key] ?? null;
+
+/**
+ * Cells the table renders specially — a coloured badge, a signed amount, a
+ * monospaced reference. Everything else falls through to plain text, which is
+ * what a field like "Billing Postal Code" wants anyway.
+ */
+function cellFor(spec: FieldSpec, t: Transaction) {
+  switch (spec.key) {
+    case "reference":
+      return (
+        <span className="font-mono text-xs text-muted-foreground">
+          {t.reference}
+        </span>
+      );
+    case "type":
+      return (
+        <span
+          className={
+            t.type === "Withdrawal" ? "text-accent-magenta" : "text-accent-blue"
+          }
+        >
+          {t.type}
+        </span>
+      );
+    case "stateLabel":
+      return <StatusBadge status={t.status} label={t.stateLabel ?? undefined} />;
+    case "amount":
+      return <span className="tnum font-medium">{money(t)}</span>;
+    case "customer":
+      return t.client;
+    case "time":
+      return <span className="tnum text-muted">{t.createdAt}</span>;
+    default: {
+      const v = fieldText(valueOf(t, spec.key));
+      if (!v) return <span className="text-muted">—</span>;
+      // Long opaque values — addresses, JSON blobs, hashes — would otherwise
+      // stretch a column past the width of the screen.
+      return (
+        <span
+          title={v.length > 28 ? v : undefined}
+          className={
+            spec.align === "right"
+              ? "tnum text-muted-foreground"
+              : "block max-w-[16rem] truncate text-muted-foreground"
+          }
+        >
+          {v}
+        </span>
+      );
+    }
+  }
+}
+
+/** RFC 4180: quotes doubled, and any field containing a comma, quote or newline quoted. */
+function csvCell(v: string) {
+  return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+}
 
 const money = (t: Transaction) => {
   const sign = t.type === "Withdrawal" ? "−" : "+";
@@ -27,6 +94,12 @@ export function TransactionsTable({ fixedType }: { fixedType?: "Deposit" | "With
   const [selected, setSelected] = useState<Transaction | null>(null);
   const { data: transactions, isLoading } = useTransactions(fixedType);
   const { toast } = useToast();
+  const { data: catalogue } = useColumnCatalogue();
+  const { visible, isCustom, set: setVisible, reset } = useVisibleColumns(catalogue);
+  const byKey = useMemo(
+    () => new Map((catalogue?.fields ?? []).map((f) => [f.key, f])),
+    [catalogue],
+  );
 
   const base = useMemo(
     () => (fixedType ? transactions.filter((t) => t.type === fixedType) : transactions),
@@ -62,34 +135,55 @@ export function TransactionsTable({ fixedType }: { fixedType?: "Deposit" | "With
     [base, search, status, method, gateway],
   );
 
-  const columns: Column<Transaction>[] = [
-    { key: "ref", header: "Reference", render: (t) => <span className="font-mono text-xs text-muted-foreground">{t.reference}</span> },
-    { key: "client", header: "Client", render: (t) => t.client },
-    { key: "type", header: "Type", render: (t) => <span className={t.type === "Withdrawal" ? "text-accent-magenta" : "text-accent-blue"}>{t.type}</span> },
-    {
-      key: "method",
-      header: "Method",
-      // The provider's own name. The filter above still groups by the four
-      // buckets, so "Card" finds Basic Card and Google Pay alike, while the row
-      // says which of them this actually was.
-      render: (t) => (
-        <span className="text-muted-foreground">{t.methodLabel ?? t.method}</span>
-      ),
-    },
-    { key: "gateway", header: "PSP", render: (t) => <span className="text-muted-foreground">{t.gateway}</span> },
-    { key: "amount", header: "Amount", align: "right", render: (t) => <span className="tnum font-medium">{money(t)}</span> },
-    { key: "risk", header: "Risk", render: (t) => <RiskBadge level={t.risk} /> },
-    {
-      key: "status",
-      header: "Status",
-      // The provider's own wording, coloured by the bucket it falls into. The
-      // bucket name alone flattened five distinct states onto "Pending".
-      render: (t) => (
-        <StatusBadge status={t.status} label={t.stateLabel ?? undefined} />
-      ),
-    },
-    { key: "time", header: "Time", align: "right", render: (t) => <span className="tnum text-muted">{t.createdAt}</span> },
-  ];
+  const columns: Column<Transaction>[] = visible.map((key) => {
+    const spec =
+      byKey.get(key) ?? ({ key, label: key, group: "payment" } as FieldSpec);
+    return {
+      key,
+      header: spec.label,
+      align: spec.align,
+      render: (t: Transaction) => cellFor(spec, t),
+    };
+  });
+
+  /**
+   * Exports what is on screen: the chosen columns, the applied filters, in the
+   * order shown. The button used to raise a toast saying a download would start
+   * and then not download anything.
+   */
+  function exportCsv() {
+    const header = columns.map((c) => csvCell(c.header)).join(",");
+    const body = filtered.map((t) =>
+      visible
+        .map((key) => {
+          // Bespoke cells hold their value on the row rather than in `fields`.
+          if (key === "reference") return csvCell(t.reference);
+          if (key === "type") return csvCell(t.type);
+          if (key === "customer") return csvCell(t.client);
+          if (key === "amount")
+            return csvCell(
+              `${t.type === "Withdrawal" ? "-" : ""}${t.amount}`,
+            );
+          return csvCell(fieldText(valueOf(t, key)));
+        })
+        .join(","),
+    );
+    // The BOM makes Excel read it as UTF-8; without it, a customer name with an
+    // accent in it arrives mangled.
+    const blob = new Blob(["\ufeff" + [header, ...body].join("\r\n")], {
+      type: "text/csv;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `payments-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast({
+      title: "Export ready",
+      description: `${filtered.length} rows, ${columns.length} columns.`,
+    });
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -114,6 +208,24 @@ export function TransactionsTable({ fixedType }: { fixedType?: "Deposit" | "With
         <span className="ml-auto text-xs text-muted">
           {filtered.length} of {transactions.length}
         </span>
+        {catalogue ? (
+          <ColumnPicker
+            catalogue={catalogue}
+            visible={visible}
+            onChange={setVisible}
+            onReset={reset}
+            isCustom={isCustom}
+          />
+        ) : null}
+        <button
+          type="button"
+          onClick={exportCsv}
+          disabled={!filtered.length}
+          className="flex h-9 items-center gap-1.5 rounded-lg border border-border bg-card px-3 text-xs font-medium text-muted-foreground transition-colors hover:border-border-strong hover:text-foreground disabled:opacity-40"
+        >
+          <Download className="size-3.5" />
+          Export
+        </button>
       </FilterBar>
 
       <DataTable
