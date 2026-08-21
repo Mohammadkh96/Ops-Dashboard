@@ -7,6 +7,7 @@ import { DataTable, type Column } from "@/components/ui/data-table";
 import { FilterBar } from "@/components/ui/filter-bar";
 import { StatusBadge, RiskBadge } from "@/components/ui/status-badge";
 import { ColumnPicker } from "@/components/payments/column-picker";
+import { ClientDetail } from "@/components/payments/client-detail";
 import { TransactionDetail } from "@/components/payments/transaction-detail";
 import { Drawer } from "@/components/ui/drawer";
 import { Button } from "@/components/ui/button";
@@ -28,7 +29,11 @@ const valueOf = (t: Transaction, key: string) => t.fields?.[key] ?? null;
  * monospaced reference. Everything else falls through to plain text, which is
  * what a field like "Billing Postal Code" wants anyway.
  */
-function cellFor(spec: FieldSpec, t: Transaction) {
+function cellFor(
+  spec: FieldSpec,
+  t: Transaction,
+  onClient?: (reference: string) => void,
+) {
   switch (spec.key) {
     case "reference":
       return (
@@ -51,7 +56,21 @@ function cellFor(spec: FieldSpec, t: Transaction) {
     case "amount":
       return <span className="tnum font-medium">{money(t)}</span>;
     case "customer":
-      return t.client;
+      // Opens the client rather than the payment. stopPropagation because the
+      // row itself is clickable: without it, both drawers would fire and the
+      // payment would win, which is the opposite of what was clicked.
+      return (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onClient?.(t.client);
+          }}
+          className="text-left underline decoration-dotted decoration-muted underline-offset-4 transition-colors hover:text-accent-blue"
+        >
+          {t.client}
+        </button>
+      );
     case "time":
       return <span className="tnum text-muted">{t.createdAt}</span>;
     default: {
@@ -92,6 +111,7 @@ export function TransactionsTable({ fixedType }: { fixedType?: "Deposit" | "With
   const [method, setMethod] = useState("");
   const [gateway, setGateway] = useState("");
   const [selected, setSelected] = useState<Transaction | null>(null);
+  const [client, setClient] = useState<string | null>(null);
   const { data: transactions, isLoading } = useTransactions(fixedType);
   const { toast } = useToast();
   const { data: catalogue } = useColumnCatalogue();
@@ -142,7 +162,7 @@ export function TransactionsTable({ fixedType }: { fixedType?: "Deposit" | "With
       key,
       header: spec.label,
       align: spec.align,
-      render: (t: Transaction) => cellFor(spec, t),
+      render: (t: Transaction) => cellFor(spec, t, setClient),
     };
   });
 
@@ -292,6 +312,15 @@ export function TransactionsTable({ fixedType }: { fixedType?: "Deposit" | "With
         }
       >
         {selected ? <TransactionDetail row={selected} /> : null}
+      </Drawer>
+
+      <Drawer
+        open={client !== null}
+        onOpenChange={(o) => !o && setClient(null)}
+        title={client ?? ""}
+        subtitle="Client history"
+      >
+        {client ? <ClientDetail reference={client} /> : null}
       </Drawer>
     </div>
   );

@@ -13,6 +13,7 @@ import {
   paymentFieldValues,
   type MappedRow,
 } from './payment-fields';
+import { buildClientProfile } from './client-profile';
 
 /**
  * Serves the operational module datasets.
@@ -278,6 +279,43 @@ export class ModulesService {
       if (out.length >= 150) break;
     }
     return out;
+  }
+
+  /**
+   * One client's history, keyed by the customer reference the provider sends.
+   *
+   * Deliberately not filtered by the dashboard's selected window: "Total
+   * Deposits" means what this client has ever paid in, and a lifetime figure
+   * that quietly changed when someone clicked 24h would be worse than no
+   * figure. The window still applies to the table this was opened from.
+   */
+  async clientProfile(reference: string) {
+    const rows = await this.safe(
+      () =>
+        this.prisma.paymentEvent.findMany({
+          where: { customer: reference },
+          orderBy: [{ occurredAt: 'desc' }, { receivedAt: 'desc' }],
+          // Generous but bounded: a client with more history than this gets
+          // totals over their most recent payments, which is still the answer
+          // to "what has this person been doing".
+          take: 2000,
+        }),
+      [],
+    );
+    if (!rows.length) return null;
+
+    // Collapse to one row per payment, newest state first — the same rule the
+    // table uses. Summing every stored state would count a payment once for
+    // each state it passed through.
+    const seen = new Set<string>();
+    const latest = rows.filter((r) => {
+      const identity = r.paymentId || r.reference || r.id;
+      if (seen.has(identity)) return false;
+      seen.add(identity);
+      return true;
+    });
+
+    return buildClientProfile(reference, latest as MappedRow[]);
   }
 
   /**

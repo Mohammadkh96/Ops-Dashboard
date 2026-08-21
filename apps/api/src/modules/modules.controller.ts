@@ -40,6 +40,15 @@ export class ModulesController {
     return this.modules.transactionDetail(id);
   }
 
+  /**
+   * One client's whole history, by the customer reference on their payments.
+   * Not windowed — see clientProfile.
+   */
+  @Get('clients/:reference')
+  client(@Param('reference') reference: string) {
+    return this.modules.clientProfile(reference);
+  }
+
   /** Headline figures for the payment pages, same filters. */
   @Get('payments/stats')
   paymentStats(
