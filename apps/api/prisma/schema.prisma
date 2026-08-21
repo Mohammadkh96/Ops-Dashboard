@@ -278,6 +278,13 @@ model ReconRun {
   layer1Total    Int      @default(0)
   layer2Matched  Int      @default(0)
   layer2Total    Int      @default(0)
+  // Chain-level figures. A transaction gets ONE verdict from the whole
+  // CRM → Paymaxis → PSP chain, so these — not the per-layer pairs above — are
+  // what the history table reports. The pairs are kept for rows written before
+  // this column existed, and because a per-leg count is still worth having.
+  reconciled     Int      @default(0)
+  inScope        Int      @default(0)
+  p1             Int      @default(0)
   exceptionCount Int      @default(0)
   exposure       Float    @default(0)
   summary        Json

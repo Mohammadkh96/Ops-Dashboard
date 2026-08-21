@@ -40,6 +40,9 @@ export type ReconRunDto = {
   layer1Total?: number;
   layer2Matched?: number;
   layer2Total?: number;
+  reconciled?: number;
+  inScope?: number;
+  p1?: number;
   exceptionCount?: number;
   exposure?: number;
   summary: unknown;
@@ -168,6 +171,9 @@ export class ReconService {
             layer1Total: run.layer1Total ?? 0,
             layer2Matched: run.layer2Matched ?? 0,
             layer2Total: run.layer2Total ?? 0,
+            reconciled: run.reconciled ?? 0,
+            inScope: run.inScope ?? 0,
+            p1: run.p1 ?? 0,
             exceptionCount: run.exceptionCount ?? 0,
             exposure: run.exposure ?? 0,
             summary: asJson(run.summary),
@@ -193,6 +199,9 @@ export class ReconService {
           layer1Total: true,
           layer2Matched: true,
           layer2Total: true,
+          reconciled: true,
+          inScope: true,
+          p1: true,
           exceptionCount: true,
           exposure: true,
         },

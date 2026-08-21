@@ -1,5 +1,5 @@
 import { runReconciliation } from "@/lib/recon/engine";
-import { BUILTIN_PSPS } from "@/lib/recon/registry";
+import { DEFAULT_PSPS } from "@/lib/recon/registry";
 import type { Dataset } from "@/lib/recon/types";
 
 const ds = (rows: Record<string, string>[]): Dataset => ({
@@ -39,7 +39,7 @@ const crm = ds([
     "Brand Title": "Tradin Global", LastUpdated: "2026-08-06 01:00:00", "Customer No": "CU2" },
 ]);
 
-const r = runReconciliation(crm, cashier, BUILTIN_PSPS, {}, new Date("2026-08-21T00:00:00Z").toISOString());
+const r = runReconciliation(crm, cashier, DEFAULT_PSPS, {}, new Date("2026-08-21T00:00:00Z").toISOString());
 
 let fail = 0;
 const eq = (n: string, got: unknown, want: unknown) => {

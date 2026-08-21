@@ -27,7 +27,10 @@ import { cn } from "@/lib/utils";
 
 import { parseFile } from "@/lib/recon/parse";
 import { loadPsps, savePsps, resetPsps, DEFAULT_PSPS, emptyPsp, missingColumns, uploadTargets, detectTargets, CRM_MAP, CASHIER_MAP } from "@/lib/recon/registry";
-import { runReconciliation, providerCoverage } from "@/lib/recon/engine";
+// The reconciliation logic is the ported V15 pipeline (see lib/recon/v15).
+// `providerCoverage` stays: it inspects the uploaded files, not the verdicts.
+import { providerCoverage } from "@/lib/recon/engine";
+import { runReconV15, type ReconOne } from "@/lib/recon/v15";
 import { formatDuration } from "@/lib/recon/timing";
 import { reconRowsToCsv, downloadText } from "@/lib/recon/export";
 import { loadPspsRemote, savePspsRemote, saveRunRemote, listRunsRemote, type RunSummaryRow } from "@/lib/recon/api";
@@ -87,6 +90,9 @@ export default function ReconciliationPage() {
   const { toast } = useToast();
   const { user } = useAuth();
   const [tab, setTab] = useState<TabKey>("sources");
+  // The V15 pipeline's own output: one flat row per transaction. The tables read
+  // from `result`, which is a projection of exactly these rows.
+  const [one, setOne] = useState<ReconOne | null>(null);
   const [psps, setPsps] = useState<PspConfig[]>([]);
   const [datasets, setDatasets] = useState<Record<string, Dataset>>({});
   const [result, setResult] = useState<ReconResult | null>(null);
@@ -221,8 +227,20 @@ export default function ReconciliationPage() {
     psps.forEach((p) => {
       if (datasets[p.id]) pspData[p.id] = datasets[p.id];
     });
-    const res = runReconciliation(datasets.crm, datasets.cashier, psps, pspData, new Date().toISOString(), opts);
+    // Workflow the team typed in last run, so a re-run never discards it.
+    const priorWorkflow = new Map(
+      Object.entries(cases).map(([key, c]) => [
+        key,
+        { resolution: c.resolution, owner: c.owner, opsNotes: c.notes },
+      ]),
+    );
+    const run = runReconV15(
+      datasets.crm, datasets.cashier, psps, pspData,
+      new Date().toISOString(), opts, priorWorkflow,
+    );
+    const res = run.result;
     setResult(res);
+    setOne(run.one);
     try {
       window.localStorage.setItem(RESULT_KEY, JSON.stringify(res));
     } catch {
@@ -244,7 +262,12 @@ export default function ReconciliationPage() {
         (anoms.list.length ? ` · ${anoms.list.length} regression(s) flagged` : ""),
     });
     // Live mode: persist the run server-side and refresh shared history.
-    void saveRunRemote(res, user?.email).then(() => listRunsRemote()).then((h) => {
+    void saveRunRemote(res, user?.email, {
+      reconciled: run.one.kpis.reconciled,
+      inScope: run.one.kpis.inScope,
+      p1: run.one.kpis.p1,
+      exposure: run.one.kpis.exposure,
+    }).then(() => listRunsRemote()).then((h) => {
       if (h.length) setRuns(h);
     });
   };
@@ -363,7 +386,7 @@ export default function ReconciliationPage() {
       ) : tab === "matched" ? (
         <MatchedTab result={result} />
       ) : (
-        <ResultsTab result={result} runs={runs} drill={drill} onClearDrill={() => setDrill(null)} />
+        <ResultsTab result={result} one={one} runs={runs} drill={drill} onClearDrill={() => setDrill(null)} />
       )}
 
       {editing ? (
@@ -1156,6 +1179,13 @@ function Fld({ label: l, children }: { label: string; children: React.ReactNode 
 function RunHistory({ runs }: { runs: RunSummaryRow[] }) {
   if (!runs.length) return null;
   const rate = (m: number, t: number) => (t > 0 ? Math.round((m / t) * 100) : 0);
+  // One rate per run, over the whole chain. Runs saved before the chain columns
+  // existed only have the per-layer counts; summing them is the same population,
+  // so the older rows stay comparable instead of reading 0%.
+  const reconciledRate = (r: RunSummaryRow) =>
+    r.inScope
+      ? rate(r.reconciled ?? 0, r.inScope)
+      : rate(r.layer1Matched + r.layer2Matched, r.layer1Total + r.layer2Total);
   return (
     <div className="flex flex-col gap-2">
       <h3 className="text-xs font-medium uppercase tracking-wider text-muted">
@@ -1168,8 +1198,8 @@ function RunHistory({ runs }: { runs: RunSummaryRow[] }) {
               <tr className="border-b border-border bg-surface/40 text-left text-xs uppercase tracking-wider text-muted">
                 <th className="px-5 py-3 font-medium">When</th>
                 <th className="px-5 py-3 font-medium">By</th>
-                <th className="px-5 py-3 text-right font-medium">L1</th>
-                <th className="px-5 py-3 text-right font-medium">L2</th>
+                <th className="px-5 py-3 text-right font-medium">Reconciled</th>
+                <th className="px-5 py-3 text-right font-medium">P1</th>
                 <th className="px-5 py-3 text-right font-medium">Exceptions</th>
                 <th className="px-5 py-3 text-right font-medium">Exposure</th>
               </tr>
@@ -1179,8 +1209,22 @@ function RunHistory({ runs }: { runs: RunSummaryRow[] }) {
                 <tr key={r.id} className="border-b border-border/50 last:border-0">
                   <td className="px-5 py-3 text-muted-foreground">{new Date(r.ranAt).toLocaleString()}</td>
                   <td className="px-5 py-3 text-muted-foreground">{r.ranBy || "—"}</td>
-                  <td className="px-5 py-3 text-right tnum">{rate(r.layer1Matched, r.layer1Total)}%</td>
-                  <td className="px-5 py-3 text-right tnum">{rate(r.layer2Matched, r.layer2Total)}%</td>
+                  <td className="px-5 py-3 text-right tnum">
+                    {reconciledRate(r)}%
+                    {r.inScope ? (
+                      <span className="ml-1 text-xs text-muted">
+                        {r.reconciled ?? 0}/{r.inScope}
+                      </span>
+                    ) : null}
+                  </td>
+                  <td
+                    className={cn(
+                      "px-5 py-3 text-right tnum",
+                      r.p1 ? "text-accent-red" : "text-muted",
+                    )}
+                  >
+                    {r.p1 ?? "—"}
+                  </td>
                   <td className="px-5 py-3 text-right tnum text-accent-red">{r.exceptionCount}</td>
                   <td className="px-5 py-3 text-right tnum">${money(r.exposure)}</td>
                 </tr>
@@ -1193,13 +1237,88 @@ function RunHistory({ runs }: { runs: RunSummaryRow[] }) {
   );
 }
 
+/**
+ * The pipeline's own output: one row per transaction, one verdict, the whole
+ * CRM → Paymaxis → PSP chain. The breakdowns below are projections of these
+ * rows, so they can never disagree with what is shown here.
+ */
+function ReconOneTable({ one }: { one: ReconOne }) {
+  const k = one.kpis;
+  // The headline figures for these rows are the page's stat tiles — see
+  // ResultsTab. Repeating them here would invite the two rows to drift apart.
+  const columns: Column<ReconOne["rows"][number]>[] = [
+    {
+      key: "prio", header: "Prio",
+      render: (r) => (
+        <span
+          className={cn(
+            "rounded px-1.5 py-0.5 font-mono text-[11px] font-medium",
+            r.priority === "P1" ? "bg-accent-red-soft text-accent-red"
+              : r.priority === "P2" ? "bg-accent-orange-soft text-accent-orange"
+              : r.priority === "P3" ? "bg-accent-purple-soft text-accent-purple"
+              : r.priority === "P4" ? "bg-accent-blue-soft text-accent-blue"
+              : "text-muted",
+          )}
+        >
+          {r.priority}
+        </span>
+      ),
+    },
+    // The provider's own verdict text, not a re-labelling of it.
+    { key: "status", header: "Status", render: (r) => <span className="text-xs">{r.status}</span> },
+    { key: "chain", header: "Chain", render: (r) => <span className="text-xs text-muted">{r.chain}</span> },
+    { key: "type", header: "Type", render: (r) => <span className="text-xs text-muted">{r.txType || "—"}</span> },
+    { key: "entity", header: "Entity", render: (r) => <span className="text-xs text-muted">{r.entity || "—"}</span> },
+    { key: "crm", header: "CRM", render: (r) => (
+      <span className="text-xs">{r.crmStatus || <span className="text-muted">none</span>}</span>) },
+    { key: "cash", header: "Paymaxis", render: (r) => (
+      <span className="text-xs">{r.cashierState || <span className="text-muted">none</span>}</span>) },
+    { key: "psp", header: "PSP", render: (r) => (
+      <span className="text-xs">{r.pspStatus || <span className="text-muted">none</span>}</span>) },
+    { key: "exp", header: "Exposure", align: "right", render: (r) => (
+      <span className={cn("tnum", r.exposure ? "text-accent-red" : "text-muted")}>${money(r.exposure)}</span>) },
+    { key: "took", header: "Took", align: "right", render: (r) =>
+      r.timing?.totalMs == null ? <span className="text-muted">—</span> : (
+        <span className={cn("tnum", r.timing.slow ? "text-accent-orange" : "text-muted")}>
+          {formatDuration(r.timing.totalMs)}
+        </span>
+      ) },
+    { key: "audit", header: "Flag", render: (r) => (
+      <span className="text-xs text-accent-orange">{r.audit || ""}</span>) },
+  ];
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-0.5">
+        <h3 className="text-xs font-medium uppercase tracking-wider text-muted">
+          Recon One — every transaction, one verdict
+        </h3>
+        <span className="text-[11px] text-muted">
+          {one.rows.length.toLocaleString()} transaction(s) · {k.dropped.toLocaleString()} never
+          reached a layer · {k.audit.toLocaleString()} carrying a provider flag ·{" "}
+          {k.slow.toLocaleString()} took over 24h. Worst first.
+        </span>
+      </div>
+      <DataTable
+        columns={columns}
+        rows={one.rows}
+        getRowKey={(r) => r.caseKey}
+        pageSize={12}
+        empty="No transactions."
+      />
+    </div>
+  );
+}
+
 function ResultsTab({
   result,
+  one,
   runs,
   drill,
   onClearDrill,
 }: {
   result: ReconResult | null;
+  one: ReconOne | null;
   runs: RunSummaryRow[];
   drill: { brand?: string; psp?: string } | null;
   onClearDrill: () => void;
@@ -1279,14 +1398,34 @@ function ResultsTab({
   }
 
   const { layer1, layer2, byPsp, byBrand, byEntity, exceptions } = result;
-  const netted = layer1.rows.filter((r) => r.matchKey === "Aggregated").length;
-  const stats: Stat[] = [
-    { label: "L1 match rate", value: layer1.stats.total ? `${layer1.stats.matchRate}%` : "N/A", tone: layer1.stats.matchRate >= 90 ? "green" : "orange" },
-    { label: "L2 match rate", value: layer2.stats.total ? `${layer2.stats.matchRate}%` : "N/A", tone: !layer2.stats.total ? "blue" : layer2.stats.matchRate >= 90 ? "green" : "orange" },
-    { label: "Matched", value: layer1.stats.matched.toLocaleString(), tone: "green" },
-    { label: "Exceptions", value: exceptions.length.toLocaleString(), tone: exceptions.length ? "red" : "green" },
-    { label: "Exposure", value: `$${money(layer2.stats.exposure + layer1.stats.exposure)}`, tone: "purple" },
-  ];
+  // Netted withdrawals: the pipeline sums the CRM legs against the single gross
+  // Paymaxis row and records the arithmetic in the row's note, which is where
+  // the count now comes from (the old "Aggregated" match key no longer exists).
+  const netted = one
+    ? one.rows.filter((r) => r.notes.includes("Aggregated ")).length
+    : layer1.rows.filter((r) => r.matchKey === "Aggregated").length;
+  // One set of headline figures, read off the same rows the queue renders, so a
+  // tile can never disagree with the verdict below it. The old per-layer match
+  // rates are gone: a transaction now gets one verdict from the whole CRM →
+  // Paymaxis → PSP chain, so "L1 rate" and "L2 rate" were two partial views of
+  // the same number and read as a contradiction. The layer sections below stay —
+  // they are where a chain leg is inspected, not where it is scored.
+  const k = one?.kpis;
+  const stats: Stat[] = k
+    ? [
+        { label: "P1 · critical", value: String(k.p1), tone: k.p1 ? "red" : "green" },
+        { label: "P2 · high", value: String(k.p2), tone: k.p2 ? "orange" : "green" },
+        { label: "P3 · review", value: String(k.p3), tone: k.p3 ? "purple" : "green" },
+        { label: "P4 · audit flag", value: String(k.p4), tone: k.p4 ? "blue" : "green" },
+        { label: `Reconciled · ${k.matchRate}%`, value: `${k.reconciled}/${k.inScope}`, tone: k.matchRate >= 95 ? "green" : "orange" },
+        { label: "Exposure", value: `$${money(k.exposure)}`, tone: k.exposure ? "red" : "green" },
+      ]
+    // A result restored from history predates Recon One and carries no KPIs.
+    : [
+        { label: "Matched", value: (layer1.stats.matched + layer2.stats.matched).toLocaleString(), tone: "green" },
+        { label: "Exceptions", value: exceptions.length.toLocaleString(), tone: exceptions.length ? "red" : "green" },
+        { label: "Exposure", value: `$${money(layer2.stats.exposure + layer1.stats.exposure)}`, tone: "purple" },
+      ];
 
   const breakdownColumns = (firstHeader: string): Column<Breakdown>[] => [
     { key: "k", header: firstHeader, render: (b) => <span className="font-medium">{b.key}</span> },
@@ -1336,11 +1475,13 @@ function ResultsTab({
         </p>
       ) : null}
 
+      {one ? <ReconOneTable one={one} /> : null}
+
       {netted > 0 ? (
         <p className="rounded-lg border border-accent-blue/25 bg-accent-blue-soft px-3 py-2 text-xs text-accent-blue">
-          {netted.toLocaleString()} matches were <span className="font-medium">netted</span> — split
-          transactions (several CRM legs summing to one cashier movement) reconciled into a single line.
-          See “Matched via: Aggregated” in the Matched tab.
+          {netted.toLocaleString()} withdrawal(s) were <span className="font-medium">netted</span> —
+          several CRM legs (net amount plus commission) summed against the one gross Paymaxis
+          movement. Each row&rsquo;s note shows the legs it added up.
         </p>
       ) : null}
 

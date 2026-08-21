@@ -40,6 +40,18 @@ export class SaveRunDto {
 
   @IsOptional()
   @IsInt()
+  reconciled?: number;
+
+  @IsOptional()
+  @IsInt()
+  inScope?: number;
+
+  @IsOptional()
+  @IsInt()
+  p1?: number;
+
+  @IsOptional()
+  @IsInt()
   exceptionCount?: number;
 
   @IsOptional()
