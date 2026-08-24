@@ -33,6 +33,28 @@ export type DetectionKind =
   | 'stuck-in-flight'
   | 'data-stopped';
 
+/**
+ * One of the payments the detection is about.
+ *
+ * A count is enough to raise an incident and never enough to work one: the
+ * first question after "54 payments are stuck" is always "which ones" — the
+ * references to quote to the provider, the customers to warn, whether it is one
+ * terminal or all of them. Without these, whoever is on the desk has to go and
+ * reconstruct the query the detector just ran.
+ */
+export type DetectionSample = {
+  reference: string;
+  customer: string | null;
+  psp: string | null;
+  type: string | null;
+  amount: number;
+  currency: string | null;
+  state: string | null;
+  at: string;
+  /** How long it has been in this state, in minutes. */
+  ageMins: number;
+};
+
 export type Detection = {
   /** Stable across runs for the same condition, so declaring one twice reopens
    *  the same incident rather than making a second. */
@@ -43,6 +65,11 @@ export type Detection = {
   impact: string;
   /** The counts behind the call, in the order a human would check them. */
   evidence: string[];
+  /** The payments themselves, worst/oldest first. Capped — the count in the
+   *  evidence is the true total. */
+  samples: DetectionSample[];
+  /** How many payments the condition covers, when more than the samples shown. */
+  sampleTotal: number;
   /** When the condition started, as far as the data shows. */
   since: string | null;
   psp: string | null;
@@ -50,6 +77,9 @@ export type Detection = {
 
 /** One payment, already collapsed to its latest state. */
 export type DetectRow = {
+  /** What a person would quote: the provider's payment id or our reference. */
+  reference: string;
+  customer: string | null;
   psp: string | null;
   state: string | null;
   type: string | null;
@@ -85,7 +115,24 @@ const MIN_STUCK = 3;
 /** Silence longer than this, while polling is configured, is a fault. */
 const SILENCE_MS = 2 * 60 * 60_000;
 
+/** Enough to see the pattern — one terminal or all of them — without a wall. */
+const MAX_SAMPLES = 25;
+
 const pct = (n: number, d: number) => (d ? Math.round((n / d) * 100) : 0);
+
+function toSamples(rows: DetectRow[], now: Date): DetectionSample[] {
+  return rows.slice(0, MAX_SAMPLES).map((r) => ({
+    reference: r.reference,
+    customer: r.customer,
+    psp: r.psp,
+    type: r.type,
+    amount: r.amount,
+    currency: r.currency,
+    state: r.state,
+    at: r.at.toISOString(),
+    ageMins: Math.max(0, Math.round((now.getTime() - r.at.getTime()) / 60_000)),
+  }));
+}
 
 function fmtAge(ms: number): string {
   const mins = Math.round(ms / 60_000);
@@ -125,6 +172,8 @@ export function detectIncidents(input: DetectInput): Detection[] {
           `Polling is configured, so data was expected within ${fmtAge(SILENCE_MS)}.`,
           'Check the sync badge in the header and the API logs for a rejected key or an unreachable host.',
         ],
+        samples: [],
+        sampleTotal: 0,
         since: input.lastEventAt ? input.lastEventAt.toISOString() : null,
         psp: null,
       },
@@ -141,6 +190,8 @@ export function detectIncidents(input: DetectInput): Detection[] {
     lastSettledAt: Date | null;
     failedAmount: number;
     currency: string | null;
+    /** The failures themselves, so the incident can name them. */
+    recentFailures: DetectRow[];
   };
   const byPsp = new Map<string, Bucket>();
 
@@ -151,6 +202,7 @@ export function detectIncidents(input: DetectInput): Detection[] {
       {
         recentSettled: 0, recentFailed: 0, baseSettled: 0, baseFailed: 0,
         firstFailureAt: null, lastSettledAt: null, failedAmount: 0, currency: null,
+        recentFailures: [],
       };
     const isRecent = r.at >= recentFrom;
     const ok = settled(r.state ?? '');
@@ -165,6 +217,7 @@ export function detectIncidents(input: DetectInput): Detection[] {
         b.recentFailed++;
         b.failedAmount = Math.round((b.failedAmount + Math.abs(r.amount)) * 100) / 100;
         b.currency = b.currency ?? r.currency;
+        b.recentFailures.push(r);
         if (!b.firstFailureAt || r.at < b.firstFailureAt) b.firstFailureAt = r.at;
       } else b.baseFailed++;
     }
@@ -198,6 +251,10 @@ export function detectIncidents(input: DetectInput): Detection[] {
             ? `Value of the failed attempts: ${b.failedAmount.toLocaleString()} ${b.currency ?? ''}`.trim() + '.'
             : '',
         ].filter(Boolean),
+        // Newest first: the most recent failures are the ones to quote when
+        // asking the provider what changed.
+        samples: toSamples(b.recentFailures, now),
+        sampleTotal: b.recentFailures.length,
         since: b.firstFailureAt ? b.firstFailureAt.toISOString() : null,
         psp,
       });
@@ -225,6 +282,8 @@ export function detectIncidents(input: DetectInput): Detection[] {
               ? `Value of the declined attempts in the last hour: ${b.failedAmount.toLocaleString()} ${b.currency ?? ''}`.trim() + '.'
               : '',
           ].filter(Boolean),
+          samples: toSamples(b.recentFailures, now),
+          sampleTotal: b.recentFailures.length,
           since: b.firstFailureAt ? b.firstFailureAt.toISOString() : null,
           psp,
         });
@@ -265,6 +324,10 @@ export function detectIncidents(input: DetectInput): Detection[] {
         `Oldest: ${oldest.at.toISOString()} (${fmtAge(now.getTime() - oldest.at.getTime())} ago)${oldest.psp ? ` at ${oldest.psp}` : ''}.`,
         `Combined value: ${value.toLocaleString()} ${stuck[0].currency ?? ''}`.trim() + '.',
       ],
+      // Oldest first: the payment that has been waiting longest is the one the
+      // customer is already asking about.
+      samples: toSamples([...stuck].sort((a, b2) => a.at.getTime() - b2.at.getTime()), now),
+      sampleTotal: stuck.length,
       since: oldest.at.toISOString(),
       psp: null,
     });

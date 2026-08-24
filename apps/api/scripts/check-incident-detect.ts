@@ -28,7 +28,10 @@ function section(t: string) {
   console.log(`\n── ${t} ──`);
 }
 
+let seq = 0;
 const row = (o: Partial<DetectRow> & { at: Date }): DetectRow => ({
+  reference: `PM-${++seq}`,
+  customer: `CU${1000 + (seq % 7)}`,
   psp: 'Paystrax',
   state: 'COMPLETED',
   type: 'DEPOSIT',
@@ -179,6 +182,23 @@ section('silence with no credentials configured is not a fault');
 {
   const found = run([], { lastEventAt: null, pollConfigured: false });
   ok('stays quiet', found.length === 0, kinds(found));
+}
+
+section('every detection names the payments behind it');
+{
+  const rows = [
+    ...healthy('Paystrax'),
+    ...Array.from({ length: 30 }, (_, i) =>
+      row({ psp: 'ForumPay', at: ago(150 + i * 5), state: 'AWAITING_WEBHOOK', amount: 100 }),
+    ),
+  ];
+  const d = run(rows).find((x) => x.kind === 'stuck-in-flight');
+  ok('carries samples', (d?.samples.length ?? 0) > 0, d?.samples.length);
+  ok('capped, not a wall', (d?.samples.length ?? 0) <= 25, d?.samples.length);
+  ok('reports the true total', d?.sampleTotal === 30, d?.sampleTotal);
+  ok('oldest first', Boolean(d && d.samples[0].ageMins >= d.samples[1].ageMins), d?.samples.slice(0, 2));
+  ok('quotable reference', Boolean(d?.samples[0].reference), d?.samples[0]);
+  ok('names the customer', Boolean(d?.samples[0].customer), d?.samples[0]);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);

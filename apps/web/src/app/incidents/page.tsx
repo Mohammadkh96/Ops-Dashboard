@@ -46,6 +46,19 @@ type Incident = {
   rootCause?: string;
   resolution?: string;
   evidence?: string[];
+  /** The payments the incident is about — see DetectionSample on the API. */
+  samples?: {
+    reference: string;
+    customer: string | null;
+    psp: string | null;
+    type: string | null;
+    amount: number;
+    currency: string | null;
+    state: string | null;
+    at: string;
+    ageMins: number;
+  }[];
+  sampleTotal?: number;
   psp?: string | null;
   openedAt: string;
   timeline: { time: string; text: string }[];
@@ -57,6 +70,14 @@ const SEVERITY: Record<IncidentSeverity, { color: string; label: string }> = {
   medium: { color: "var(--accent-orange)", label: "SEV-3 Medium" },
   low: { color: "var(--accent-blue)", label: "SEV-4 Low" },
 };
+
+/** Minutes as something a person reads at a glance. */
+function fmtAge(mins: number): string {
+  if (mins < 60) return `${mins}m`;
+  const h = Math.floor(mins / 60);
+  if (h < 24) return `${h}h ${mins % 60}m`;
+  return `${Math.floor(h / 24)}d ${h % 24}h`;
+}
 
 const isActive = (i: Incident) => i.status === "open" || i.status === "investigating";
 
@@ -75,6 +96,9 @@ export default function IncidentsPage() {
   const [declaring, setDeclaring] = useState(false);
   const [form, setForm] = useState({ title: "", severity: "medium", impact: "" });
   const [note, setNote] = useState("");
+  // A toast disappears before it can be read, let alone acted on. The reason a
+  // write failed stays until the next attempt.
+  const [failure, setFailure] = useState<string | null>(null);
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ["incidents"],
@@ -101,10 +125,15 @@ export default function IncidentsPage() {
     onSuccess: () => {
       void refresh();
       setDeclaring(false);
+      setFailure(null);
       setForm({ title: "", severity: "medium", impact: "" });
       toast({ title: "Incident declared" });
     },
-    onError: (e) => toast({ title: "Could not declare", description: String(e) }),
+    onError: (e) => {
+      const detail = e instanceof Error ? e.message : String(e);
+      setFailure(detail);
+      toast({ title: "Could not declare", description: detail });
+    },
   });
 
   const update = useMutation({
@@ -116,9 +145,14 @@ export default function IncidentsPage() {
     onSuccess: () => {
       void refresh();
       setNote("");
+      setFailure(null);
       toast({ title: "Incident updated" });
     },
-    onError: (e) => toast({ title: "Could not update", description: String(e) }),
+    onError: (e) => {
+      const detail = e instanceof Error ? e.message : String(e);
+      setFailure(detail);
+      toast({ title: "Could not update", description: detail });
+    },
   });
 
   const stats: Stat[] = useMemo(() => {
@@ -156,6 +190,21 @@ export default function IncidentsPage() {
       />
 
       <StatTileRow stats={stats} />
+
+      {failure ? (
+        <div className="flex items-start justify-between gap-3 rounded-lg border border-accent-red/25 bg-accent-red-soft px-3 py-2 text-xs text-accent-red">
+          <span>
+            <span className="font-medium">The last action failed.</span> {failure}
+          </span>
+          <button
+            type="button"
+            onClick={() => setFailure(null)}
+            className="shrink-0 underline underline-offset-2"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
 
       {isError ? (
         <p className="rounded-lg border border-accent-red/25 bg-accent-red-soft px-3 py-2 text-xs text-accent-red">
@@ -396,6 +445,61 @@ export default function IncidentsPage() {
                     </li>
                   ))}
                 </ul>
+              </div>
+            ) : null}
+
+            {/* The payments themselves. A count raises an incident; these are
+                what it takes to work one — the references to quote to the
+                provider and the customers who are waiting. */}
+            {selected.samples?.length ? (
+              <div className="flex flex-col gap-1.5">
+                <span className="text-xs font-medium uppercase tracking-wider text-muted">
+                  Payments affected
+                  {selected.sampleTotal && selected.sampleTotal > selected.samples.length
+                    ? ` — showing ${selected.samples.length} of ${selected.sampleTotal}`
+                    : ` — ${selected.samples.length}`}
+                </span>
+                <div className="max-h-72 overflow-y-auto rounded-lg border border-border">
+                  <table className="w-full text-xs">
+                    <thead className="sticky top-0 bg-surface/95 text-left text-muted">
+                      <tr>
+                        <th className="px-2.5 py-2 font-medium">Reference</th>
+                        <th className="px-2.5 py-2 font-medium">Client</th>
+                        <th className="px-2.5 py-2 font-medium">PSP</th>
+                        <th className="px-2.5 py-2 text-right font-medium">Amount</th>
+                        <th className="px-2.5 py-2 font-medium">State</th>
+                        <th className="px-2.5 py-2 text-right font-medium">Age</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selected.samples.map((p) => (
+                        <tr key={p.reference} className="border-t border-border/60">
+                          <td className="px-2.5 py-1.5 font-mono">{p.reference}</td>
+                          <td className="px-2.5 py-1.5 text-muted-foreground">{p.customer ?? "—"}</td>
+                          <td className="px-2.5 py-1.5 text-muted-foreground">{p.psp ?? "—"}</td>
+                          <td className="tnum px-2.5 py-1.5 text-right">
+                            {p.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}{" "}
+                            {p.currency ?? ""}
+                          </td>
+                          <td className="px-2.5 py-1.5 text-muted-foreground">{p.state ?? "—"}</td>
+                          <td className="tnum px-2.5 py-1.5 text-right text-muted">{fmtAge(p.ageMins)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(
+                      selected.samples!.map((p) => p.reference).join("\n"),
+                    );
+                    toast({ title: `${selected.samples!.length} reference(s) copied` });
+                  }}
+                  className="self-start text-[11px] text-muted underline underline-offset-2 hover:text-foreground"
+                >
+                  Copy references
+                </button>
               </div>
             ) : null}
 

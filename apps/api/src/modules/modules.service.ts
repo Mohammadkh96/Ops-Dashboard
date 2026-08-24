@@ -17,6 +17,7 @@ import {
   paymentFieldValues,
   type MappedRow,
 } from './payment-fields';
+import { dbError } from '../common/db-error';
 import { buildClientProfile } from './client-profile';
 import {
   detectIncidents,
@@ -127,6 +128,18 @@ export class ModulesService {
     const hrs = Math.round(mins / 60);
     if (hrs < 24) return `${hrs}h ago`;
     return `${Math.round(hrs / 24)}d ago`;
+  }
+
+  /**
+   * For writes, where there is no honest fallback: the caller asked for a
+   * change, so either it happened or they need to know exactly why it did not.
+   */
+  private async safeOrThrow<T>(fn: () => Promise<T>, doing: string): Promise<T> {
+    try {
+      return await fn();
+    } catch (e) {
+      throw dbError(e, doing);
+    }
   }
 
   private async safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
@@ -936,9 +949,9 @@ export class ModulesService {
           },
           orderBy: [{ occurredAt: 'desc' }, { receivedAt: 'desc' }],
           select: {
-            id: true, paymentId: true, reference: true, psp: true, state: true,
-            type: true, amount: true, currency: true, occurredAt: true,
-            receivedAt: true,
+            id: true, paymentId: true, reference: true, customer: true,
+            psp: true, state: true, type: true, amount: true, currency: true,
+            occurredAt: true, receivedAt: true,
           },
           take: 20_000,
         }),
@@ -954,6 +967,10 @@ export class ModulesService {
       if (seen.has(identity)) continue;
       seen.add(identity);
       out.push({
+        // What a person would quote to the provider, in the order they would
+        // recognise it.
+        reference: r.paymentId || r.reference || r.id,
+        customer: r.customer,
         psp: r.psp,
         state: r.state,
         type: r.type,
@@ -997,6 +1014,15 @@ export class ModulesService {
     const timeline = Array.isArray(n.timeline)
       ? (n.timeline as { at?: string; text?: string; by?: string }[])
       : [];
+    // Stored as { lines, samples }. An array is the older shape, from before
+    // the payments themselves were captured.
+    const ev = (n.evidence ?? null) as
+      | { lines?: string[]; samples?: unknown[]; sampleTotal?: number }
+      | string[]
+      | null;
+    const lines = Array.isArray(ev) ? ev : (ev?.lines ?? []);
+    const samples = Array.isArray(ev) ? [] : (ev?.samples ?? []);
+    const sampleTotal = Array.isArray(ev) ? 0 : (ev?.sampleTotal ?? samples.length);
     return {
       // Stable for the incident's whole life: the list used to number by
       // position, so an incident's reference changed whenever an older one was
@@ -1011,7 +1037,11 @@ export class ModulesService {
       impact: n.impact ?? n.description,
       rootCause: n.rootCause ?? undefined,
       resolution: n.resolution ?? undefined,
-      evidence: Array.isArray(n.evidence) ? (n.evidence as string[]) : [],
+      evidence: lines,
+      // Captured when it was declared: the condition may be long over, and the
+      // references are what the provider and the customers are asked about.
+      samples,
+      sampleTotal,
       openedAt: this.ago(n.createdAt),
       timeline: timeline.map((t) => ({
         time: t.at ? this.hhmm(new Date(t.at)) : '',
@@ -1061,6 +1091,8 @@ export class ModulesService {
         status: 'open' as const,
         owner: 'Unassigned',
         impact: d.impact,
+        samples: d.samples,
+        sampleTotal: d.sampleTotal,
         evidence: closed.has(d.signature)
           ? [
               `Declared as INC-${closed.get(d.signature)?.ref} and closed ${this.ago(
@@ -1096,7 +1128,11 @@ export class ModulesService {
     let title = (input.title ?? '').trim();
     let severity = (input.severity ?? 'MEDIUM').toUpperCase();
     let impact = (input.impact ?? '').trim();
-    let evidence: string[] = [];
+    let evidence: {
+      lines: string[];
+      samples: unknown[];
+      sampleTotal: number;
+    } = { lines: [], samples: [], sampleTotal: 0 };
 
     if (input.signature) {
       const match = (await this.incidentDetections()).find(
@@ -1106,7 +1142,13 @@ export class ModulesService {
         title = title || match.title;
         severity = (input.severity ?? match.severity).toUpperCase();
         impact = impact || match.impact;
-        evidence = match.evidence;
+        // The payments too, not just the counts: the condition is transient and
+        // an hour from now there is no way to reconstruct which ones they were.
+        evidence = {
+          lines: match.evidence,
+          samples: match.samples,
+          sampleTotal: match.sampleTotal,
+        };
       }
     }
     if (!title) throw new BadRequestException('title is required');
@@ -1131,15 +1173,23 @@ export class ModulesService {
 
     // The same live condition declared twice is one incident, reopened — not a
     // second row competing with the first.
-    if (input.signature) {
-      return this.prisma.incident.upsert({
-        where: { signature: input.signature },
-        create: { ...data, signature: input.signature },
-        update: { status: 'OPEN', resolvedAt: null },
-        include: { owner: true },
-      });
+    try {
+      if (input.signature) {
+        return await this.prisma.incident.upsert({
+          where: { signature: input.signature },
+          create: { ...data, signature: input.signature },
+          update: { status: 'OPEN', resolvedAt: null },
+          include: { owner: true },
+        });
+      }
+      return await this.prisma.incident.create({ data, include: { owner: true } });
+    } catch (e) {
+      // Never a bare 500: "Internal server error" on this button is
+      // indistinguishable between a bug, a dropped connection, and an
+      // unapplied migration — which is the common one, and the one with a
+      // two-minute fix.
+      throw dbError(e, 'Declaring the incident');
     }
-    return this.prisma.incident.create({ data, include: { owner: true } });
   }
 
   /** Moves an incident on, and records that it moved. */
@@ -1153,7 +1203,10 @@ export class ModulesService {
       by?: string;
     },
   ) {
-    const current = await this.prisma.incident.findUnique({ where: { id } });
+    const current = await this.safeOrThrow(
+      () => this.prisma.incident.findUnique({ where: { id } }),
+      'Reading the incident',
+    );
     if (!current) throw new NotFoundException('incident not found');
 
     const status = input.status ? input.status.toUpperCase() : undefined;
@@ -1172,7 +1225,8 @@ export class ModulesService {
       added.push({ at, text: `Resolution: ${input.resolution.trim()}`, by: input.by ?? 'Unknown' });
     }
 
-    return this.prisma.incident.update({
+    return this.safeOrThrow(
+      () => this.prisma.incident.update({
       where: { id },
       data: {
         ...(status ? { status: status as never } : {}),
@@ -1187,7 +1241,9 @@ export class ModulesService {
         timeline: [...entries, ...added] as never,
       },
       include: { owner: true },
-    });
+      }),
+      'Updating the incident',
+    );
   }
 
   // -------- operations (tickets from DB; team + checklist representative) --------
