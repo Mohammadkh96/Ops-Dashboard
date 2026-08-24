@@ -20,13 +20,18 @@ import { cn } from "@/lib/utils";
  * against a period somebody names ("how was Tuesday afternoon"), which moves
  * independently of whichever rows the table below is showing.
  *
- * On colour: green/red/orange/blue are the app's status colours, so a declined
- * payment is the same red here as in every badge elsewhere — identity of MEANING
- * matters more across a product than a locally optimal palette. Two of them are
- * close (red↔orange is ΔE 10.6 in normal vision, worse under colour-vision
- * deficiency), so identity never rests on colour alone: every segment carries
- * its percentage, cancelled is textured, segments are separated by a surface
- * gap, and the legend names each state in text beside its count and value.
+ * On colour: this uses the dashboard's own tokens rather than copying the
+ * provider console's four. Cancelled is NEUTRAL, not amber — nobody failed, the
+ * customer walked away, and painting that in a warning colour puts an abandoned
+ * checkout beside a refused card as though they were the same event. It also
+ * removes the one pairing that was genuinely hard to read: red against amber
+ * measures ΔE 10.6 in normal vision, and worse under colour-vision deficiency.
+ *
+ * What is left — green, red, neutral, blue — passes adjacent-pair separation
+ * except green↔red, which is the classic confusion and is why identity never
+ * rests on colour alone here: every segment wide enough carries its percentage,
+ * segments are separated by a surface gap, and the legend names each state in
+ * text beside its count and value.
  */
 
 type StateKey = "completed" | "declined" | "cancelled" | "pending";
@@ -49,12 +54,12 @@ type Report = {
   payments: number;
 };
 
-const STATE: Record<StateKey, { label: string; color: string; textured?: boolean }> = {
+const STATE: Record<StateKey, { label: string; color: string }> = {
   completed: { label: "Completed", color: "var(--accent-green)" },
   declined: { label: "Declined", color: "var(--accent-red)" },
-  // Textured, because orange sits too close to red to carry the distinction on
-  // its own — see the note above.
-  cancelled: { label: "Cancelled", color: "var(--accent-orange)", textured: true },
+  // Neutral on purpose: an abandoned checkout is not a fault, and a warning
+  // colour would file it next to a refusal.
+  cancelled: { label: "Cancelled", color: "var(--muted)" },
   pending: { label: "Pending", color: "var(--accent-blue)" },
 };
 
@@ -156,13 +161,7 @@ function GroupCard({ g }: { g: Group }) {
                   <div
                     key={s.key}
                     title={`${meta.label}: ${s.count} payment(s), ${s.share}%`}
-                    style={{
-                      width: `${Math.max(s.share, 2)}%`,
-                      backgroundColor: meta.color,
-                      backgroundImage: meta.textured
-                        ? "repeating-linear-gradient(45deg, rgba(0,0,0,0.28) 0 3px, transparent 3px 7px)"
-                        : undefined,
-                    }}
+                    style={{ width: `${Math.max(s.share, 2)}%`, backgroundColor: meta.color }}
                     className="rounded-[3px]"
                   />
                 );
@@ -198,12 +197,7 @@ function GroupCard({ g }: { g: Group }) {
                   <span
                     aria-hidden
                     className="size-2 rounded-full"
-                    style={{
-                      backgroundColor: meta.color,
-                      backgroundImage: meta.textured
-                        ? "repeating-linear-gradient(45deg, rgba(0,0,0,0.35) 0 1.5px, transparent 1.5px 3px)"
-                        : undefined,
-                    }}
+                    style={{ backgroundColor: meta.color }}
                   />
                   {/* The state is named in text: colour is a second channel here,
                       never the only one. */}
