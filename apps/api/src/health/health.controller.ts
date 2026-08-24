@@ -3,6 +3,7 @@ import { ApiTags } from '@nestjs/swagger';
 import type { Response } from 'express';
 
 import { allowedOrigins, configuredOrigins, isOriginAllowed } from '../common/cors';
+import { pendingMigrations } from '../common/pending-migrations';
 import { PrismaService } from '../prisma/prisma.service';
 
 @ApiTags('health')
@@ -20,10 +21,24 @@ export class HealthController {
       database = 'down';
     }
 
+    // A reachable database that is behind this build is not healthy: reads work,
+    // and the first write to a new column returns a 500 that looks like a bug in
+    // whatever button was pressed. Named here so the check that is actually
+    // monitored says it, rather than an operator discovering it by accident.
+    const pending = database === 'up' ? await pendingMigrations(this.prisma) : [];
+
     return {
-      status: database === 'up' ? 'ok' : 'degraded',
+      status: database !== 'up' ? 'degraded' : pending.length ? 'behind' : 'ok',
       timestamp: new Date().toISOString(),
       database,
+      pendingMigrations: pending,
+      ...(pending.length
+        ? {
+            hint:
+              `The database has not applied ${pending.length} migration(s) this build needs. ` +
+              'Run: npx prisma migrate deploy (from apps/api). Writes touching new columns will fail until then.',
+          }
+        : {}),
     };
   }
 
@@ -46,7 +61,7 @@ export class HealthController {
    * necessity, since it has to work before sign-in.
    */
   @Get('connectivity')
-  connectivity(
+  async connectivity(
     @Res({ passthrough: true }) res: Response,
     @Headers('origin') origin?: string,
   ) {
@@ -65,6 +80,9 @@ export class HealthController {
         JWT_SECRET: Boolean(process.env.JWT_SECRET),
         PAYMAXIS_SHOPS: Boolean(process.env.PAYMAXIS_SHOPS),
       },
+      // Migration names only — no schema contents, nothing confidential, and
+      // the one fact that explains a whole class of 500s.
+      pendingMigrations: await pendingMigrations(this.prisma),
       timestamp: new Date().toISOString(),
     };
   }

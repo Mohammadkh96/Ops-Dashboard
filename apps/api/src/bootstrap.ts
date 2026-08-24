@@ -5,6 +5,8 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
 import { AppModule } from './app.module';
 import { allowedOrigins, configuredOrigins, isOriginAllowed } from './common/cors';
+import { pendingMigrations } from './common/pending-migrations';
+import { PrismaService } from './prisma/prisma.service';
 
 /**
  * Builds and configures the application without starting a listener.
@@ -87,6 +89,26 @@ export async function createApp(
     app,
     SwaggerModule.createDocument(app, swaggerConfig),
   );
+
+  // Said at boot, for the same reason as the CORS warning above: the symptom
+  // arrives much later and somewhere else. A database behind this build serves
+  // every read perfectly and fails the first write to a new column with a 500,
+  // which reads as a bug in whichever feature was being used at the time.
+  // Deliberately not fatal — the API still serves everything that does not
+  // touch the new columns, and refusing to start would take a working dashboard
+  // down over a migration nobody has run yet.
+  void pendingMigrations(app.get(PrismaService))
+    .then((pending) => {
+      if (pending.length) {
+        Logger.warn(
+          `Database is behind this build: ${pending.length} migration(s) not applied ` +
+            `(${pending.join(', ')}). Run "npx prisma migrate deploy" from apps/api. ` +
+            'Writes touching new columns will fail until then.',
+          'Bootstrap',
+        );
+      }
+    })
+    .catch(() => undefined);
 
   return app;
 }

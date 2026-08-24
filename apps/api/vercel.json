@@ -2,7 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
   "installCommand": "cd ../.. && npm ci",
-  "buildCommand": "npx prisma generate && npx nest build",
+  "buildCommand": "npx prisma generate && node scripts/deploy-migrations.mjs && npx nest build",
   "outputDirectory": "dist",
   "functions": {
     "api/index.js": {
