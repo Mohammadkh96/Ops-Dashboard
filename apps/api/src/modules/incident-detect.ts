@@ -1,0 +1,275 @@
+/**
+ * Incidents the payment data is already telling us about.
+ *
+ * The page used to list four invented incidents — a ForumPay outage, a Visa EU
+ * decline spike — that never changed and never referred to anything. On an
+ * operations screen that is worse than an empty page: it trains whoever is on
+ * the desk to ignore the one place an outage should appear.
+ *
+ * There is no incident-management system to read from, but the dashboard
+ * already holds the evidence an incident is made of: every payment, its
+ * provider, its state and when it reached it. So the incidents here are derived
+ * from that, and each one carries the numbers that produced it. Nothing is
+ * asserted that cannot be checked against the rows.
+ *
+ * Two rules govern what counts as a detection:
+ *
+ *   1. Compare a provider against ITSELF. "Zero settled payments in an hour" is
+ *      an outage for a provider that settles all day and meaningless for one
+ *      that takes two payments a week. Every rule below is a change against
+ *      that provider's own recent baseline.
+ *   2. Say the numbers. Every detection lists the counts behind it, so the
+ *      person reading can disagree with it — a threshold nobody can inspect
+ *      gets ignored the second time it is wrong.
+ *
+ * Detections are transient by design: they live while the condition holds and
+ * disappear when it clears. Declaring one turns it into a persisted incident,
+ * copying the evidence, because by then the condition may already be over.
+ */
+
+export type DetectionKind =
+  | 'psp-failing'
+  | 'decline-spike'
+  | 'stuck-in-flight'
+  | 'data-stopped';
+
+export type Detection = {
+  /** Stable across runs for the same condition, so declaring one twice reopens
+   *  the same incident rather than making a second. */
+  signature: string;
+  kind: DetectionKind;
+  severity: 'critical' | 'high' | 'medium' | 'low';
+  title: string;
+  impact: string;
+  /** The counts behind the call, in the order a human would check them. */
+  evidence: string[];
+  /** When the condition started, as far as the data shows. */
+  since: string | null;
+  psp: string | null;
+};
+
+/** One payment, already collapsed to its latest state. */
+export type DetectRow = {
+  psp: string | null;
+  state: string | null;
+  type: string | null;
+  amount: number;
+  currency: string | null;
+  at: Date;
+};
+
+export type DetectInput = {
+  /** Latest-state payments over the baseline window, newest first. */
+  rows: DetectRow[];
+  now: Date;
+  /** When a payment was last received from anywhere. */
+  lastEventAt: Date | null;
+  /** Whether polling is configured at all — with no credentials, silence is
+   *  expected and reporting it as an incident would be noise. */
+  pollConfigured: boolean;
+  settled: (state: string) => boolean;
+  failed: (state: string) => boolean;
+};
+
+/** The window a "right now" claim is made over. */
+const RECENT_MS = 60 * 60_000;
+/** What "normally" means: the 24 hours before the recent window. */
+const BASELINE_MS = 24 * 60 * 60_000;
+/** Below this, an hour's worth of payments is too few to call anything. */
+const MIN_DECIDED = 5;
+/** A decline rate this much higher than the provider's own baseline. */
+const SPIKE_POINTS = 25;
+/** A payment past this age with no final state is stuck, not in flight. */
+const STUCK_MS = 60 * 60_000;
+const MIN_STUCK = 3;
+/** Silence longer than this, while polling is configured, is a fault. */
+const SILENCE_MS = 2 * 60 * 60_000;
+
+const pct = (n: number, d: number) => (d ? Math.round((n / d) * 100) : 0);
+
+function fmtAge(ms: number): string {
+  const mins = Math.round(ms / 60_000);
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  return `${hours}h ${mins % 60}m`;
+}
+
+export function detectIncidents(input: DetectInput): Detection[] {
+  const { rows, now, settled, failed } = input;
+  const out: Detection[] = [];
+
+  const recentFrom = new Date(now.getTime() - RECENT_MS);
+  const baselineFrom = new Date(now.getTime() - BASELINE_MS);
+
+  // ── Payment data has stopped arriving ────────────────────────────────────
+  //
+  // First, because every other rule reads the same data: if nothing is coming
+  // in, a provider showing zero payments is a reporting failure, not an outage,
+  // and calling it an outage would send someone to the wrong place.
+  const silence = input.lastEventAt ? now.getTime() - input.lastEventAt.getTime() : null;
+  if (input.pollConfigured && (silence === null || silence > SILENCE_MS)) {
+    return [
+      {
+        signature: 'data-stopped',
+        kind: 'data-stopped',
+        severity: 'high',
+        title: 'Payment data has stopped arriving',
+        impact:
+          'Every figure on this dashboard is as old as the last payment received. ' +
+          'Provider-level detection is suspended until data resumes, because ' +
+          'silence would otherwise look like an outage at every provider at once.',
+        evidence: [
+          input.lastEventAt
+            ? `Last payment received ${fmtAge(silence as number)} ago (${input.lastEventAt.toISOString()}).`
+            : 'No payment has ever been received.',
+          `Polling is configured, so data was expected within ${fmtAge(SILENCE_MS)}.`,
+          'Check the sync badge in the header and the API logs for a rejected key or an unreachable host.',
+        ],
+        since: input.lastEventAt ? input.lastEventAt.toISOString() : null,
+        psp: null,
+      },
+    ];
+  }
+
+  // ── Per-provider rules ───────────────────────────────────────────────────
+  type Bucket = {
+    recentSettled: number;
+    recentFailed: number;
+    baseSettled: number;
+    baseFailed: number;
+    firstFailureAt: Date | null;
+    lastSettledAt: Date | null;
+    failedAmount: number;
+    currency: string | null;
+  };
+  const byPsp = new Map<string, Bucket>();
+
+  for (const r of rows) {
+    if (!r.psp || r.at < baselineFrom) continue;
+    const b =
+      byPsp.get(r.psp) ??
+      {
+        recentSettled: 0, recentFailed: 0, baseSettled: 0, baseFailed: 0,
+        firstFailureAt: null, lastSettledAt: null, failedAmount: 0, currency: null,
+      };
+    const isRecent = r.at >= recentFrom;
+    const ok = settled(r.state ?? '');
+    const bad = failed(r.state ?? '');
+
+    if (ok) {
+      if (isRecent) b.recentSettled++;
+      else b.baseSettled++;
+      if (!b.lastSettledAt || r.at > b.lastSettledAt) b.lastSettledAt = r.at;
+    } else if (bad) {
+      if (isRecent) {
+        b.recentFailed++;
+        b.failedAmount = Math.round((b.failedAmount + Math.abs(r.amount)) * 100) / 100;
+        b.currency = b.currency ?? r.currency;
+        if (!b.firstFailureAt || r.at < b.firstFailureAt) b.firstFailureAt = r.at;
+      } else b.baseFailed++;
+    }
+    byPsp.set(r.psp, b);
+  }
+
+  byPsp.forEach((b, psp) => {
+    const recentDecided = b.recentSettled + b.recentFailed;
+    const baseDecided = b.baseSettled + b.baseFailed;
+    if (recentDecided < MIN_DECIDED) return; // too little to say anything
+
+    // Everything is failing at a provider that was working. Not "a provider
+    // with no successes" — one that has never settled here is a routing
+    // question, not an outage.
+    if (b.recentSettled === 0 && b.baseSettled > 0) {
+      out.push({
+        signature: `psp-failing:${psp}`,
+        kind: 'psp-failing',
+        severity: 'critical',
+        title: `${psp} is declining everything`,
+        impact:
+          `Every ${psp} payment in the last hour failed. Customers routed there ` +
+          `cannot fund, and the money is not arriving.`,
+        evidence: [
+          `${b.recentFailed} of ${recentDecided} decided payments failed in the last hour — a 0% success rate.`,
+          `The same provider settled ${b.baseSettled} of ${baseDecided} in the 24 hours before that (${pct(b.baseSettled, baseDecided)}%).`,
+          b.lastSettledAt
+            ? `Last successful payment: ${b.lastSettledAt.toISOString()} (${fmtAge(now.getTime() - b.lastSettledAt.getTime())} ago).`
+            : 'No successful payment in the window.',
+          b.failedAmount
+            ? `Value of the failed attempts: ${b.failedAmount.toLocaleString()} ${b.currency ?? ''}`.trim() + '.'
+            : '',
+        ].filter(Boolean),
+        since: b.firstFailureAt ? b.firstFailureAt.toISOString() : null,
+        psp,
+      });
+      return; // a total outage is not also reported as a decline spike
+    }
+
+    // A decline rate well above this provider's own normal.
+    if (baseDecided >= MIN_DECIDED) {
+      const nowRate = pct(b.recentFailed, recentDecided);
+      const baseRate = pct(b.baseFailed, baseDecided);
+      if (nowRate - baseRate >= SPIKE_POINTS) {
+        out.push({
+          signature: `decline-spike:${psp}`,
+          kind: 'decline-spike',
+          severity: nowRate >= 70 ? 'high' : 'medium',
+          title: `Declines up sharply at ${psp}`,
+          impact:
+            `${psp} is declining ${nowRate}% of payments against a normal of ${baseRate}%. ` +
+            `Deposits that would have funded are being turned away.`,
+          evidence: [
+            `Last hour: ${b.recentFailed} declined of ${recentDecided} decided (${nowRate}%).`,
+            `Previous 24 hours: ${b.baseFailed} of ${baseDecided} (${baseRate}%).`,
+            `That is ${nowRate - baseRate} percentage points above this provider's own baseline (threshold ${SPIKE_POINTS}).`,
+            b.failedAmount
+              ? `Value of the declined attempts in the last hour: ${b.failedAmount.toLocaleString()} ${b.currency ?? ''}`.trim() + '.'
+              : '',
+          ].filter(Boolean),
+          since: b.firstFailureAt ? b.firstFailureAt.toISOString() : null,
+          psp,
+        });
+      }
+    }
+  });
+
+  // ── Payments that never reached a final state ────────────────────────────
+  //
+  // These are the ones that quietly cost money: the customer has paid, the
+  // provider has not confirmed, and nothing in the daily figures says so.
+  const stuck = rows.filter(
+    (r) =>
+      r.at >= baselineFrom &&
+      now.getTime() - r.at.getTime() > STUCK_MS &&
+      !settled(r.state ?? '') &&
+      !failed(r.state ?? ''),
+  );
+  if (stuck.length >= MIN_STUCK) {
+    const byState = new Map<string, number>();
+    stuck.forEach((r) => {
+      const k = r.state || 'unknown';
+      byState.set(k, (byState.get(k) ?? 0) + 1);
+    });
+    const oldest = stuck.reduce((a, b) => (a.at < b.at ? a : b));
+    const value = Math.round(stuck.reduce((s, r) => s + Math.abs(r.amount), 0) * 100) / 100;
+    out.push({
+      signature: 'stuck-in-flight',
+      kind: 'stuck-in-flight',
+      severity: stuck.length >= 10 ? 'high' : 'medium',
+      title: `${stuck.length} payments stuck without a final state`,
+      impact:
+        'These are neither settled nor declined. Money may have left the customer ' +
+        'with nothing confirming it, and they are invisible in settled totals.',
+      evidence: [
+        `${stuck.length} payments older than ${fmtAge(STUCK_MS)} have not reached a final state.`,
+        `States: ${[...byState.entries()].map(([s, n]) => `${s} × ${n}`).join(', ')}.`,
+        `Oldest: ${oldest.at.toISOString()} (${fmtAge(now.getTime() - oldest.at.getTime())} ago)${oldest.psp ? ` at ${oldest.psp}` : ''}.`,
+        `Combined value: ${value.toLocaleString()} ${stuck[0].currency ?? ''}`.trim() + '.',
+      ],
+      since: oldest.at.toISOString(),
+      psp: null,
+    });
+  }
+
+  const rank = { critical: 0, high: 1, medium: 2, low: 3 };
+  return out.sort((a, b) => rank[a.severity] - rank[b.severity]);
+}

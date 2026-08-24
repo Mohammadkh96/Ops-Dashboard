@@ -1,4 +1,14 @@
-import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -90,9 +100,48 @@ export class ModulesController {
     return this.modules.kycCases();
   }
 
+  /**
+   * Open incidents: conditions the payment data is reporting right now, plus
+   * the ones somebody has declared. No invented rows — see ModulesService.
+   */
   @Get('incidents')
   incidents() {
     return this.modules.incidents();
+  }
+
+  /** Declares one. `signature` declares a live detection, evidence and all. */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Post('incidents')
+  declareIncident(
+    @Body()
+    body: {
+      title?: string;
+      severity?: string;
+      impact?: string;
+      signature?: string;
+    },
+    @Req() req: { user?: { email?: string } },
+  ) {
+    return this.modules.declareIncident({ ...body, by: req.user?.email });
+  }
+
+  /** Moves one on — status, root cause, resolution, or just a note. */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Patch('incidents/:id')
+  updateIncident(
+    @Param('id') id: string,
+    @Body()
+    body: {
+      status?: string;
+      rootCause?: string;
+      resolution?: string;
+      note?: string;
+    },
+    @Req() req: { user?: { email?: string } },
+  ) {
+    return this.modules.updateIncident(id, { ...body, by: req.user?.email });
   }
 
   @Get('operations')

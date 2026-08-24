@@ -1,4 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -14,6 +18,11 @@ import {
   type MappedRow,
 } from './payment-fields';
 import { buildClientProfile } from './client-profile';
+import {
+  detectIncidents,
+  type Detection,
+  type DetectRow,
+} from './incident-detect';
 
 /**
  * Serves the operational module datasets.
@@ -902,97 +911,283 @@ export class ModulesService {
   }
 
   // -------- incidents --------
+  //
+  // Two sources, both real. DETECTED comes from the payment data itself and
+  // lives only while the condition holds; DECLARED is a row somebody opened,
+  // and stays until it is resolved. There is no third source: the four invented
+  // incidents this page used to show made an operations screen that could not be
+  // believed, which is worse than one that is empty.
 
-  private incidentsFallback() {
-    return [
-      {
-        id: 'INC-104',
-        title: 'ForumPay gateway offline',
-        severity: 'critical',
-        status: 'investigating',
-        owner: 'Yusuf Ali',
-        impact: 'All ForumPay deposits failing; ~$180K/hr volume affected',
-        rootCause: 'Upstream PSP API returning 503 since 14:02 UTC',
-        openedAt: '18m ago',
-        timeline: [
-          {
-            time: '14:02',
-            text: 'Automated alert: success rate dropped to 0%',
+  /** Latest-state payments over the detector's baseline window. */
+  private async detectorRows(now: Date): Promise<DetectRow[]> {
+    const from = new Date(now.getTime() - 25 * 60 * 60_000);
+    const rows = await this.safe(
+      () =>
+        this.prisma.paymentEvent.findMany({
+          // A callback can arrive after the event it describes, so a payment
+          // with no provider timestamp is placed by when we received it rather
+          // than dropped — dropping it would hide exactly the kind of payment
+          // these rules exist to catch.
+          where: {
+            OR: [
+              { occurredAt: { gte: from } },
+              { AND: [{ occurredAt: null }, { receivedAt: { gte: from } }] },
+            ],
           },
-          { time: '14:05', text: 'On-call paged; incident opened at SEV-1' },
-          { time: '14:11', text: 'PSP status page confirms upstream outage' },
-          {
-            time: '14:16',
-            text: 'Deposits rerouted to LimePay for affected regions',
+          orderBy: [{ occurredAt: 'desc' }, { receivedAt: 'desc' }],
+          select: {
+            id: true, paymentId: true, reference: true, psp: true, state: true,
+            type: true, amount: true, currency: true, occurredAt: true,
+            receivedAt: true,
           },
-        ],
-      },
-      {
-        id: 'INC-103',
-        title: 'Elevated decline rate — Visa EU',
-        severity: 'high',
-        status: 'open',
-        owner: 'Sara Ahmed',
-        impact: 'Card decline rate +14% for EU BINs over 30 min',
-        openedAt: '42m ago',
-        timeline: [
-          { time: '13:38', text: 'Decline-spike alert triggered for Visa EU' },
-          { time: '13:44', text: 'Investigating acquirer-side 3DS friction' },
-        ],
-      },
-      {
-        id: 'INC-102',
-        title: 'Webhook delivery delay — Coinbase',
-        severity: 'medium',
-        status: 'investigating',
-        owner: 'David Chen',
-        impact: 'Deposit confirmations delayed ~40s; no funds at risk',
-        openedAt: '1h ago',
-        timeline: [{ time: '13:20', text: 'Webhook latency breached 10s SLA' }],
-      },
-      {
-        id: 'INC-101',
-        title: 'Duplicate transaction anomaly',
-        severity: 'low',
-        status: 'resolved',
-        owner: 'Sara Ahmed',
-        impact: '3 duplicate authorizations auto-voided',
-        rootCause: 'Client double-submit; idempotency key added',
-        openedAt: '4h ago',
-        timeline: [
-          { time: '10:02', text: 'Anomaly detector flagged duplicates' },
-          { time: '10:31', text: 'Duplicates voided; fix shipped' },
-          { time: '10:40', text: 'Resolved' },
-        ],
-      },
-    ];
+          take: 20_000,
+        }),
+      [],
+    );
+    // One row per payment, latest state first — the same rule every other
+    // figure uses. Counting each state a payment passed through would report a
+    // completed payment as a pending one as well.
+    const seen = new Set<string>();
+    const out: DetectRow[] = [];
+    for (const r of rows) {
+      const identity = r.paymentId || r.reference || r.id;
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      out.push({
+        psp: r.psp,
+        state: r.state,
+        type: r.type,
+        amount: r.amount,
+        currency: r.currency,
+        at: r.occurredAt ?? r.receivedAt,
+      });
+    }
+    return out;
+  }
+
+  /** Conditions the payment data is reporting right now. */
+  async incidentDetections(): Promise<Detection[]> {
+    const now = new Date();
+    const [rows, last] = await Promise.all([
+      this.detectorRows(now),
+      this.safe(
+        () =>
+          this.prisma.paymentEvent.aggregate({ _max: { occurredAt: true } }),
+        null as { _max: { occurredAt: Date | null } } | null,
+      ),
+    ]);
+    if (!rows.length && !last?._max.occurredAt) return [];
+    return detectIncidents({
+      rows,
+      now,
+      lastEventAt: last?._max.occurredAt ?? null,
+      pollConfigured: Boolean((process.env.PAYMAXIS_SHOPS ?? '').trim()),
+      settled: isSettledState,
+      failed: isFailedState,
+    });
+  }
+
+  private incidentView(n: {
+    id: string; ref: number; title: string; description: string;
+    severity: string; status: string; impact: string | null;
+    rootCause: string | null; resolution: string | null;
+    evidence: unknown; timeline: unknown; createdAt: Date;
+    owner: { firstName: string; lastName: string } | null;
+  }) {
+    const timeline = Array.isArray(n.timeline)
+      ? (n.timeline as { at?: string; text?: string; by?: string }[])
+      : [];
+    return {
+      // Stable for the incident's whole life: the list used to number by
+      // position, so an incident's reference changed whenever an older one was
+      // opened and no handover note could point at it.
+      id: `INC-${n.ref}`,
+      key: n.id,
+      source: 'declared' as const,
+      title: n.title,
+      severity: this.lower(n.severity),
+      status: this.lower(n.status),
+      owner: n.owner ? `${n.owner.firstName} ${n.owner.lastName}` : 'Unassigned',
+      impact: n.impact ?? n.description,
+      rootCause: n.rootCause ?? undefined,
+      resolution: n.resolution ?? undefined,
+      evidence: Array.isArray(n.evidence) ? (n.evidence as string[]) : [],
+      openedAt: this.ago(n.createdAt),
+      timeline: timeline.map((t) => ({
+        time: t.at ? this.hhmm(new Date(t.at)) : '',
+        text: [t.text, t.by ? `— ${t.by}` : ''].filter(Boolean).join(' '),
+      })),
+    };
   }
 
   async incidents() {
-    // Live: no invented rows. There is no real source for this yet, so an
-    // empty list is the honest answer — see isLive().
-    if (await this.isLive()) return [];
-    const fallback = this.incidentsFallback();
-    return this.safe(async () => {
-      const rows = await this.prisma.incident.findMany({
+    const declared = await this.safe(
+      () =>
+        this.prisma.incident.findMany({
+          include: { owner: true },
+          orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
+          take: 100,
+        }),
+      [],
+    );
+    const open = new Set(
+      declared
+        .filter((d) => d.status === 'OPEN' || d.status === 'INVESTIGATING')
+        .map((d) => d.signature)
+        .filter(Boolean) as string[],
+    );
+
+    const detections = await this.incidentDetections();
+    // A condition already declared is not also listed as a detection: it is the
+    // same event, and showing it twice doubles the count on the tiles.
+    const fresh = detections.filter((d) => !open.has(d.signature));
+
+    // A condition that is still true after its incident was closed comes back —
+    // hiding a live outage because somebody pressed Resolve is the one failure
+    // this page must not have. It says so rather than appearing from nowhere.
+    const closed = new Map(
+      declared
+        .filter((d) => d.signature && (d.status === 'RESOLVED' || d.status === 'CLOSED'))
+        .map((d): [string, (typeof declared)[number]] => [d.signature as string, d]),
+    );
+
+    return [
+      ...fresh.map((d) => ({
+        id: d.signature,
+        key: d.signature,
+        source: 'detected' as const,
+        title: d.title,
+        severity: d.severity,
+        status: 'open' as const,
+        owner: 'Unassigned',
+        impact: d.impact,
+        evidence: closed.has(d.signature)
+          ? [
+              `Declared as INC-${closed.get(d.signature)?.ref} and closed ${this.ago(
+                closed.get(d.signature)?.resolvedAt ??
+                  (closed.get(d.signature)?.updatedAt as Date),
+              )}, but the data still shows the condition.`,
+              ...d.evidence,
+            ]
+          : d.evidence,
+        psp: d.psp,
+        openedAt: d.since ? this.ago(new Date(d.since)) : 'now',
+        timeline: d.since
+          ? [{ time: this.hhmm(new Date(d.since)), text: 'Condition first seen in the payment data' }]
+          : [],
+      })),
+      ...declared.map((n) => this.incidentView(n)),
+    ];
+  }
+
+  /**
+   * Opens an incident. Declaring a live detection carries its evidence across,
+   * because the condition is transient and there would be nothing left to check
+   * the decision against an hour later.
+   */
+  async declareIncident(input: {
+    title?: string;
+    severity?: string;
+    impact?: string;
+    signature?: string;
+    by?: string;
+  }) {
+    const now = new Date();
+    let title = (input.title ?? '').trim();
+    let severity = (input.severity ?? 'MEDIUM').toUpperCase();
+    let impact = (input.impact ?? '').trim();
+    let evidence: string[] = [];
+
+    if (input.signature) {
+      const match = (await this.incidentDetections()).find(
+        (d) => d.signature === input.signature,
+      );
+      if (match) {
+        title = title || match.title;
+        severity = (input.severity ?? match.severity).toUpperCase();
+        impact = impact || match.impact;
+        evidence = match.evidence;
+      }
+    }
+    if (!title) throw new BadRequestException('title is required');
+
+    const data = {
+      title,
+      description: impact || title,
+      impact: impact || null,
+      severity: severity as never,
+      source: input.signature ? 'DETECTED' : 'DECLARED',
+      evidence: evidence as never,
+      timeline: [
+        {
+          at: now.toISOString(),
+          text: input.signature
+            ? 'Declared from a detected condition; evidence captured'
+            : 'Incident declared',
+          by: input.by ?? 'Unknown',
+        },
+      ] as never,
+    };
+
+    // The same live condition declared twice is one incident, reopened — not a
+    // second row competing with the first.
+    if (input.signature) {
+      return this.prisma.incident.upsert({
+        where: { signature: input.signature },
+        create: { ...data, signature: input.signature },
+        update: { status: 'OPEN', resolvedAt: null },
         include: { owner: true },
-        orderBy: { createdAt: 'desc' },
       });
-      if (rows.length === 0) return fallback;
-      return rows.map((n, i) => ({
-        id: `INC-${104 - i}`,
-        title: n.title,
-        severity: this.lower(n.severity),
-        status: this.lower(n.status),
-        owner: n.owner
-          ? `${n.owner.firstName} ${n.owner.lastName}`
-          : 'Unassigned',
-        impact: n.impact ?? n.description,
-        rootCause: n.rootCause ?? undefined,
-        openedAt: this.ago(n.createdAt),
-        timeline: [{ time: this.hhmm(n.createdAt), text: n.description }],
-      }));
-    }, fallback);
+    }
+    return this.prisma.incident.create({ data, include: { owner: true } });
+  }
+
+  /** Moves an incident on, and records that it moved. */
+  async updateIncident(
+    id: string,
+    input: {
+      status?: string;
+      rootCause?: string;
+      resolution?: string;
+      note?: string;
+      by?: string;
+    },
+  ) {
+    const current = await this.prisma.incident.findUnique({ where: { id } });
+    if (!current) throw new NotFoundException('incident not found');
+
+    const status = input.status ? input.status.toUpperCase() : undefined;
+    const entries = Array.isArray(current.timeline)
+      ? (current.timeline as unknown[])
+      : [];
+    const at = new Date().toISOString();
+    const added: { at: string; text: string; by: string }[] = [];
+    if (status && status !== current.status) {
+      added.push({ at, text: `Status → ${status.toLowerCase()}`, by: input.by ?? 'Unknown' });
+    }
+    if (input.note?.trim()) {
+      added.push({ at, text: input.note.trim(), by: input.by ?? 'Unknown' });
+    }
+    if (input.resolution?.trim()) {
+      added.push({ at, text: `Resolution: ${input.resolution.trim()}`, by: input.by ?? 'Unknown' });
+    }
+
+    return this.prisma.incident.update({
+      where: { id },
+      data: {
+        ...(status ? { status: status as never } : {}),
+        ...(input.rootCause !== undefined ? { rootCause: input.rootCause } : {}),
+        ...(input.resolution !== undefined ? { resolution: input.resolution } : {}),
+        // resolvedAt is set on the transition, not on every later edit.
+        ...(status === 'RESOLVED' || status === 'CLOSED'
+          ? { resolvedAt: current.resolvedAt ?? new Date() }
+          : status
+            ? { resolvedAt: null }
+            : {}),
+        timeline: [...entries, ...added] as never,
+      },
+      include: { owner: true },
+    });
   }
 
   // -------- operations (tickets from DB; team + checklist representative) --------

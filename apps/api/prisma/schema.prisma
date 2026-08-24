@@ -248,7 +248,23 @@ model Incident {
   rootCause   String?
   impact      String?
   resolution  String?
+  /** Human-readable reference (INC-1024), stable for the incident's whole life.
+   *  The list used to number rows by position, so an incident's id changed every
+   *  time an older one was opened. */
+  ref         Int              @default(autoincrement())
+  /** DECLARED by a person, or declared FROM a detection. */
+  source      String           @default("DECLARED")
+  /** The detector signature this was declared from, if any. One incident per
+   *  condition: re-declaring the same live condition reopens rather than
+   *  duplicates. */
+  signature   String?          @unique
+  /** The numbers that justified it, captured at declaration — a detection is
+   *  transient and would otherwise be unverifiable an hour later. */
+  evidence    Json?
+  /** Append-only [{ at, text, by }]. What actually happened, in order. */
+  timeline    Json             @default("[]")
   createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
   resolvedAt  DateTime?
 
   @@index([status])
