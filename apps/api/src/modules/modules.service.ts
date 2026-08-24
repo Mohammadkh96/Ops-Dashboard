@@ -24,6 +24,7 @@ import {
   type Detection,
   type DetectRow,
 } from './incident-detect';
+import { buildSuccessRate, type SuccessRow } from './success-rate';
 
 /**
  * Serves the operational module datasets.
@@ -921,6 +922,75 @@ export class ModulesService {
           : 'Unassigned',
       }));
     }, fallback);
+  }
+
+  /**
+   * The payment overview: volume and outcome, over a window of its own.
+   *
+   * Deliberately not tied to the page's global range. The overview answers "how
+   * is a period going" and is read against yesterday, last week, a specific
+   * afternoon somebody is asking about — a question that moves independently of
+   * whichever rows the table below happens to be showing.
+   */
+  async successRate(from?: string, to?: string) {
+    const gte = parseInstant(from);
+    const lte = parseInstant(to);
+    const where =
+      gte || lte
+        ? {
+            OR: [
+              {
+                occurredAt: {
+                  ...(gte ? { gte } : {}),
+                  ...(lte ? { lte } : {}),
+                },
+              },
+              {
+                AND: [
+                  { occurredAt: null },
+                  {
+                    receivedAt: {
+                      ...(gte ? { gte } : {}),
+                      ...(lte ? { lte } : {}),
+                    },
+                  },
+                ],
+              },
+            ],
+          }
+        : {};
+
+    const events = await this.safe(
+      () =>
+        this.prisma.paymentEvent.findMany({
+          where,
+          orderBy: [{ occurredAt: 'desc' }, { receivedAt: 'desc' }],
+          select: {
+            id: true, paymentId: true, reference: true,
+            type: true, state: true, amount: true, currency: true,
+          },
+          take: 20_000,
+        }),
+      [],
+    );
+
+    // Latest state per payment — the same rule every other figure uses. Counting
+    // each stored state would report one payment as pending AND completed, and
+    // the success rate would move whenever a provider sent an extra callback.
+    const seen = new Set<string>();
+    const rows: SuccessRow[] = [];
+    for (const e of events) {
+      const identity = e.paymentId || e.reference || e.id;
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      rows.push({ type: e.type, state: e.state, amount: e.amount, currency: e.currency });
+    }
+
+    return buildSuccessRate(rows, {
+      settled: isSettledState,
+      from: gte ? gte.toISOString() : null,
+      to: lte ? lte.toISOString() : null,
+    });
   }
 
   // -------- incidents --------

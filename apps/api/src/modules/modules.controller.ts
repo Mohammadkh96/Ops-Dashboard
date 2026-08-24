@@ -75,6 +75,18 @@ export class ModulesController {
     return this.modules.clientProfile(reference, from, to);
   }
 
+  /**
+   * Volume and outcome for a period — the payments overview.
+   *
+   * Takes its own from/to (ISO instants) rather than the shared range: the
+   * overview is read against a period somebody names, which moves independently
+   * of the table underneath it.
+   */
+  @Get('payments/success-rate')
+  successRate(@Query('from') from?: string, @Query('to') to?: string) {
+    return this.modules.successRate(from, to);
+  }
+
   /** Headline figures for the payment pages, same filters. */
   @Get('payments/stats')
   paymentStats(

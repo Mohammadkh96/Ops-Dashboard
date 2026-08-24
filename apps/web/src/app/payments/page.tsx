@@ -5,6 +5,7 @@ import { useState } from "react";
 import { PageHeader } from "@/components/ui/page-header";
 import { type Stat } from "@/components/ui/stat-tile";
 import { PaymentStats } from "@/components/payments/payment-stats";
+import { SuccessRateOverview } from "@/components/payments/success-rate";
 import { cn } from "@/lib/utils";
 import { TransactionsTable } from "@/components/payments/transactions-table";
 import { GatewayGrid } from "@/components/payments/gateway-grid";
@@ -39,6 +40,9 @@ export default function PaymentsPage() {
       />
 
       <PaymentStats demo={demoStats} />
+
+      {/* Volume and outcome over a period of its own — see SuccessRateOverview. */}
+      <SuccessRateOverview />
 
       <div className="flex items-center gap-1 border-b border-border">
         {TABS.map((t) => (

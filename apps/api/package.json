@@ -10,6 +10,7 @@
     "postinstall": "prisma generate",
     "build": "nest build",
     "check:incidents": "tsx scripts/check-incident-detect.ts",
+    "check:overview": "tsx scripts/check-success-rate.ts",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
     "start:dev": "nest start --watch",
