@@ -84,6 +84,20 @@ export type ClientProfile = {
     /** The span we hold ANY payment for, whatever the window asked for. */
     heldFrom: string | null;
     heldTo: string | null;
+    /**
+     * The earliest payment held for anyone. A client whose history starts where
+     * the whole store starts has not been quiet — nothing older has been
+     * fetched yet — and that distinction is the difference between reassuring a
+     * customer and going to import.
+     */
+    storeFrom: string | null;
+    /**
+     * Every identity these figures were gathered under. The provider files a
+     * payment against whichever of referenceId / email / account number the
+     * payload carried, so a client can be several strings; showing them makes a
+     * wrong merge visible instead of silent.
+     */
+    identities: string[];
   };
 };
 
@@ -129,6 +143,8 @@ export function buildClientProfile(
     truncated: false,
     heldFrom: null,
     heldTo: null,
+    storeFrom: null,
+    identities: [],
   },
 ): ClientProfile {
   const byCurrency = new Map<string, CurrencyTotals>();

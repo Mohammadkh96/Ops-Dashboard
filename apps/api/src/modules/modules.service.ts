@@ -320,12 +320,97 @@ export class ModulesService {
    * @param from inclusive ISO instant; the client's whole history when absent.
    * @param to   inclusive ISO instant.
    */
+  /**
+   * Every identity the provider has used for this client.
+   *
+   * `customer` holds whichever of referenceId / email / account number the
+   * payload happened to carry — Paymaxis fills the first that exists, and it is
+   * not the same field on every payment. A crypto deposit that arrived without
+   * a customerReferenceId is therefore filed under the customer's EMAIL, and
+   * looking the client up by their CU reference could not see it: their history
+   * silently split in two, and the half that was missing was usually the older
+   * half.
+   *
+   * So a client is matched on any identity that appears on a payment already
+   * known to be theirs. Two passes, because email → reference can lead to a
+   * second email. Bounded, and every identity used is reported, so a wrong merge
+   * is visible on screen rather than silently folded into someone's totals.
+   */
+  private async clientIdentities(seed: string): Promise<string[]> {
+    const found = new Set<string>([seed]);
+
+    for (let pass = 0; pass < 2; pass++) {
+      const rows = await this.safe(
+        () =>
+          this.prisma.paymentEvent.findMany({
+            where: { customer: { in: [...found] } },
+            orderBy: [{ occurredAt: 'desc' }],
+            select: { payload: true },
+            take: 200,
+          }),
+        [],
+      );
+      const before = found.size;
+      for (const r of rows) {
+        const f = paymentFieldValues(r as MappedRow);
+        for (const key of ['customerReferenceId', 'customerEmail', 'customerAccountNumber']) {
+          const v = f[key];
+          // An identity has to be a non-empty string that is not obviously a
+          // placeholder; merging on "N/A" would join every client that has one.
+          if (typeof v === 'string' && v.trim() && !/^(n\/?a|none|null|-)$/i.test(v.trim())) {
+            found.add(v.trim());
+          }
+        }
+      }
+      // A cap, so one shared corporate email cannot pull in an unbounded set.
+      if (found.size === before || found.size >= 6) break;
+    }
+
+    // The link only runs one way. A payment filed under the reference carries
+    // the email in its payload, so reference → email works; a payment filed
+    // under the EMAIL is missing the referenceId — that absence is why it was
+    // filed that way — so email → reference has nothing to follow. Going back
+    // the other way means asking which payments name this identity inside their
+    // payload, which is a JSON lookup rather than a column one.
+    //
+    // Only for an identity that could be the weak half (an email or an account
+    // number, never a reference we already resolved from), and bounded: this
+    // reads a JSON path, which no index covers.
+    if (found.size === 1 && /@|^\d{4,}$/.test(seed)) {
+      for (const path of [
+        ['customer', 'email'],
+        ['customerEmail'],
+        ['customer', 'accountNumber'],
+        ['customerAccountNumber'],
+      ]) {
+        const rows = await this.safe(
+          () =>
+            this.prisma.paymentEvent.findMany({
+              where: { payload: { path, equals: seed } },
+              orderBy: [{ occurredAt: 'desc' }],
+              select: { customer: true },
+              take: 100,
+            }),
+          [] as { customer: string | null }[],
+        );
+        rows.forEach((r) => {
+          if (r.customer?.trim()) found.add(r.customer.trim());
+        });
+        if (found.size > 1) break;
+      }
+    }
+
+    return [...found];
+  }
+
   async clientProfile(reference: string, from?: string, to?: string) {
     const gte = parseInstant(from);
     const lte = parseInstant(to);
     const windowed = Boolean(gte || lte);
+    const identities = await this.clientIdentities(reference);
+    const isThem = { customer: { in: identities } };
     const where = {
-      customer: reference,
+      ...isThem,
       ...(windowed
         ? { occurredAt: { ...(gte ? { gte } : {}), ...(lte ? { lte } : {}) } }
         : {}),
@@ -335,7 +420,7 @@ export class ModulesService {
     // truncated total must be able to SAY it is truncated rather than quietly
     // report a smaller number under the same label.
     const EVENT_CAP = 5000;
-    const [rows, events, span] = await Promise.all([
+    const [rows, events, span, store] = await Promise.all([
       this.safe(
         () =>
           this.prisma.paymentEvent.findMany({
@@ -351,11 +436,20 @@ export class ModulesService {
       this.safe(
         () =>
           this.prisma.paymentEvent.aggregate({
-            where: { customer: reference },
+            where: isThem,
             _min: { occurredAt: true },
             _max: { occurredAt: true },
           }),
         null as { _min: { occurredAt: Date | null }; _max: { occurredAt: Date | null } } | null,
+      ),
+      // The earliest payment we hold for ANYONE. A client whose history starts
+      // where the whole store starts has not been quiet — we simply have not
+      // fetched further back, and that distinction decides whether to reassure
+      // the customer or go and import.
+      this.safe(
+        () =>
+          this.prisma.paymentEvent.aggregate({ _min: { occurredAt: true } }),
+        null as { _min: { occurredAt: Date | null } } | null,
       ),
     ]);
     // An empty window is a real answer ("nothing that week"), not a missing
@@ -379,6 +473,8 @@ export class ModulesService {
       truncated: events > EVENT_CAP,
       heldFrom: span?._min.occurredAt ? span._min.occurredAt.toISOString() : null,
       heldTo: span?._max.occurredAt ? span._max.occurredAt.toISOString() : null,
+      storeFrom: store?._min.occurredAt ? store._min.occurredAt.toISOString() : null,
+      identities,
     });
   }
 

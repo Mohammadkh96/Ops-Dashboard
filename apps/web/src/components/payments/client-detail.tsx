@@ -57,6 +57,8 @@ export type ClientProfile = {
     truncated: boolean;
     heldFrom: string | null;
     heldTo: string | null;
+    storeFrom: string | null;
+    identities: string[];
   };
 };
 
@@ -312,6 +314,15 @@ export function ClientDetail({ reference }: { reference: string }) {
     Refund: data.history.filter((h) => h.type === "Refund").length,
   };
   const shown = kind === "all" ? data.history : data.history.filter((h) => h.type === kind);
+  // Within an hour of the earliest payment we hold for anyone: their history is
+  // as long as OUR data, which is a statement about ingestion, not the client.
+  const startsAtStoreEdge =
+    !windowed &&
+    Boolean(data.window.storeFrom && data.window.heldFrom) &&
+    Math.abs(
+      Date.parse(data.window.heldFrom as string) - Date.parse(data.window.storeFrom as string),
+    ) <
+      60 * 60_000;
   const periodNote = windowed
     ? `${stamp(data.window.from)} → ${data.window.to ? stamp(data.window.to) : "now"}`
     : "their whole history";
@@ -331,13 +342,38 @@ export function ClientDetail({ reference }: { reference: string }) {
         "we had not started polling yet" — and the two call for opposite actions.
       */}
       {data.window.heldFrom ? (
-        <p className="text-[11px] text-muted">
-          Showing <span className="text-muted-foreground">{periodNote}</span>. We hold payments for
-          this client from {stamp(data.window.heldFrom)} to {stamp(data.window.heldTo)}
-          {data.window.truncated
-            ? " — more than this request reads, so the figures below cover the most recent payments in the period, not all of them. Narrow the period for exact totals."
-            : "."}
-        </p>
+        <div className="flex flex-col gap-1.5 text-[11px] text-muted">
+          <p>
+            Showing <span className="text-muted-foreground">{periodNote}</span>. We hold payments for
+            this client from {stamp(data.window.heldFrom)} to {stamp(data.window.heldTo)}
+            {data.window.truncated
+              ? " — more than this request reads, so the figures below cover the most recent payments in the period, not all of them. Narrow the period for exact totals."
+              : "."}
+          </p>
+
+          {/* The difference between "this client was quiet" and "we have not
+              fetched that far back", which decides whether to reassure the
+              customer or go and import. */}
+          {startsAtStoreEdge ? (
+            <p className="rounded-lg border border-accent-orange/25 bg-accent-orange-soft px-2.5 py-1.5 text-accent-orange">
+              Their history starts where this dashboard&rsquo;s data starts
+              ({stamp(data.window.storeFrom)}), so anything earlier has not been
+              fetched yet rather than not happened. Settings → Data → Import older
+              history reaches further back.
+            </p>
+          ) : null}
+
+          {/* Which strings these figures were gathered under. The provider files
+              a payment against whichever identity the payload carried, so a
+              client can be several — and a wrong merge should be visible. */}
+          {data.window.identities.length > 1 ? (
+            <p>
+              Matched on {data.window.identities.join(", ")} — the provider files a
+              payment under whichever identity it carries, so all of these are this
+              client.
+            </p>
+          ) : null}
+        </div>
       ) : null}
 
       <Section title="Client">
