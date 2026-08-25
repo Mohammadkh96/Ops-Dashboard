@@ -85,12 +85,15 @@ export type ClientProfile = {
     heldFrom: string | null;
     heldTo: string | null;
     /**
-     * The earliest payment held for anyone. A client whose history starts where
-     * the whole store starts has not been quiet — nothing older has been
-     * fetched yet — and that distinction is the difference between reassuring a
-     * customer and going to import.
+     * The whole store, not this client: how many payments it holds and the span
+     * they cover. A client whose history starts where the store starts has not
+     * been quiet — nothing older has been fetched yet — and that distinction is
+     * the difference between reassuring a customer and going to import. Stated
+     * as figures rather than a verdict, so the reader can judge it.
      */
     storeFrom: string | null;
+    storeTo: string | null;
+    storePayments: number;
     /**
      * Every identity these figures were gathered under. The provider files a
      * payment against whichever of referenceId / email / account number the
@@ -144,6 +147,8 @@ export function buildClientProfile(
     heldFrom: null,
     heldTo: null,
     storeFrom: null,
+    storeTo: null,
+    storePayments: 0,
     identities: [],
   },
 ): ClientProfile {

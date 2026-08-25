@@ -58,6 +58,8 @@ export type ClientProfile = {
     heldFrom: string | null;
     heldTo: string | null;
     storeFrom: string | null;
+    storeTo: string | null;
+    storePayments: number;
     identities: string[];
   };
 };
@@ -351,15 +353,27 @@ export function ClientDetail({ reference }: { reference: string }) {
               : "."}
           </p>
 
-          {/* The difference between "this client was quiet" and "we have not
-              fetched that far back", which decides whether to reassure the
-              customer or go and import. */}
-          {startsAtStoreEdge ? (
-            <p className="rounded-lg border border-accent-orange/25 bg-accent-orange-soft px-2.5 py-1.5 text-accent-orange">
-              Their history starts where this dashboard&rsquo;s data starts
-              ({stamp(data.window.storeFrom)}), so anything earlier has not been
-              fetched yet rather than not happened. Settings → Data → Import older
-              history reaches further back.
+          {/*
+            Why a client's history can be short has two very different answers,
+            and the numbers that separate them are the store's own. Stated
+            always, not only when a rule fires: "3 payments" reads as a broken
+            lookup until you can see the dashboard holds three days of data in
+            total.
+          */}
+          {data.window.storeFrom ? (
+            <p
+              className={
+                startsAtStoreEdge
+                  ? "rounded-lg border border-accent-orange/25 bg-accent-orange-soft px-2.5 py-1.5 text-accent-orange"
+                  : ""
+              }
+            >
+              This dashboard holds {data.window.storePayments.toLocaleString()} payment
+              record(s) in total, from {stamp(data.window.storeFrom)} to{" "}
+              {stamp(data.window.storeTo)}.
+              {startsAtStoreEdge
+                ? " This client's history starts where that data starts, so anything earlier has not been fetched yet rather than not happened — Settings → Data → Import older history reaches further back."
+                : ""}
             </p>
           ) : null}
 

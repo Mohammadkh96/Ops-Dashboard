@@ -448,8 +448,16 @@ export class ModulesService {
       // the customer or go and import.
       this.safe(
         () =>
-          this.prisma.paymentEvent.aggregate({ _min: { occurredAt: true } }),
-        null as { _min: { occurredAt: Date | null } } | null,
+          this.prisma.paymentEvent.aggregate({
+            _min: { occurredAt: true },
+            _max: { occurredAt: true },
+            _count: { _all: true },
+          }),
+        null as {
+          _min: { occurredAt: Date | null };
+          _max: { occurredAt: Date | null };
+          _count: { _all: number };
+        } | null,
       ),
     ]);
     // An empty window is a real answer ("nothing that week"), not a missing
@@ -474,6 +482,8 @@ export class ModulesService {
       heldFrom: span?._min.occurredAt ? span._min.occurredAt.toISOString() : null,
       heldTo: span?._max.occurredAt ? span._max.occurredAt.toISOString() : null,
       storeFrom: store?._min.occurredAt ? store._min.occurredAt.toISOString() : null,
+      storeTo: store?._max.occurredAt ? store._max.occurredAt.toISOString() : null,
+      storePayments: store?._count._all ?? 0,
       identities,
     });
   }
