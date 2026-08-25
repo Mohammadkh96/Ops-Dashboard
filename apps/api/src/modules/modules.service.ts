@@ -932,10 +932,12 @@ export class ModulesService {
    * afternoon somebody is asking about — a question that moves independently of
    * whichever rows the table below happens to be showing.
    */
-  async successRate(from?: string, to?: string) {
+  async successRate(from?: string, to?: string, shop?: string) {
     const gte = parseInstant(from);
     const lte = parseInstant(to);
-    const where =
+    const wanted = (shop ?? '').trim();
+
+    const window =
       gte || lte
         ? {
             OR: [
@@ -959,20 +961,38 @@ export class ModulesService {
             ],
           }
         : {};
+    // One shop at a time is how the provider console reports, and comparing our
+    // figure against theirs is the first thing anyone does with this panel. With
+    // every shop summed by default, ours was always the larger number and looked
+    // wrong rather than broader.
+    const where = wanted ? { AND: [window, { shop: wanted }] } : window;
 
-    const events = await this.safe(
-      () =>
-        this.prisma.paymentEvent.findMany({
-          where,
-          orderBy: [{ occurredAt: 'desc' }, { receivedAt: 'desc' }],
-          select: {
-            id: true, paymentId: true, reference: true,
-            type: true, state: true, amount: true, currency: true,
-          },
-          take: 20_000,
-        }),
-      [],
-    );
+    const [events, shops] = await Promise.all([
+      this.safe(
+        () =>
+          this.prisma.paymentEvent.findMany({
+            where,
+            orderBy: [{ occurredAt: 'desc' }, { receivedAt: 'desc' }],
+            select: {
+              id: true, paymentId: true, reference: true,
+              type: true, state: true, amount: true, currency: true,
+            },
+            take: 20_000,
+          }),
+        [],
+      ),
+      // Which shops have anything in this window at all, so the selector offers
+      // real choices rather than a list from configuration.
+      this.safe(
+        () =>
+          this.prisma.paymentEvent.groupBy({
+            by: ['shop', 'entity'],
+            where: window,
+            _count: { _all: true },
+          }),
+        [] as { shop: string | null; entity: string | null; _count: { _all: number } }[],
+      ),
+    ]);
 
     // Latest state per payment — the same rule every other figure uses. Counting
     // each stored state would report one payment as pending AND completed, and
@@ -986,11 +1006,29 @@ export class ModulesService {
       rows.push({ type: e.type, state: e.state, amount: e.amount, currency: e.currency });
     }
 
-    return buildSuccessRate(rows, {
+    const report = buildSuccessRate(rows, {
       settled: isSettledState,
       from: gte ? gte.toISOString() : null,
       to: lte ? lte.toISOString() : null,
     });
+
+    return {
+      ...report,
+      shop: wanted || null,
+      shops: shops
+        .filter((r) => r.shop)
+        .map((r) => ({
+          shop: r.shop as string,
+          entity: r.entity,
+          events: r._count._all,
+        }))
+        .sort((a, b) => b.events - a.events),
+      // Every stored state read, against the payments they collapsed to. A gap
+      // between the two is normal; a gap of zero means nothing was deduped and
+      // is worth noticing.
+      events: events.length,
+      truncated: events.length >= 20_000,
+    };
   }
 
   // -------- incidents --------

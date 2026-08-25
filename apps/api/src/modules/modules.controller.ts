@@ -83,8 +83,12 @@ export class ModulesController {
    * of the table underneath it.
    */
   @Get('payments/success-rate')
-  successRate(@Query('from') from?: string, @Query('to') to?: string) {
-    return this.modules.successRate(from, to);
+  successRate(
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('shop') shop?: string,
+  ) {
+    return this.modules.successRate(from, to, shop);
   }
 
   /** Headline figures for the payment pages, same filters. */

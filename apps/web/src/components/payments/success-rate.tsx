@@ -52,6 +52,10 @@ type Report = {
   to: string | null;
   currencies: string[];
   payments: number;
+  events: number;
+  truncated: boolean;
+  shop: string | null;
+  shops: { shop: string; entity: string | null; events: number }[];
 };
 
 const STATE: Record<StateKey, { label: string; color: string }> = {
@@ -63,24 +67,49 @@ const STATE: Record<StateKey, { label: string; color: string }> = {
   pending: { label: "Pending", color: "var(--accent-blue)" },
 };
 
-const PRESETS: { label: string; hours: number | null; today?: boolean }[] = [
-  { label: "Today", hours: null, today: true },
-  { label: "24h", hours: 24 },
-  { label: "7d", hours: 24 * 7 },
-  { label: "30d", hours: 24 * 30 },
+/**
+ * "Today" is a whole day, both ends. It used to send only a start, which made
+ * the period "since midnight, unbounded" — not the day the provider console
+ * reports, and open to anything dated ahead of now.
+ *
+ * `days` counts back from today INCLUSIVE, so 7d is the last seven whole days,
+ * the same thing a console means by a date range.
+ */
+const PRESETS: { label: string; days: number }[] = [
+  { label: "Today", days: 1 },
+  { label: "7d", days: 7 },
+  { label: "30d", days: 30 },
+  { label: "90d", days: 90 },
 ];
 
+const pad = (n: number) => String(n).padStart(2, "0");
+
 function toLocalInput(d: Date): string {
-  const pad = (n: number) => String(n).padStart(2, "0");
   return (
     `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
     `T${pad(d.getHours())}:${pad(d.getMinutes())}`
   );
 }
 
-function toIso(local: string): string | undefined {
+/** The same wall-clock reading, but as UTC — for the UTC basis. */
+function toUtcInput(d: Date): string {
+  return (
+    `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}` +
+    `T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`
+  );
+}
+
+/**
+ * A datetime-local value as an instant, read in the chosen basis.
+ *
+ * This is the whole timezone question in one function. The provider reports its
+ * day in UTC; an operator reads the clock on the wall. Taking one for the other
+ * shifts the day boundary by the offset — which is why our "today" swept in the
+ * tail of the provider's previous day and every bucket came out larger.
+ */
+function toIso(local: string, basis: "utc" | "local"): string | undefined {
   if (!local) return undefined;
-  const t = Date.parse(local);
+  const t = Date.parse(basis === "utc" ? `${local}:00Z` : local);
   return Number.isNaN(t) ? undefined : new Date(t).toISOString();
 }
 
@@ -216,25 +245,43 @@ function GroupCard({ g }: { g: Group }) {
   );
 }
 
+/** The whole days a preset covers, in the chosen basis. */
+function presetWindow(days: number, basis: "utc" | "local") {
+  const now = new Date();
+  const start = new Date(now);
+  const end = new Date(now);
+  if (basis === "utc") {
+    start.setUTCDate(start.getUTCDate() - (days - 1));
+    start.setUTCHours(0, 0, 0, 0);
+    end.setUTCHours(23, 59, 0, 0);
+    return { from: toUtcInput(start), to: toUtcInput(end) };
+  }
+  start.setDate(start.getDate() - (days - 1));
+  start.setHours(0, 0, 0, 0);
+  end.setHours(23, 59, 0, 0);
+  return { from: toLocalInput(start), to: toLocalInput(end) };
+}
+
 export function SuccessRateOverview() {
-  const startOfToday = () => {
-    const d = new Date();
-    d.setHours(0, 0, 0, 0);
-    return d;
-  };
-  const [from, setFrom] = useState(() => toLocalInput(startOfToday()));
-  const [to, setTo] = useState("");
+  // UTC by default, because that is how the provider stamps a payment and how
+  // its console reports a day. Reading the same dates on a local clock shifts
+  // the boundary by the offset and quietly changes which payments belong to the
+  // period — the reason our figures sat above the console's.
+  const [basis, setBasis] = useState<"utc" | "local">("utc");
+  const [shop, setShop] = useState("");
+  const [{ from, to }, setWindow] = useState(() => presetWindow(1, "utc"));
   const [preset, setPreset] = useState("Today");
 
-  const fromIso = toIso(from);
-  const toIso_ = toIso(to);
+  const fromIso = toIso(from, basis);
+  const toIso_ = toIso(to, basis);
 
   const { data, isLoading, isError } = useQuery({
-    queryKey: ["success-rate", fromIso ?? "", toIso_ ?? ""],
+    queryKey: ["success-rate", fromIso ?? "", toIso_ ?? "", shop],
     queryFn: () => {
       const q = new URLSearchParams();
       if (fromIso) q.set("from", fromIso);
       if (toIso_) q.set("to", toIso_);
+      if (shop) q.set("shop", shop);
       const qs = q.toString();
       return apiFetch<Report>(`/payments/success-rate${qs ? `?${qs}` : ""}`);
     },
@@ -245,15 +292,19 @@ export function SuccessRateOverview() {
 
   const apply = (p: (typeof PRESETS)[number]) => {
     setPreset(p.label);
-    const now = new Date();
-    if (p.today) {
-      setFrom(toLocalInput(startOfToday()));
-      setTo("");
-      return;
-    }
-    setFrom(toLocalInput(new Date(now.getTime() - (p.hours ?? 24) * 3_600_000)));
-    setTo(toLocalInput(now));
+    setWindow(presetWindow(p.days, basis));
   };
+
+  const switchBasis = (next: "utc" | "local") => {
+    setBasis(next);
+    // Re-derive the window in the new basis rather than reinterpreting the same
+    // wall-clock numbers, which would silently move the period by the offset.
+    const p = PRESETS.find((x) => x.label === preset);
+    if (p) setWindow(presetWindow(p.days, next));
+  };
+
+  const shopLabel = (s: { shop: string; entity: string | null }) =>
+    s.entity ? `${s.shop} · ${s.entity}` : s.shop;
 
   if (isDemoMode) return null;
 
@@ -273,6 +324,38 @@ export function SuccessRateOverview() {
         </div>
 
         <div className="flex flex-wrap items-end gap-2">
+          {/* One shop at a time is how the provider console reports; summing
+              every shop made our figure the larger one and it read as wrong. */}
+          {data?.shops.length ? (
+            <label className="flex flex-col gap-0.5">
+              <span className="text-[10px] text-muted">Shop</span>
+              <select
+                value={shop}
+                onChange={(e) => setShop(e.target.value)}
+                className="rounded-md border border-border bg-surface px-2 py-1 text-xs"
+              >
+                <option value="">All shops</option>
+                {data.shops.map((s) => (
+                  <option key={s.shop} value={s.shop}>
+                    {shopLabel(s)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[10px] text-muted">Clock</span>
+            <select
+              value={basis}
+              onChange={(e) => switchBasis(e.target.value as "utc" | "local")}
+              className="rounded-md border border-border bg-surface px-2 py-1 text-xs"
+            >
+              <option value="utc">UTC (matches Paymaxis)</option>
+              <option value="local">This browser</option>
+            </select>
+          </label>
+
           {PRESETS.map((p) => (
             <button
               key={p.label}
@@ -294,7 +377,7 @@ export function SuccessRateOverview() {
               type="datetime-local"
               value={from}
               onChange={(e) => {
-                setFrom(e.target.value);
+                setWindow((w) => ({ ...w, from: e.target.value }));
                 setPreset("");
               }}
               className="rounded-md border border-border bg-surface px-2 py-1 text-xs"
@@ -306,7 +389,7 @@ export function SuccessRateOverview() {
               type="datetime-local"
               value={to}
               onChange={(e) => {
-                setTo(e.target.value);
+                setWindow((w) => ({ ...w, to: e.target.value }));
                 setPreset("");
               }}
               className="rounded-md border border-border bg-surface px-2 py-1 text-xs"
@@ -331,7 +414,20 @@ export function SuccessRateOverview() {
           </div>
           <span className="text-[11px] text-muted">
             {data.payments.toLocaleString()} payment(s) in this period, each counted
-            once at its latest state.
+            once at its latest state, from {data.events.toLocaleString()} stored
+            state(s).{" "}
+            {/* The exact instants queried. Any disagreement with another system
+                is almost always the window, so it is stated rather than left to
+                be inferred from two date pickers. */}
+            {data.from ? (
+              <>
+                Window: {data.from} → {data.to ?? "open-ended"}
+                {data.shop ? ` · shop ${data.shop}` : " · all shops"}.
+              </>
+            ) : null}
+            {data.truncated
+              ? " More than 20,000 states matched, so this is the most recent of them — narrow the period."
+              : ""}
           </span>
         </>
       ) : isLoading ? (
