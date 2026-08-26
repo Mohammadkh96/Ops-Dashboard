@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Injectable,
   Logger,
   OnModuleDestroy,
@@ -884,6 +885,93 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
       );
     }
     return out;
+  }
+
+  /**
+   * Tries one specific call against the provider, with our merchant key.
+   *
+   * The console shows a customer's whole history, so the archive is reachable —
+   * just not through the endpoint we poll. Whatever call the console makes can
+   * be read off its network tab, and this answers the only question that then
+   * matters: does OUR key reach it too? A 200 means wire it up; a 401 or 403
+   * means the console is using a different credential and Paymaxis has to grant
+   * it.
+   *
+   * The path is appended to the configured base URL, so this cannot be pointed
+   * at another host: it is a probe of Paymaxis, not a general fetcher.
+   */
+  async tryCall(
+    path: string,
+    params: Record<string, string> = {},
+    shopId?: string,
+  ): Promise<{
+    shop: string;
+    path: string;
+    status: number;
+    records: number;
+    newest: string | null;
+    oldest: string | null;
+    /** Field names only — never their values, which are somebody's payment. */
+    fields: string[];
+    note: string;
+  }> {
+    const shop = (shopId ? this.shops.find((s) => s.shopId === shopId) : this.shops[0]) ?? null;
+    if (!shop) throw new BadRequestException('PAYMAXIS_SHOPS is not configured');
+
+    // A path, not a URL: anything that looks like a host is refused rather than
+    // silently turned into a request somewhere else.
+    const clean = String(path ?? '').trim();
+    if (!clean.startsWith('/') || /^\/\//.test(clean)) {
+      // A refusal has to SAY what it wants; thrown bare, it reaches the screen
+      // as "Internal server error" and reads like a bug in the button.
+      throw new BadRequestException(
+        `"${clean.slice(0, 60)}" is not a path on the provider. Give one beginning with a ` +
+          'single "/" — for example /api/v1/payments. Only Paymaxis is reachable from here.',
+      );
+    }
+
+    const client = new PaymaxisClient(
+      process.env.PAYMAXIS_BASE_URL ?? PAYMAXIS_DEFAULT_BASE_URL,
+      shop.apiKey,
+      process.env.PAYMAXIS_AUTH_HEADER ?? 'Authorization',
+    );
+    const { status, records } = await client.probe(params, clean);
+
+    const dates = records
+      .map((r) => {
+        const inner = (r.payment ?? r.data ?? r) as Record<string, unknown>;
+        for (const f of ['updatedAt', 'updated', 'createdAt', 'created', 'finalized']) {
+          const v = inner?.[f];
+          if (typeof v === 'string' && !Number.isNaN(Date.parse(v))) return new Date(v);
+        }
+        return null;
+      })
+      .filter((d): d is Date => Boolean(d))
+      .sort((a, b) => a.getTime() - b.getTime());
+
+    const first = records[0]
+      ? Object.keys((records[0].payment ?? records[0].data ?? records[0]) as object)
+      : [];
+
+    return {
+      shop: shop.shopId,
+      path: clean,
+      status,
+      records: records.length,
+      newest: dates.length ? dates[dates.length - 1].toISOString() : null,
+      oldest: dates.length ? dates[0].toISOString() : null,
+      fields: first.slice(0, 40),
+      note:
+        status === 200
+          ? records.length
+            ? 'Our key can read this call.'
+            : 'Our key reached it, but it returned nothing for these parameters.'
+          : status === 401 || status === 403
+            ? 'Our merchant key is not allowed here — the console is using a different credential.'
+            : status === 404
+              ? 'No such path.'
+              : `HTTP ${status}.`,
+    };
   }
 
   /** Where the historical import has got to, without moving it. */

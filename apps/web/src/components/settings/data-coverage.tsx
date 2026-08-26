@@ -38,6 +38,17 @@ type ProbeAttempt = {
   note?: string;
 };
 
+type TryResult = {
+  shop: string;
+  path: string;
+  status: number;
+  records: number;
+  newest: string | null;
+  oldest: string | null;
+  fields: string[];
+  note: string;
+};
+
 type HistoryProbe = {
   shop: string;
   paging: {
@@ -111,6 +122,10 @@ export function DataCoverage() {
   const [probe, setProbe] = useState<HistoryProbe[] | null>(null);
   const [probing, setProbing] = useState(false);
   const [customer, setCustomer] = useState("");
+  const [tryPath, setTryPath] = useState("/api/v1/payments");
+  const [tryQuery, setTryQuery] = useState("");
+  const [tried, setTried] = useState<TryResult | null>(null);
+  const [trying, setTrying] = useState(false);
   // A ref, not state: the loop below reads it between awaits, and a state value
   // captured at the start of the loop would never see the change.
   const stop = useRef(false);
@@ -191,6 +206,34 @@ export function DataCoverage() {
       setFailure(e instanceof Error ? e.message : String(e));
     } finally {
       setProbing(false);
+    }
+  };
+
+  /**
+   * The provider's console shows a customer's whole history, so the archive is
+   * reachable — just not through the endpoint we poll. Read the call the console
+   * makes off its network tab, put it here, and this says whether OUR key can
+   * make the same call.
+   */
+  const runTry = async () => {
+    setTrying(true);
+    setFailure(null);
+    try {
+      const params: Record<string, string> = {};
+      new URLSearchParams(tryQuery.replace(/^\?/, "")).forEach((v, k) => {
+        params[k] = v;
+      });
+      setTried(
+        await apiFetch<TryResult>(
+          "/paymaxis/try-call",
+          { method: "POST", body: JSON.stringify({ path: tryPath, params }) },
+          { retries: 1 },
+        ),
+      );
+    } catch (e) {
+      setFailure(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTrying(false);
     }
   };
 
@@ -388,6 +431,64 @@ export function DataCoverage() {
             >
               Copy the full result
             </button>
+          ) : null}
+        </div>
+
+        {/* For the call the provider's own console makes. */}
+        <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3">
+          <div className="flex flex-col gap-0.5">
+            <span className="text-sm font-medium">Try a call the console makes</span>
+            <span className="text-[11px] text-muted">
+              Paymaxis&rsquo;s own console can show a customer&rsquo;s whole history, so
+              some call reaches it. Open the console with the browser&rsquo;s network tab
+              recording, search a customer, and copy the request&rsquo;s path and query
+              here — this reports whether our key can make the same call. Read-only.
+            </span>
+          </div>
+          <div className="flex flex-wrap items-end gap-2">
+            <label className="flex flex-1 flex-col gap-0.5">
+              <span className="text-[10px] text-muted">Path</span>
+              <input
+                value={tryPath}
+                onChange={(e) => setTryPath(e.target.value)}
+                placeholder="/api/v1/payments"
+                className="rounded-md border border-border bg-surface px-2 py-1 font-mono text-xs"
+              />
+            </label>
+            <label className="flex flex-1 flex-col gap-0.5">
+              <span className="text-[10px] text-muted">Query</span>
+              <input
+                value={tryQuery}
+                onChange={(e) => setTryQuery(e.target.value)}
+                placeholder="customerReferenceId=CU60573&limit=100"
+                className="rounded-md border border-border bg-surface px-2 py-1 font-mono text-xs"
+              />
+            </label>
+            <Button variant="secondary" onClick={() => void runTry()} disabled={trying}>
+              {trying ? "Trying…" : "Try"}
+            </Button>
+          </div>
+
+          {tried ? (
+            <div className="flex flex-col gap-1 border-t border-border pt-2 text-xs">
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="font-mono">{tried.path}</span>
+                <span className={tried.status === 200 ? "text-accent-green" : "text-accent-orange"}>
+                  HTTP {tried.status} · {tried.records} record(s)
+                </span>
+              </div>
+              {tried.records ? (
+                <span className="text-muted">
+                  {stamp(tried.newest)} → {stamp(tried.oldest)}
+                </span>
+              ) : null}
+              <span className="text-muted-foreground">{tried.note}</span>
+              {tried.fields.length ? (
+                <span className="text-[11px] text-muted">
+                  Fields returned: {tried.fields.join(", ")}
+                </span>
+              ) : null}
+            </div>
           ) : null}
         </div>
 

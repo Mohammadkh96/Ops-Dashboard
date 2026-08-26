@@ -141,6 +141,22 @@ export class PaymaxisController {
   }
 
   /**
+   * Tries one specific call against Paymaxis with our key — for checking
+   * whatever call the provider's own console turns out to make.
+   *
+   * Guarded, and read-only: the underlying client can express no verb but GET.
+   * Only counts, dates and FIELD NAMES come back, never a payment's values.
+   */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Post('try-call')
+  tryCall(
+    @Body() body: { path?: string; params?: Record<string, string>; shop?: string },
+  ) {
+    return this.paymaxis.tryCall(body?.path ?? '', body?.params ?? {}, body?.shop);
+  }
+
+  /**
    * Runs one read-only sync now and reports what happened. Lets the connection
    * be proved from a terminal before anything is scheduled or deployed.
    */
