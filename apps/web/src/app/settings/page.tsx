@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 
 import { PageHeader } from "@/components/ui/page-header";
@@ -348,6 +348,15 @@ function SecurityTab() {
 export default function SettingsPage() {
   const [tab, setTab] = useState<TabKey>("profile");
 
+  // Deep-linkable, so the places that point here ("Settings → Data → Import
+  // older history") can send someone to the panel itself rather than to a page
+  // where they still have to find it. Read from the URL rather than through
+  // useSearchParams, which forces a Suspense boundary in a static export.
+  useEffect(() => {
+    const wanted = new URLSearchParams(window.location.search).get("tab");
+    if (wanted && TABS.some((t) => t.key === wanted)) setTab(wanted as TabKey);
+  }, []);
+
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
@@ -360,7 +369,14 @@ export default function SettingsPage() {
         {TABS.map((t) => (
           <button
             key={t.key}
-            onClick={() => setTab(t.key)}
+            onClick={() => {
+              setTab(t.key);
+              // Keeps the address bar honest, so the tab survives a reload and
+              // can be shared.
+              const url = new URL(window.location.href);
+              url.searchParams.set("tab", t.key);
+              window.history.replaceState(null, "", url);
+            }}
             className={cn(
               "relative px-3 py-2.5 text-sm font-medium transition-colors",
               tab === t.key ? "text-foreground" : "text-muted hover:text-muted-foreground",

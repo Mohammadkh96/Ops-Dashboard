@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
+import Link from "next/link";
+
 import { apiFetch, isDemoMode } from "@/lib/api";
 import { StatusBadge } from "@/components/ui/status-badge";
 
@@ -384,9 +386,18 @@ export function ClientDetail({ reference }: { reference: string }) {
               This dashboard holds {data.window.storePayments.toLocaleString()} payment
               record(s) in total, from {stamp(data.window.storeFrom)} to{" "}
               {stamp(data.window.storeTo)}.
-              {cannotClaimLifetime
-                ? ` That is ${Math.max(1, Math.round(storeSpanDays as number))} day(s) of collection, so the figures below are NOT lifetime totals — anything this client did before ${day(data.window.storeFrom)} is not counted in them. Settings → Data → Import older history reaches further back.`
-                : ""}
+              {cannotClaimLifetime ? (
+                <>
+                  {` That is ${Math.max(1, Math.round(storeSpanDays as number))} day(s) of collection, so the figures below are NOT lifetime totals — anything this client did before ${day(data.window.storeFrom)} is not counted in them. `}
+                  <Link
+                    href="/settings?tab=data"
+                    className="underline underline-offset-2 hover:text-foreground"
+                  >
+                    Import older history
+                  </Link>
+                  {" reaches further back."}
+                </>
+              ) : null}
             </p>
           ) : null}
 
