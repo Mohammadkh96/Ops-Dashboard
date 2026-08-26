@@ -104,8 +104,19 @@ function toIso(local: string): string | undefined {
 }
 
 const HOUR = 3_600_000;
+const DAY = 24 * HOUR;
+/**
+ * Below this the dashboard has not been collecting long enough for any total to
+ * be called lifetime, whatever the client's own history looks like.
+ */
+const LIFETIME_CLAIM_DAYS = 180;
+
 const PRESETS: { label: string; hours: number | null }[] = [
-  { label: "All time", hours: null },
+  // Not "All time". This dashboard holds what it has ingested, which on a young
+  // deployment is days — and a client whose real lifetime deposits are $864 was
+  // shown $230 under a label that said All time, which is a wrong answer rather
+  // than a partial one.
+  { label: "All we hold", hours: null },
   { label: "24h", hours: 24 },
   { label: "7d", hours: 24 * 7 },
   { label: "30d", hours: 24 * 30 },
@@ -318,13 +329,15 @@ export function ClientDetail({ reference }: { reference: string }) {
   const shown = kind === "all" ? data.history : data.history.filter((h) => h.type === kind);
   // Within an hour of the earliest payment we hold for anyone: their history is
   // as long as OUR data, which is a statement about ingestion, not the client.
-  const startsAtStoreEdge =
-    !windowed &&
-    Boolean(data.window.storeFrom && data.window.heldFrom) &&
-    Math.abs(
-      Date.parse(data.window.heldFrom as string) - Date.parse(data.window.storeFrom as string),
-    ) <
-      60 * 60_000;
+  // How long this dashboard has been collecting at all. Everything below turns
+  // on it: a store that began ten days ago cannot produce a lifetime total for
+  // anyone, however complete the lookup is.
+  const storeSpanDays =
+    data.window.storeFrom && data.window.storeTo
+      ? (Date.parse(data.window.storeTo) - Date.parse(data.window.storeFrom)) / DAY
+      : null;
+  const cannotClaimLifetime =
+    !windowed && storeSpanDays !== null && storeSpanDays < LIFETIME_CLAIM_DAYS;
   const periodNote = windowed
     ? `${stamp(data.window.from)} → ${data.window.to ? stamp(data.window.to) : "now"}`
     : "their whole history";
@@ -363,7 +376,7 @@ export function ClientDetail({ reference }: { reference: string }) {
           {data.window.storeFrom ? (
             <p
               className={
-                startsAtStoreEdge
+                cannotClaimLifetime
                   ? "rounded-lg border border-accent-orange/25 bg-accent-orange-soft px-2.5 py-1.5 text-accent-orange"
                   : ""
               }
@@ -371,8 +384,8 @@ export function ClientDetail({ reference }: { reference: string }) {
               This dashboard holds {data.window.storePayments.toLocaleString()} payment
               record(s) in total, from {stamp(data.window.storeFrom)} to{" "}
               {stamp(data.window.storeTo)}.
-              {startsAtStoreEdge
-                ? " This client's history starts where that data starts, so anything earlier has not been fetched yet rather than not happened — Settings → Data → Import older history reaches further back."
+              {cannotClaimLifetime
+                ? ` That is ${Math.max(1, Math.round(storeSpanDays as number))} day(s) of collection, so the figures below are NOT lifetime totals — anything this client did before ${day(data.window.storeFrom)} is not counted in them. Settings → Data → Import older history reaches further back.`
                 : ""}
             </p>
           ) : null}
@@ -408,12 +421,16 @@ export function ClientDetail({ reference }: { reference: string }) {
       {data.totals.map((t) => (
         <Section
           key={t.currency}
-          title={`Settled · ${t.currency}`}
+          title={
+            windowed
+              ? `Settled · ${t.currency} · selected period`
+              : `Settled · ${t.currency} · ${day(data.window.heldFrom)} → ${day(data.window.heldTo)}`
+          }
           note={
             `From the ${data.payments} payment${data.payments === 1 ? "" : "s"} ` +
             (windowed
               ? "in the selected period."
-              : "this dashboard has ingested — not necessarily the account's full history.")
+              : `this dashboard holds for them. Not lifetime figures: collection began ${day(data.window.storeFrom)}, and anything earlier is with the provider, not here.`)
           }
         >
           <div className="grid grid-cols-2 gap-2">
