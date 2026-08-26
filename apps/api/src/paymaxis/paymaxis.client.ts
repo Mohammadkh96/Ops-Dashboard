@@ -85,12 +85,16 @@ export class PaymaxisClient {
    * in the configuration precisely because nobody knows yet which ones work.
    * Still GET-only, like everything on this class.
    */
-  async probe(params: Record<string, string | number | undefined>): Promise<{
+  async probe(
+    params: Record<string, string | number | undefined>,
+    pathOverride?: string,
+  ): Promise<{
     status: number;
     records: Record<string, unknown>[];
     hasMore?: boolean;
   }> {
-    const path = process.env.PAYMAXIS_PAYMENTS_PATH ?? '/api/v1/payments';
+    const path =
+      pathOverride ?? process.env.PAYMAXIS_PAYMENTS_PATH ?? '/api/v1/payments';
     try {
       const json = (await this.get(path, params)) as Record<string, unknown> | unknown[];
       const records = extractRecords(json);

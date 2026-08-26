@@ -29,6 +29,8 @@ export type ProbeAttempt = {
 
 export type HistoryProbe = {
   shop: string;
+  /** Other endpoints that might serve history, and whether they exist. */
+  endpoints: ProbeAttempt[];
   /** How far plain paging reaches. */
   paging: {
     pages: number;
@@ -45,11 +47,19 @@ export type HistoryProbe = {
   error?: string;
 };
 
-type Fetcher = (params: Record<string, string | number | undefined>) => Promise<{
+type PageResult = {
   status: number;
   records: Record<string, unknown>[];
   hasMore?: boolean;
-}>;
+};
+
+type Fetcher = (params: Record<string, string | number | undefined>) => Promise<PageResult>;
+
+/** A read against an arbitrary path, for finding an endpoint we do not know. */
+type PathFetcher = (
+  path: string,
+  params: Record<string, string | number | undefined>,
+) => Promise<PageResult>;
 
 const DAY = 86_400_000;
 const DATE_FIELDS = ['updatedAt', 'updated', 'createdAt', 'created', 'finalized', 'timestamp'];
@@ -102,10 +112,43 @@ const CUSTOMER_PARAMS = [
   'query',
 ];
 
+/**
+ * Somewhere else to look.
+ *
+ * A list endpoint that serves a rolling 24 hours is a feed, not an archive —
+ * and the provider's own console plainly reads the archive, so something serves
+ * it. These are the conventional names for that something. Reporting which ones
+ * merely EXIST is useful on its own: a 404 closes a door, a 200 or a 400 says
+ * there is a door with a different handle.
+ */
+const OTHER_PATHS = [
+  '/api/v1/payments/search',
+  '/api/v1/payments/export',
+  '/api/v1/reports/payments',
+  '/api/v1/reports',
+  '/api/v1/transactions',
+  '/api/v1/statements',
+  '/api/v2/payments',
+];
+
+/** Same idea, different spelling conventions. */
+const SNAKE_PAIRS: [string, string][] = [
+  ['created_at_from', 'created_at_to'],
+  ['date_from', 'date_to'],
+  ['start_date', 'end_date'],
+];
+
 export async function probeHistory(
   shop: string,
   fetchPage: Fetcher,
-  opts: { limit?: number; maxPages?: number; budgetMs?: number; customer?: string } = {},
+  opts: {
+    limit?: number;
+    maxPages?: number;
+    budgetMs?: number;
+    customer?: string;
+    /** Optional: lets the probe look for endpoints other than the configured one. */
+    fetchPath?: PathFetcher;
+  } = {},
 ): Promise<HistoryProbe> {
   const limit = opts.limit ?? 100;
   const maxPages = opts.maxPages ?? 8;
@@ -116,6 +159,7 @@ export async function probeHistory(
   const probe: HistoryProbe = {
     shop,
     paging: { pages: 0, records: 0, oldest: null, daysBack: null, stoppedBecause: 'not run' },
+    endpoints: [],
     dateWindow: [],
     ordering: [],
     customer: [],
@@ -174,7 +218,7 @@ export async function probeHistory(
     // parameter that works returns records paging could not have produced.
     const to = new Date(Date.now() - 60 * DAY);
     const from = new Date(Date.now() - 90 * DAY);
-    for (const [a, b] of DATE_PAIRS) {
+    for (const [a, b] of [...DATE_PAIRS, ...SNAKE_PAIRS]) {
       if (spent() > budgetMs) break;
       const { status, records } = await fetchPage({
         limit,
@@ -255,15 +299,51 @@ export async function probeHistory(
         if (worked) break;
       }
     }
+    // ── 5. Is the history behind a different endpoint? ──────────────────────
+    // Only worth asking once the list endpoint has been shown to be a feed.
+    if (opts.fetchPath && !probe.dateWindow.some((a) => a.worked)) {
+      for (const path of OTHER_PATHS) {
+        if (spent() > budgetMs) break;
+        const { status, records } = await opts.fetchPath(path, {
+          limit,
+          createdAtFrom: from.toISOString(),
+          createdAtTo: to.toISOString(),
+        });
+        const { oldest, newest } = span(records);
+        const inWindow =
+          Boolean(newest && oldest) &&
+          (newest as Date).getTime() <= to.getTime() + DAY &&
+          (oldest as Date).getTime() >= from.getTime() - DAY;
+        probe.endpoints.push({
+          what: path,
+          records: records.length,
+          newest: iso(newest),
+          oldest: iso(oldest),
+          worked: status === 200 && inWindow,
+          note:
+            status === 404
+              ? 'does not exist'
+              : status === 200
+                ? inWindow
+                  ? undefined
+                  : 'exists, but returned recent records'
+                : `HTTP ${status} — exists, but this call is not the right shape`,
+        });
+      }
+    }
   } catch (e) {
     probe.error = (e as Error).message;
   }
 
+  const endpointOk = probe.endpoints.find((a) => a.worked);
+  const otherLive = probe.endpoints.filter((a) => !a.worked && a.note && !a.note.includes('does not exist'));
   const dateOk = probe.dateWindow.find((a) => a.worked);
   const orderOk = probe.ordering.find((a) => a.worked);
   const custOk = probe.customer.find((a) => a.worked);
 
-  probe.verdict = dateOk
+  probe.verdict = endpointOk
+    ? `${endpointOk.what} returns the requested period — the history is there, behind a different endpoint.`
+    : dateOk
     ? `${dateOk.what} works — the import can walk the history month by month.`
     : orderOk
       ? `${orderOk.what} returns the oldest first — the history can be walked forwards.`
@@ -271,8 +351,15 @@ export async function probeHistory(
         ? `${custOk.what} filters by customer — one client's whole history is a single request.`
         : probe.paging.daysBack !== null && probe.paging.daysBack > 30
           ? `Plain paging reaches ${probe.paging.daysBack} days back, so the history IS available this way — re-run the import.`
-          : 'None of these reached older payments. This endpoint serves only recent records, ' +
-            'so ask Paymaxis for a date-ranged export, the parameter that pages further back, ' +
+          : 'None of these reached older payments' +
+            (probe.paging.daysBack !== null && probe.paging.daysBack <= 2
+              ? `, and the list stops about ${probe.paging.daysBack === 0 ? 'a few hours' : `${probe.paging.daysBack} day`} back — it is a recent-activity feed rather than an archive`
+              : '') +
+            '. ' +
+            (otherLive.length
+              ? `These paths answered rather than 404ing and are worth asking about: ${otherLive.map((a) => a.what).join(', ')}. `
+              : '') +
+            'Ask Paymaxis for a date-ranged export, the parameter that pages further back, ' +
             'or the customer lifetime counters in the payment payload.';
 
   return probe;

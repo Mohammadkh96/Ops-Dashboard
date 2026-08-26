@@ -872,6 +872,9 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
       );
       out.push(
         await probeHistory(shop.shopId, (params) => client.probe(params), {
+          // Lets the probe ask whether the history lives behind a different
+          // path, once the configured one has been shown to be a feed.
+          fetchPath: (path, params) => client.probe(params, path),
           limit: Number(process.env.PAYMAXIS_LIMIT ?? 100),
           // Bounded so the whole thing answers inside one serverless request.
           maxPages: 8,

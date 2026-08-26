@@ -159,6 +159,8 @@ rule('2. Date-range parameters');
 
   const CANDIDATES = [
     ['createdAtFrom', 'createdAtTo'],
+    ['created_at_from', 'created_at_to'],
+    ['date_from', 'date_to'],
     ['updatedAtFrom', 'updatedAtTo'],
     ['dateFrom', 'dateTo'],
     ['from', 'to'],
