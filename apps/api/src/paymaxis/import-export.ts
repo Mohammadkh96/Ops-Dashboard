@@ -21,6 +21,7 @@
 import {
   DEFAULT_REDACT_KEYS,
   entityForShop,
+  paymentIdentity,
   pspForTerminal,
 } from './normalize';
 
@@ -235,9 +236,11 @@ export function mapExportRow(row: ExportRow): MappedImport | null {
       'errorMessage',
       'Decline Reason',
     ]),
-    // The same identity the poller writes, so an imported payment and a polled
-    // one are one record rather than two.
-    dedupeKey: `paymaxis:${paymentId || reference}:${state}:${occurredAt?.toISOString() ?? ''}`,
+    // Built by the same function the poller uses, not a copy of its formula.
+    // The copy was the bug: both spelled the identity with the timestamp in it,
+    // and the two sources write timestamps differently, so every payment held
+    // from the API was stored a second time from the file.
+    dedupeKey: paymentIdentity(paymentId || reference, state),
     occurredAt,
   };
 }

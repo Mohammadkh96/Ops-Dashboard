@@ -145,40 +145,69 @@ section('a row becomes a payment');
 
 section('an imported payment and a polled one are ONE record');
 {
-  // The whole point of the dedupe key: an operator must be able to import a
-  // period that overlaps what polling already collected without doubling it.
+  // An operator must be able to import a period that overlaps what polling
+  // already collected without doubling it.
+  //
+  // The two sources DESCRIBE THE SAME PAYMENT DIFFERENTLY, and that is the
+  // whole test. An earlier version of this check wrote both timestamps to the
+  // same second and both states in the same case, so it passed while the real
+  // thing stored every overlapping payment twice — a live import of 70,023 rows
+  // over a polled period reported "0 already held". So each pair below differs
+  // exactly the way the real sources differ.
   const polled = normalizePayment({
     id: 'pm-900',
     referenceId: 'REF-900',
-    state: 'COMPLETED',
+    state: 'COMPLETED', // the API SHOUTS
     type: 'DEPOSIT',
     amount: 1500,
     currency: 'EUR',
     shopName: '6321',
     customerReferenceId: 'CU60573',
-    updatedAt: '2026-03-04T09:15:30Z',
+    updatedAt: '2026-03-04T09:15:30.412Z', // ...to the millisecond, in UTC
   });
   const imported = mapExportRow({
     ID: 'pm-900',
     'Reference ID': 'REF-900',
-    State: 'COMPLETED',
-    'Amount in Shop Base Currency': '1500.00',
-    Updated: '2026-03-04 09:15:30',
+    State: 'Completed', // the export is written for people
+    'Amount in Shop Base Currency': '1.500,00',
+    Updated: '04/03/2026 09:15:30', // ...to the second, day-first
   })!;
-  ok('same dedupe key', polled.dedupeKey === imported.dedupeKey, {
-    polled: polled.dedupeKey,
-    imported: imported.dedupeKey,
-  });
+  ok(
+    'same identity despite both differences',
+    polled.dedupeKey === imported.dedupeKey,
+    {
+      polled: polled.dedupeKey,
+      imported: imported.dedupeKey,
+    },
+  );
 
-  // ...and a state change is still news.
+  // A state the provider spells with a space or a hyphen is the same state.
+  ok(
+    'AWAITING_WEBHOOK == "Awaiting webhook"',
+    mapExportRow({ ID: 'pm-901', State: 'Awaiting webhook' })!.dedupeKey ===
+      normalizePayment({ id: 'pm-901', state: 'AWAITING_WEBHOOK' }).dedupeKey,
+  );
+
+  // ...and a state CHANGE is still news, whichever source notices it.
   const later = mapExportRow({
     ID: 'pm-900',
     State: 'REFUNDED',
-    Updated: '2026-03-05 10:00:00',
+    Updated: '05/03/2026 10:00:00',
   })!;
   ok(
     'a later state is a different record',
     later.dedupeKey !== imported.dedupeKey,
+  );
+
+  // Re-reading the same payment an hour later must NOT be a new record: the
+  // time we looked is not part of what a payment is.
+  ok(
+    'the same state read again is the same record',
+    normalizePayment({
+      id: 'pm-900',
+      state: 'COMPLETED',
+      updatedAt: '2026-03-04T11:00:00.000Z',
+    }).dedupeKey === polled.dedupeKey,
   );
 }
 

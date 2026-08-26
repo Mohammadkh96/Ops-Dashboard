@@ -198,6 +198,38 @@ export function unwrapPayment(
   );
 }
 
+/**
+ * A payment IN A GIVEN STATE, identically however it reached us.
+ *
+ * State belongs in the identity: a payment legitimately appears again when it
+ * moves PENDING -> COMPLETED, and that transition is news. Re-reading it
+ * unchanged is not.
+ *
+ * The TIME it was read does not belong in the identity, and used to. That was
+ * invisible while the API was the only source — every read of an unchanged
+ * payment carries the same timestamp, so it deduped perfectly — and wrong the
+ * moment a second source appeared. A console export writes its timestamps to
+ * the second, in the operator's own timezone, and its states in Title Case; the
+ * API returns milliseconds, UTC and SHOUTING. Neither difference means anything
+ * about the payment, and both of them made the key differ, so a payment already
+ * held was stored a second time. The symptom was an import of 70,023 rows
+ * covering a period that was already being polled reporting "0 already held" —
+ * a number that is only zero when nothing matches, ever.
+ *
+ * So: the provider, the payment, the state it is in. Nothing about when we
+ * happened to look.
+ */
+export function paymentIdentity(
+  idOrReference: string,
+  state: string | null | undefined,
+): string {
+  const normState = (state ?? '')
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, '_');
+  return `paymaxis:${idOrReference}:${normState}`;
+}
+
 export function normalizePayment(
   inner: Record<string, unknown>,
 ): NormalizedPayment {
@@ -301,10 +333,7 @@ export function normalizePayment(
       : FAILED.test(state)
         ? false
         : undefined,
-    // State is part of the identity: a payment legitimately appears again when
-    // it moves PENDING -> COMPLETED, and that transition IS news. Re-polling
-    // the same unchanged payment is not.
-    dedupeKey: `paymaxis:${paymentId || reference}:${state}:${occurredAt?.toISOString() ?? ''}`,
+    dedupeKey: paymentIdentity(paymentId || reference, state),
   };
 }
 
