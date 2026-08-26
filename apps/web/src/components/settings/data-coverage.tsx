@@ -175,13 +175,27 @@ export function DataCoverage() {
         ) : null}
 
         {shown.map((r) => {
+          /*
+            "Complete" means the provider's list ran out — which is only good
+            news if that list actually went back. When the oldest record it
+            returned is NEWER than payments we already hold, the endpoint is
+            serving a recent window rather than the history, and calling that
+            Complete tells somebody the import worked when the older payments
+            they are looking for were never on offer.
+          */
+          const listShort =
+            r.done &&
+            Boolean(r.oldestSeen && r.coverageFrom) &&
+            Date.parse(r.oldestSeen as string) > Date.parse(r.coverageFrom as string);
           const state = r.error
             ? { label: "Stopped", tone: "text-accent-red" }
-            : r.done
-              ? { label: "Complete", tone: "text-accent-green" }
-              : r.pages > 0
-                ? { label: "Partly imported", tone: "text-accent-orange" }
-                : { label: "Not started", tone: "text-muted" };
+            : listShort
+              ? { label: "Provider list ends early", tone: "text-accent-orange" }
+              : r.done
+                ? { label: "Complete", tone: "text-accent-green" }
+                : r.pages > 0
+                  ? { label: "Partly imported", tone: "text-accent-orange" }
+                  : { label: "Not started", tone: "text-muted" };
           return (
             <div key={r.shop} className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3">
               <div className="flex items-center justify-between gap-3">
@@ -204,6 +218,19 @@ export function DataCoverage() {
               {r.error ? (
                 <p className="rounded-md border border-accent-red/25 bg-accent-red-soft px-2 py-1.5 text-[11px] text-accent-red">
                   {r.error}
+                </p>
+              ) : null}
+
+              {listShort ? (
+                <p className="rounded-md border border-accent-orange/25 bg-accent-orange-soft px-2 py-1.5 text-[11px] text-accent-orange">
+                  The walk read the provider&rsquo;s whole list —{" "}
+                  {r.fetched.toLocaleString()} record(s) over {r.pages} page(s) — and its
+                  oldest was {stamp(r.oldestSeen)}, which is NEWER than payments this
+                  dashboard already holds ({stamp(r.coverageFrom)}). The endpoint is
+                  returning a recent window rather than the account&rsquo;s history, so
+                  older payments cannot be imported through it however many times this
+                  is run. Ask Paymaxis for a date-ranged export, or for the parameter
+                  that pages further back, and it can be wired here.
                 </p>
               ) : null}
               {r.busy ? (

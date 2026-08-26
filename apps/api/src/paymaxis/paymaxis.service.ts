@@ -10,6 +10,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { LiveBus } from '../live/live-bus.service';
 import { PaymaxisClient } from './paymaxis.client';
 import {
+  entityForShop,
   normalizePayment,
   redactPayload,
   toQueueItem,
@@ -797,6 +798,25 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  /**
+   * Which stored `shop` values belong to a configured shop.
+   *
+   * The column holds whatever the payload called the shop, and Paymaxis sends a
+   * NAME ("Cashier_Tradin_SL") far more often than the numeric id we
+   * authenticate with. Counting rows where shop = "5141" therefore found none,
+   * and the coverage panel reported "Payments held 0" for a store holding
+   * thousands — the import looked like it had done nothing.
+   *
+   * Entity is the reliable bridge: it is derived from whichever form the shop
+   * arrived in, and the two configured shops map to distinct jurisdictions.
+   */
+  private shopMatch(shopId: string) {
+    const entity = entityForShop(shopId);
+    return entity
+      ? { OR: [{ shop: shopId }, { entity }] }
+      : { shop: shopId };
+  }
+
   /** Cursor state plus what we actually hold, which is the point of the walk. */
   private async backfillProgress(
     shopId: string,
@@ -809,7 +829,7 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
   ): Promise<BackfillProgress> {
     const coverage = await this.prisma.paymentEvent
       .aggregate({
-        where: { shop: shopId },
+        where: this.shopMatch(shopId),
         _min: { occurredAt: true },
         _max: { occurredAt: true },
         _count: { _all: true },
