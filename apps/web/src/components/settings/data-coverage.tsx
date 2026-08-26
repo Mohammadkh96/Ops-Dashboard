@@ -29,6 +29,46 @@ type Progress = {
 /** The API answers with an object instead of a list when nothing is configured. */
 type StepResponse = Progress[] | { error: string };
 
+type ProbeAttempt = {
+  what: string;
+  records: number;
+  newest: string | null;
+  oldest: string | null;
+  worked: boolean;
+  note?: string;
+};
+
+type HistoryProbe = {
+  shop: string;
+  paging: {
+    pages: number;
+    records: number;
+    oldest: string | null;
+    daysBack: number | null;
+    stoppedBecause: string;
+  };
+  dateWindow: ProbeAttempt[];
+  ordering: ProbeAttempt[];
+  customer: ProbeAttempt[];
+  verdict: string;
+  error?: string;
+};
+
+/** One tried parameter, and whether it did anything. */
+function Attempt({ a }: { a: ProbeAttempt }) {
+  return (
+    <li className="flex items-baseline justify-between gap-3">
+      <span className={cn("font-mono", a.worked ? "text-accent-green" : "text-muted")}>
+        {a.what}
+      </span>
+      <span className="text-right text-muted">
+        {a.worked ? "works" : (a.note ?? "no effect")}
+        {a.records ? ` · ${a.records} record(s)` : ""}
+      </span>
+    </li>
+  );
+}
+
 const stamp = (s: string | null) =>
   s ? new Date(s).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "—";
 
@@ -68,6 +108,9 @@ export function DataCoverage() {
   const [notConfigured, setNotConfigured] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [steps, setSteps] = useState(0);
+  const [probe, setProbe] = useState<HistoryProbe[] | null>(null);
+  const [probing, setProbing] = useState(false);
+  const [customer, setCustomer] = useState("");
   // A ref, not state: the loop below reads it between awaits, and a state value
   // captured at the start of the loop would never see the change.
   const stop = useRef(false);
@@ -122,6 +165,32 @@ export function DataCoverage() {
     } finally {
       setRunning(false);
       void status.refetch();
+    }
+  };
+
+  /**
+   * Asks the provider whether the older payments can be fetched at all.
+   *
+   * The import stopping early has two possible causes with opposite remedies —
+   * our walk giving up, or the endpoint only serving recent records — and this
+   * is the difference between them. It runs on the API, which already holds the
+   * keys, so nobody has to check the repo out and paste a key into a shell.
+   */
+  const runProbe = async () => {
+    setProbing(true);
+    setFailure(null);
+    try {
+      const res = await apiFetch<HistoryProbe[] | { error: string }>(
+        "/paymaxis/probe-history",
+        { method: "POST", body: JSON.stringify({ customer: customer.trim() || undefined }) },
+        { retries: 1 },
+      );
+      if (Array.isArray(res)) setProbe(res);
+      else setNotConfigured(res.error);
+    } catch (e) {
+      setFailure(e instanceof Error ? e.message : String(e));
+    } finally {
+      setProbing(false);
     }
   };
 
@@ -241,6 +310,86 @@ export function DataCoverage() {
             </div>
           );
         })}
+
+        {/* The diagnosis, when the import ends early and the reason matters. */}
+        <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3">
+          <div className="flex flex-wrap items-end justify-between gap-2">
+            <div className="flex flex-col gap-0.5">
+              <span className="text-sm font-medium">Can the provider give us older payments?</span>
+              <span className="text-[11px] text-muted">
+                Tries paging deeper, a date window, an oldest-first sort and a customer
+                filter, and reports which of them the API actually honours. Read-only.
+              </span>
+            </div>
+            <div className="flex items-end gap-2">
+              <label className="flex flex-col gap-0.5">
+                <span className="text-[10px] text-muted">Client to test (optional)</span>
+                <input
+                  value={customer}
+                  onChange={(e) => setCustomer(e.target.value)}
+                  placeholder="CU60573"
+                  className="rounded-md border border-border bg-surface px-2 py-1 text-xs"
+                />
+              </label>
+              <Button variant="secondary" onClick={() => void runProbe()} disabled={probing}>
+                {probing ? "Asking the provider…" : "Diagnose"}
+              </Button>
+            </div>
+          </div>
+
+          {probe?.map((p) => (
+            <div key={p.shop} className="flex flex-col gap-1.5 border-t border-border pt-2 text-xs">
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="font-medium">Shop {p.shop}</span>
+                <span className="text-muted">
+                  paging: {p.paging.records} record(s) over {p.paging.pages} page(s)
+                  {p.paging.daysBack !== null ? `, ${p.paging.daysBack} day(s) back` : ""} —{" "}
+                  {p.paging.stoppedBecause}
+                </span>
+              </div>
+              {p.dateWindow.length ? (
+                <>
+                  <span className="text-[11px] uppercase tracking-wider text-muted">Date window</span>
+                  <ul className="flex flex-col gap-0.5">
+                    {p.dateWindow.map((a) => <Attempt key={a.what} a={a} />)}
+                  </ul>
+                </>
+              ) : null}
+              {p.ordering.length ? (
+                <>
+                  <span className="text-[11px] uppercase tracking-wider text-muted">Ordering</span>
+                  <ul className="flex flex-col gap-0.5">
+                    {p.ordering.map((a) => <Attempt key={a.what} a={a} />)}
+                  </ul>
+                </>
+              ) : null}
+              {p.customer.length ? (
+                <>
+                  <span className="text-[11px] uppercase tracking-wider text-muted">Customer filter</span>
+                  <ul className="flex flex-col gap-0.5">
+                    {p.customer.map((a) => <Attempt key={a.what} a={a} />)}
+                  </ul>
+                </>
+              ) : null}
+              <p className="rounded-md border border-accent-blue/25 bg-accent-blue-soft px-2 py-1.5 text-accent-blue">
+                {p.verdict}
+              </p>
+              {p.error ? <p className="text-accent-red">{p.error}</p> : null}
+            </div>
+          ))}
+
+          {probe?.length ? (
+            <button
+              type="button"
+              onClick={() => {
+                void navigator.clipboard.writeText(JSON.stringify(probe, null, 2));
+              }}
+              className="self-start text-[11px] text-muted underline underline-offset-2 hover:text-foreground"
+            >
+              Copy the full result
+            </button>
+          ) : null}
+        </div>
 
         <div className="flex flex-wrap items-center gap-2">
           {running ? (

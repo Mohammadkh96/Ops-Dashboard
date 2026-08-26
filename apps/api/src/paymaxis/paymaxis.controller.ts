@@ -125,6 +125,22 @@ export class PaymaxisController {
   }
 
   /**
+   * Asks the provider whether older payments can be fetched at all, and how.
+   *
+   * Guarded: it spends outbound calls against the live keys. Read-only — every
+   * request it makes is a GET, and the report contains counts, dates and
+   * parameter names, never a payment's contents.
+   */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Post('probe-history')
+  probeHistory(@Body() body?: { shop?: string; customer?: string }) {
+    const shops = this.paymaxis.shops;
+    if (!shops.length) return { error: 'PAYMAXIS_SHOPS is not configured' };
+    return this.paymaxis.probeHistory(body?.shop, body?.customer);
+  }
+
+  /**
    * Runs one read-only sync now and reports what happened. Lets the connection
    * be proved from a terminal before anything is scheduled or deployed.
    */

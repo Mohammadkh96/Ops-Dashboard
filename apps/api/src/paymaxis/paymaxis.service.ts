@@ -9,6 +9,7 @@ import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { LiveBus } from '../live/live-bus.service';
 import { PaymaxisClient } from './paymaxis.client';
+import { probeHistory, type HistoryProbe } from './history-probe';
 import {
   entityForShop,
   normalizePayment,
@@ -852,6 +853,34 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
       coverageTo: coverage?._max.occurredAt ? coverage._max.occurredAt.toISOString() : null,
       payments: coverage?._count._all ?? 0,
     };
+  }
+
+  /**
+   * Asks the provider whether older payments can be fetched at all.
+   *
+   * Uses the keys already configured here, so the answer is a button in the
+   * dashboard rather than a terminal, a checkout and a key pasted into a shell.
+   */
+  async probeHistory(shopId?: string, customer?: string): Promise<HistoryProbe[]> {
+    const shops = shopId ? this.shops.filter((s) => s.shopId === shopId) : this.shops;
+    const out: HistoryProbe[] = [];
+    for (const shop of shops) {
+      const client = new PaymaxisClient(
+        process.env.PAYMAXIS_BASE_URL ?? PAYMAXIS_DEFAULT_BASE_URL,
+        shop.apiKey,
+        process.env.PAYMAXIS_AUTH_HEADER ?? 'Authorization',
+      );
+      out.push(
+        await probeHistory(shop.shopId, (params) => client.probe(params), {
+          limit: Number(process.env.PAYMAXIS_LIMIT ?? 100),
+          // Bounded so the whole thing answers inside one serverless request.
+          maxPages: 8,
+          budgetMs: Number(process.env.PAYMAXIS_PROBE_BUDGET_MS ?? 25_000),
+          customer,
+        }),
+      );
+    }
+    return out;
   }
 
   /** Where the historical import has got to, without moving it. */

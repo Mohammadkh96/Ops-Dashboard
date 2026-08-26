@@ -79,6 +79,32 @@ export class PaymaxisClient {
   }
 
   /**
+   * An arbitrary read against the payments endpoint.
+   *
+   * Exists for the history probe, which has to try parameter names that are not
+   * in the configuration precisely because nobody knows yet which ones work.
+   * Still GET-only, like everything on this class.
+   */
+  async probe(params: Record<string, string | number | undefined>): Promise<{
+    status: number;
+    records: Record<string, unknown>[];
+    hasMore?: boolean;
+  }> {
+    const path = process.env.PAYMAXIS_PAYMENTS_PATH ?? '/api/v1/payments';
+    try {
+      const json = (await this.get(path, params)) as Record<string, unknown> | unknown[];
+      const records = extractRecords(json);
+      const hasMore = !Array.isArray(json) ? (json?.hasMore as boolean | undefined) : undefined;
+      return { status: 200, records, hasMore };
+    } catch (e) {
+      // The probe reports failures rather than throwing them: a 400 from one
+      // candidate parameter is a result, not an outage.
+      const m = /HTTP (\d{3})/.exec((e as Error).message ?? '');
+      return { status: m ? Number(m[1]) : 0, records: [] };
+    }
+  }
+
+  /**
    * One page of payments. Parameter and response field names come from config,
    * so adapting to the real API is a settings change rather than a code change.
    */
