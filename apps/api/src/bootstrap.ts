@@ -1,6 +1,9 @@
 import { INestApplication, Logger, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
-import type { ExpressAdapter } from '@nestjs/platform-express';
+import type {
+  ExpressAdapter,
+  NestExpressApplication,
+} from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
 import { AppModule } from './app.module';
@@ -26,6 +29,14 @@ export async function createApp(
   const app = adapter
     ? await NestFactory.create(AppModule, adapter, { rawBody: true })
     : await NestFactory.create(AppModule, { rawBody: true });
+
+  // A JSON body of a few megabytes, because the history import posts batches of
+  // exported payment rows and the default ceiling is 100kb — under which every
+  // batch is refused with a 413 the browser reports as a network failure.
+  // Registered before Nest installs its own parser, so this limit is the one
+  // that applies; rawBody still reaches the webhook verifier, which is why this
+  // goes through useBodyParser rather than an express.json of our own.
+  (app as NestExpressApplication).useBodyParser('json', { limit: '8mb' });
 
   // The dashboard is a static export served from a different host (Vercel), so
   // every call it makes is cross-origin. WEB_ORIGIN accepts a comma-separated

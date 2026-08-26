@@ -322,7 +322,7 @@ export function normalizePayment(
  * (only sensible while debugging), or list your own keys in
  * PAYMAXIS_REDACT_KEYS.
  */
-const DEFAULT_REDACT_KEYS = [
+export const DEFAULT_REDACT_KEYS = [
   'dateOfBirth',
   'birthDate',
   'ip',

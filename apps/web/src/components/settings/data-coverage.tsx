@@ -2,12 +2,23 @@
 
 import { useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Database, Play, Square } from "lucide-react";
+import { Database, Play, Square, Upload } from "lucide-react";
 
 import { apiFetch, isDemoMode } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { parseFile } from "@/lib/recon/parse";
 import { cn } from "@/lib/utils";
+
+/**
+ * Rows sent to the API in one request.
+ *
+ * The file is parsed here and posted in slices for the same reason the backwards
+ * walk is sliced: the host kills a request at 60 seconds, and a slice that
+ * returns is a slice that is stored. Small enough to be quick, large enough that
+ * a year of history is a few dozen requests rather than thousands.
+ */
+const IMPORT_BATCH = 500;
 
 type Progress = {
   shop: string;
@@ -49,6 +60,18 @@ type TryResult = {
   note: string;
 };
 
+type ImportSummary = {
+  read: number;
+  mapped: number;
+  stored: number;
+  unusable: number;
+  duplicates: number;
+  oldest: string | null;
+  newest: string | null;
+  undated: number;
+  warnings: string[];
+};
+
 type HistoryProbe = {
   shop: string;
   paging: {
@@ -79,6 +102,12 @@ function Attempt({ a }: { a: ProbeAttempt }) {
     </li>
   );
 }
+
+/** "a, b or c" — a list a person can read aloud. */
+const list = (items: string[]) =>
+  items.length <= 1
+    ? (items[0] ?? "")
+    : `${items.slice(0, -1).join(", ")} or ${items[items.length - 1]}`;
 
 const stamp = (s: string | null) =>
   s ? new Date(s).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "—";
@@ -126,6 +155,11 @@ export function DataCoverage() {
   const [tryQuery, setTryQuery] = useState("");
   const [tried, setTried] = useState<TryResult | null>(null);
   const [trying, setTrying] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [imported, setImported] = useState<(ImportSummary & { file: string }) | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [sent, setSent] = useState({ done: 0, total: 0 });
+  const fileInput = useRef<HTMLInputElement>(null);
   // A ref, not state: the loop below reads it between awaits, and a state value
   // captured at the start of the loop would never see the change.
   const stop = useRef(false);
@@ -237,6 +271,91 @@ export function DataCoverage() {
     }
   };
 
+  /**
+   * Loads a file exported out of the Paymaxis console.
+   *
+   * The provider's list endpoint serves a rolling 24 hours — measured, on both
+   * shops, and no date parameter, ordering or paging reaches past it. The
+   * console holds the whole archive but is a session-bound back-office
+   * application, not something a server can be pointed at. Its export, though,
+   * is an ordinary file: Actions → Download → CSV, with the period the operator
+   * chose. That is the route the history takes.
+   *
+   * Parsed here and posted in slices, so the browser is the loop and no request
+   * carries more than it can finish. Re-importing a period already held stores
+   * nothing twice — the rows are keyed exactly as polled payments are — so
+   * nobody has to remember where the last export stopped.
+   */
+  const importFile = async (file: File) => {
+    setImporting(true);
+    setImportError(null);
+    setImported(null);
+    setSent({ done: 0, total: 0 });
+    try {
+      const ds = await parseFile(file);
+      const rows = ds.rows.filter((r) =>
+        Object.values(r).some((v) => String(v ?? "").trim() !== ""),
+      );
+      if (!rows.length) {
+        setImportError(
+          `${ds.fileName} has no rows. Export the worksheet itself rather than a summary view.`,
+        );
+        return;
+      }
+      setSent({ done: 0, total: rows.length });
+
+      const totals: ImportSummary = {
+        read: 0,
+        mapped: 0,
+        stored: 0,
+        unusable: 0,
+        duplicates: 0,
+        oldest: null,
+        newest: null,
+        undated: 0,
+        warnings: [],
+      };
+      let firstBatch = true;
+
+      for (let i = 0; i < rows.length; i += IMPORT_BATCH) {
+        const slice = rows.slice(i, i + IMPORT_BATCH);
+        const res = await apiFetch<ImportSummary>(
+          "/paymaxis/import",
+          { method: "POST", body: JSON.stringify({ rows: slice }) },
+          { retries: 1 },
+        );
+        totals.read += res.read;
+        totals.mapped += res.mapped;
+        totals.stored += res.stored;
+        totals.unusable += res.unusable;
+        totals.duplicates += res.duplicates;
+        totals.undated += res.undated;
+        if (res.oldest && (!totals.oldest || res.oldest < totals.oldest)) totals.oldest = res.oldest;
+        if (res.newest && (!totals.newest || res.newest > totals.newest)) totals.newest = res.newest;
+        // A column counts as missing from the FILE only if it was missing from
+        // every slice — one slice of refunds with no error codes says nothing
+        // about the file.
+        totals.warnings = firstBatch
+          ? res.warnings
+          : totals.warnings.filter((w) => res.warnings.includes(w));
+        firstBatch = false;
+
+        setSent({ done: Math.min(i + IMPORT_BATCH, rows.length), total: rows.length });
+        setImported({ ...totals, file: ds.fileName });
+      }
+
+      // Every total, chart and client drawer is now looking at more history.
+      await queryClient.invalidateQueries();
+    } catch (e) {
+      setImportError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setImporting(false);
+      // So "Payments held" and the covering dates move as soon as it lands.
+      void status.refetch();
+      if (fileInput.current) fileInput.current.value = "";
+    }
+  };
+
   if (isDemoMode) {
     return (
       <Card className="glass card-seam">
@@ -264,9 +383,9 @@ export function DataCoverage() {
         <p className="text-sm text-muted-foreground">
           Payments are pulled newest-first, and the poll stops at the first page it
           already knows — so nothing older than the day polling started arrives on
-          its own. Importing older history walks the provider&rsquo;s list backwards
-          in slices, and can be stopped and resumed at any point: each slice is
-          saved before the next begins.
+          its own. Walking the provider&rsquo;s list backwards recovers about a day
+          past that and no further: the endpoint serves a rolling window, which the
+          diagnosis below measures. Everything older comes in from a console export.
         </p>
 
         {notConfigured ? (
@@ -353,6 +472,108 @@ export function DataCoverage() {
             </div>
           );
         })}
+
+        {/* The route the archive actually takes. */}
+        <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3">
+          <div className="flex flex-col gap-0.5">
+            <span className="flex items-center gap-2 text-sm font-medium">
+              <Upload className="size-3.5 text-muted" />
+              Load history from a Paymaxis export
+            </span>
+            <span className="text-[11px] text-muted">
+              The provider&rsquo;s API only serves the last day or so, whatever it is
+              asked — but their console can export everything. Open it, set the period
+              you want, then <span className="text-foreground">Actions → Download → CSV</span>{" "}
+              and drop the file here. Payments already held are not stored twice, so
+              overlapping exports are safe and there is nothing to keep track of.
+            </span>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              ref={fileInput}
+              type="file"
+              accept=".csv,.tsv,.txt,.xls,.xlsx"
+              disabled={importing}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) void importFile(f);
+              }}
+              className="text-xs text-muted file:mr-3 file:cursor-pointer file:rounded-md file:border file:border-border file:bg-surface file:px-3 file:py-1.5 file:text-xs file:text-foreground hover:file:bg-elevated"
+            />
+            {importing ? (
+              <span className="text-xs text-muted">
+                Loading… {sent.done.toLocaleString()} of {sent.total.toLocaleString()} row(s)
+              </span>
+            ) : null}
+          </div>
+
+          {importError ? (
+            <p className="rounded-md border border-accent-red/25 bg-accent-red-soft px-2 py-1.5 text-[11px] text-accent-red">
+              The file could not be loaded: {importError}
+            </p>
+          ) : null}
+
+          {imported ? (
+            <div className="flex flex-col gap-1 border-t border-border pt-2 text-xs">
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="font-mono">{imported.file}</span>
+                <span className={imported.stored ? "text-accent-green" : "text-muted"}>
+                  {imported.stored.toLocaleString()} new payment(s) stored
+                </span>
+              </div>
+              <Line
+                label="Covering"
+                value={
+                  imported.oldest
+                    ? `${stamp(imported.oldest)} → ${stamp(imported.newest)}`
+                    : "no dates in this file"
+                }
+              />
+              <Line
+                label="Rows read"
+                value={`${imported.read.toLocaleString()} · ${imported.duplicates.toLocaleString()} already held`}
+              />
+              {/* Named rather than hidden: a row nothing could key on is a row
+                  that will never appear in any figure, and how many there were
+                  is the difference between "a stray footer line" and "the wrong
+                  columns were exported". */}
+              {imported.unusable ? (
+                <Line
+                  label="Skipped (no id or reference)"
+                  value={imported.unusable.toLocaleString()}
+                  tone="text-accent-orange"
+                />
+              ) : null}
+              {imported.undated ? (
+                <Line
+                  label="Stored without a date"
+                  value={imported.undated.toLocaleString()}
+                  tone="text-accent-orange"
+                />
+              ) : null}
+              {imported.undated ? (
+                <p className="text-[11px] text-muted">
+                  Those rows are held but fall outside every date filter. It usually
+                  means a spreadsheet reformatted the dates when it opened the file —
+                  re-exporting as CSV and loading that file fixes them in place.
+                </p>
+              ) : null}
+              {/* One line, however many columns are missing: a file exported
+                  with the wrong view selected is missing most of them, and six
+                  identical banners say the same thing six times. */}
+              {imported.warnings.length ? (
+                <p className="rounded-md border border-accent-orange/25 bg-accent-orange-soft px-2 py-1.5 text-[11px] text-accent-orange">
+                  No {list(imported.warnings)} anywhere in this file — every row was
+                  blank there. Show{" "}
+                  {imported.warnings.length === 1 ? "that column" : "those columns"} in
+                  the console before exporting, or every figure built on{" "}
+                  {imported.warnings.length === 1 ? "it" : "them"} reads as zero.
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
 
         {/* The diagnosis, when the import ends early and the reason matters. */}
         <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3">

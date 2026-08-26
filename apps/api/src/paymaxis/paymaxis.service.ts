@@ -12,6 +12,14 @@ import { LiveBus } from '../live/live-bus.service';
 import { PaymaxisClient } from './paymaxis.client';
 import { probeHistory, type HistoryProbe } from './history-probe';
 import {
+  mapExportRow,
+  missingColumns,
+  redactExportRow,
+  type ExportRow,
+  type ImportSummary,
+  type MappedImport,
+} from './import-export';
+import {
   entityForShop,
   normalizePayment,
   redactPayload,
@@ -49,6 +57,17 @@ function errText(e: unknown): string {
  * exact settings to use.
  */
 const PAYMAXIS_DEFAULT_BASE_URL = 'https://app.paymaxis.com';
+
+/**
+ * Rows accepted in one import request.
+ *
+ * A year of history is tens of thousands of rows and a serverless request dies
+ * at 60 seconds, so the file is uploaded in batches. This is the ceiling per
+ * batch: large enough that a normal export is a handful of requests, small
+ * enough that one of them cannot be killed halfway and lose its progress —
+ * every batch that returns is a batch that is on disk.
+ */
+const IMPORT_MAX_ROWS = 2000;
 
 /**
  * Smallest gap between syncs triggered by an open dashboard.
@@ -992,6 +1011,124 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
         ),
       ),
     );
+  }
+
+  /**
+   * Stores payments read out of a file exported from the Paymaxis console.
+   *
+   * This is how history older than the provider's rolling 24-hour list gets in
+   * — measured on both shops, no date parameter, ordering or paging reaches
+   * further, and the console that does hold it is a session-bound back-office
+   * application rather than an API.
+   *
+   * Keyed exactly as a polled payment is, so an import and a poll that cover
+   * the same hour produce one record each, not two: re-importing an overlapping
+   * period is safe and is expected — an operator should never have to work out
+   * where the last export stopped.
+   *
+   * Nothing is broadcast to the live feed. These are old payments; announcing
+   * them as they land would put a year of history through the desk's "just
+   * happened" ticker.
+   */
+  async importExportRows(rows: ExportRow[]): Promise<ImportSummary> {
+    if (rows.length > IMPORT_MAX_ROWS) {
+      throw new BadRequestException(
+        `Too many rows in one request (${rows.length}). Send at most ${IMPORT_MAX_ROWS} at a time — the upload splits the file into batches.`,
+      );
+    }
+
+    const mapped: MappedImport[] = [];
+    let unusable = 0;
+    const seen = new Set<string>();
+    const batch: Prisma.PaymentEventCreateManyInput[] = [];
+    let undated = 0;
+    let oldest: Date | null = null;
+    let newest: Date | null = null;
+
+    for (const row of rows) {
+      const p = mapExportRow(row);
+      if (!p) {
+        unusable += 1;
+        continue;
+      }
+      mapped.push(p);
+      // Within-file duplicates: an export of overlapping periods, or the same
+      // payment listed once per state change.
+      if (seen.has(p.dedupeKey)) continue;
+      seen.add(p.dedupeKey);
+
+      if (p.occurredAt) {
+        if (!oldest || p.occurredAt < oldest) oldest = p.occurredAt;
+        if (!newest || p.occurredAt > newest) newest = p.occurredAt;
+      } else {
+        undated += 1;
+      }
+
+      batch.push({
+        provider: 'paymaxis',
+        // Distinguishable from 'poll' and 'webhook' forever after: a figure
+        // that looks wrong can be traced to whether it was read from the API
+        // or typed into a spreadsheet by way of an export.
+        source: 'import',
+        // An export is a file off a laptop, not an authenticated callback.
+        // Saying otherwise would make an unsigned source indistinguishable
+        // from a signed one in the very column that records the difference.
+        signatureOk: false,
+        dedupeKey: p.dedupeKey,
+        paymentId: p.paymentId || null,
+        externalId: p.externalId || null,
+        terminal: p.terminal || null,
+        psp: p.psp || null,
+        parentPaymentId: p.parentPaymentId || null,
+        errorCode: p.errorCode || null,
+        errorMessage: p.errorMessage || null,
+        reference: p.reference || null,
+        shop: p.shop || null,
+        entity: p.entity || null,
+        state: p.state || null,
+        type: p.type || null,
+        amount: p.amount,
+        currency: p.currency || null,
+        customer: p.customer || null,
+        occurredAt: p.occurredAt,
+        headers: asJson({}),
+        payload: asJson(redactExportRow(row)),
+      });
+    }
+
+    let stored = 0;
+    if (batch.length) {
+      const written = await this.prisma.paymentEvent
+        .createMany({ data: batch, skipDuplicates: true })
+        .catch((e: unknown) => {
+          this.log.error(`Import failed: ${errText(e)}`);
+          throw new BadRequestException(`Could not store the import: ${errText(e)}`);
+        });
+      stored = written.count;
+    }
+
+    if (stored) {
+      this.log.log(
+        `Imported ${stored} payment(s) from an export` +
+          (oldest && newest
+            ? ` covering ${oldest.toISOString()} → ${newest.toISOString()}`
+            : ''),
+      );
+    }
+
+    return {
+      read: rows.length,
+      mapped: mapped.length,
+      stored,
+      unusable,
+      // Everything mappable that was not written: already held, or repeated
+      // inside the file itself.
+      duplicates: mapped.length - stored,
+      oldest: oldest ? oldest.toISOString() : null,
+      newest: newest ? newest.toISOString() : null,
+      undated,
+      warnings: missingColumns(mapped),
+    };
   }
 
   async status() {

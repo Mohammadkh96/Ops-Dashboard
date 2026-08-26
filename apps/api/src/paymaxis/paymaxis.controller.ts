@@ -1,6 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -154,6 +155,28 @@ export class PaymaxisController {
     @Body() body: { path?: string; params?: Record<string, string>; shop?: string },
   ) {
     return this.paymaxis.tryCall(body?.path ?? '', body?.params ?? {}, body?.shop);
+  }
+
+  /**
+   * Loads payments from a file exported out of the Paymaxis console.
+   *
+   * The only route to history older than the provider's rolling 24-hour list.
+   * The browser parses the file and posts rows in batches, so nothing is
+   * uploaded that this API has not been asked for row by row, and a batch that
+   * returns is a batch that is stored.
+   *
+   * Guarded: it writes payments. Safe to repeat — rows are keyed exactly as
+   * polled payments are, so an overlapping export stores nothing twice.
+   */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Post('import')
+  import(@Body() body: { rows?: Record<string, unknown>[] }) {
+    const rows = body?.rows;
+    if (!Array.isArray(rows)) {
+      throw new BadRequestException('Send { rows: [...] } — an array of exported rows.');
+    }
+    return this.paymaxis.importExportRows(rows);
   }
 
   /**
