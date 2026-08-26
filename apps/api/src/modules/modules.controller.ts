@@ -76,6 +76,20 @@ export class ModulesController {
   }
 
   /**
+   * Settled deposits and withdrawals per client, for the table's columns.
+   *
+   * POST because a page can carry hundreds of references and a query string is
+   * the wrong place for them; it reads, it writes nothing. Behind the same guard
+   * as the client profile — it reports what named people have funded.
+   */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Post('clients/totals')
+  clientTotals(@Body() body: { refs?: string[] }) {
+    return this.modules.clientTotals(Array.isArray(body?.refs) ? body.refs : []);
+  }
+
+  /**
    * Volume and outcome for a period — the payments overview.
    *
    * Takes its own from/to (ISO instants) rather than the shared range: the

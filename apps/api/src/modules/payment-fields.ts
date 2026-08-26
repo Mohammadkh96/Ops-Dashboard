@@ -22,6 +22,7 @@ export type FieldGroup =
   | 'amounts'
   | 'references'
   | 'customer'
+  | 'clientTotals'
   | 'billing'
   | 'card'
   | 'crypto'
@@ -81,6 +82,12 @@ export const PAYMENT_FIELDS: FieldSpec[] = [
 
   // -- customer
   { key: 'customer', label: 'Customer Reference ID', group: 'customer', table: true },
+  // Not fields on the payment: aggregates over everything held for the client
+  // on the row, served by POST /clients/totals. Catalogued here so the column
+  // picker offers them like any other column — the alternative was a second,
+  // separate list of columns that the picker did not know about.
+  { key: 'clientTotalDeposits', label: 'Client · Total Deposits', group: 'clientTotals', align: 'right', table: true },
+  { key: 'clientTotalWithdrawals', label: 'Client · Total Withdrawals', group: 'clientTotals', align: 'right', table: true },
   { key: 'customerEmail', label: 'Customer Email', group: 'customer' },
   { key: 'customerPhone', label: 'Customer Phone', group: 'customer' },
   { key: 'customerAccountNumber', label: 'Customer Account Number', group: 'customer' },
@@ -152,6 +159,7 @@ export const GROUP_LABELS: Record<FieldGroup, string> = {
   crypto: 'Crypto',
   routing: 'Routing',
   lifecycle: 'Lifecycle',
+  clientTotals: 'Client totals (all held)',
 };
 
 export type FieldValues = Record<string, string | number | boolean | null>;

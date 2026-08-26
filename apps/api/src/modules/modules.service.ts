@@ -403,6 +403,90 @@ export class ModulesService {
     return [...found];
   }
 
+  /**
+   * Settled deposits and withdrawals per client, over everything held.
+   *
+   * For the payments table, where the question is asked about the row in front
+   * of you: this client has just tried to deposit — what have they put in and
+   * taken out before? Opening the drawer answers it for one client at a time,
+   * which is the wrong shape when scanning a list.
+   *
+   * Keyed by the exact `customer` string on the row, not by the merged identity
+   * set the drawer resolves: doing the union for every client on a page would be
+   * a query each. The drawer remains the fuller answer, and says which
+   * identities it merged.
+   *
+   * Totals cover what this dashboard holds, like every other figure here —
+   * which is the whole store, not the table's window, because "total deposits"
+   * that changed when someone picked 24h would mean nothing.
+   */
+  async clientTotals(refs: string[]) {
+    const unique = [...new Set(refs.map((r) => (r ?? '').trim()).filter(Boolean))]
+      // Bounded by what a page can show. A caller asking for more is asking for
+      // a report, not a column.
+      .slice(0, 300);
+    if (!unique.length) return {};
+
+    const rows = await this.safe(
+      () =>
+        this.prisma.paymentEvent.findMany({
+          where: { customer: { in: unique } },
+          orderBy: [{ occurredAt: 'desc' }, { receivedAt: 'desc' }],
+          select: {
+            id: true, paymentId: true, reference: true, customer: true,
+            type: true, state: true, amount: true, currency: true,
+          },
+          take: 50_000,
+        }),
+      [],
+    );
+
+    const seen = new Set<string>();
+    const out: Record<
+      string,
+      {
+        deposits: { count: number; amount: number };
+        withdrawals: { count: number; amount: number };
+        refunds: { count: number; amount: number };
+        currencies: string[];
+      }
+    > = {};
+
+    for (const r of rows) {
+      // Latest state only — the same rule as everywhere else. Summing every
+      // stored state would count a payment once per state it passed through.
+      const identity = r.paymentId || r.reference || r.id;
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      const key = r.customer;
+      if (!key) continue;
+
+      const t =
+        out[key] ??
+        (out[key] = {
+          deposits: { count: 0, amount: 0 },
+          withdrawals: { count: 0, amount: 0 },
+          refunds: { count: 0, amount: 0 },
+          currencies: [],
+        });
+      if (r.currency && !t.currencies.includes(r.currency)) t.currencies.push(r.currency);
+
+      // Settled money only. A declined deposit is an attempt, not a deposit,
+      // and counting it here would overstate what the client has funded.
+      if (!isSettledState(r.state ?? '')) continue;
+      const type = (r.type ?? '').toUpperCase();
+      const bucket = /REFUND/.test(type)
+        ? t.refunds
+        : /WITHDRAW|PAYOUT/.test(type)
+          ? t.withdrawals
+          : t.deposits;
+      bucket.count += 1;
+      bucket.amount = Math.round((bucket.amount + Math.abs(r.amount)) * 100) / 100;
+    }
+
+    return out;
+  }
+
   async clientProfile(reference: string, from?: string, to?: string) {
     const gte = parseInstant(from);
     const lte = parseInstant(to);

@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Copy, Download } from "lucide-react";
 
 import { DataTable, type Column } from "@/components/ui/data-table";
@@ -12,6 +13,7 @@ import { TransactionDetail } from "@/components/payments/transaction-detail";
 import { Drawer } from "@/components/ui/drawer";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/toast";
+import { apiFetch, isDemoMode } from "@/lib/api";
 import { type Transaction } from "@/lib/modules";
 import { useTransactions } from "@/hooks/use-modules";
 import {
@@ -29,12 +31,64 @@ const valueOf = (t: Transaction, key: string) => t.fields?.[key] ?? null;
  * monospaced reference. Everything else falls through to plain text, which is
  * what a field like "Billing Postal Code" wants anyway.
  */
+export type ClientTotals = Record<
+  string,
+  {
+    deposits: { count: number; amount: number };
+    withdrawals: { count: number; amount: number };
+    refunds: { count: number; amount: number };
+    currencies: string[];
+  }
+>;
+
+/** A client total: the figure, and how many payments are behind it. */
+function totalCell(
+  tally: { count: number; amount: number } | undefined,
+  currencies: string[] | undefined,
+  tone: string,
+  loading: boolean,
+) {
+  if (!tally) {
+    return <span className="text-muted">{loading ? "…" : "—"}</span>;
+  }
+  const ccy = currencies?.length === 1 ? currencies[0] : "";
+  return (
+    <span className="tnum" title={`${tally.count} settled payment(s)`}>
+      <span className={tally.amount ? tone : "text-muted"}>
+        {ccy === "USD" ? "$" : ""}
+        {tally.amount.toLocaleString(undefined, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })}
+        {ccy && ccy !== "USD" ? ` ${ccy}` : ""}
+      </span>{" "}
+      <span className="text-[11px] text-muted">({tally.count})</span>
+    </span>
+  );
+}
+
 function cellFor(
   spec: FieldSpec,
   t: Transaction,
   onClient?: (reference: string) => void,
+  totals?: ClientTotals,
+  totalsLoading = false,
 ) {
   switch (spec.key) {
+    case "clientTotalDeposits":
+      return totalCell(
+        totals?.[t.client]?.deposits,
+        totals?.[t.client]?.currencies,
+        "text-accent-green",
+        totalsLoading,
+      );
+    case "clientTotalWithdrawals":
+      return totalCell(
+        totals?.[t.client]?.withdrawals,
+        totals?.[t.client]?.currencies,
+        "text-accent-magenta",
+        totalsLoading,
+      );
     case "reference":
       return (
         <span className="font-mono text-xs text-muted-foreground">
@@ -155,6 +209,29 @@ export function TransactionsTable({ fixedType }: { fixedType?: "Deposit" | "With
     [base, search, status, method, gateway],
   );
 
+  // Only fetched when a total column is actually shown, and only for the
+  // clients on screen: this reads a client's whole history, which is not work to
+  // do for a column nobody has asked for.
+  const wantsTotals =
+    visible.includes("clientTotalDeposits") || visible.includes("clientTotalWithdrawals");
+  const refs = useMemo(
+    () => (wantsTotals ? [...new Set(filtered.map((t) => t.client).filter(Boolean))] : []),
+    [wantsTotals, filtered],
+  );
+  const { data: totals, isFetching: totalsLoading } = useQuery({
+    queryKey: ["client-totals", refs],
+    queryFn: () =>
+      apiFetch<ClientTotals>(
+        "/clients/totals",
+        { method: "POST", body: JSON.stringify({ refs }) },
+        // A read behind a POST, so it is safe to send again on a cold start.
+        { retries: 2 },
+      ),
+    enabled: !isDemoMode && refs.length > 0,
+    staleTime: 60_000,
+    placeholderData: (prev) => prev,
+  });
+
   const columns: Column<Transaction>[] = visible.map((key) => {
     const spec =
       byKey.get(key) ?? ({ key, label: key, group: "payment" } as FieldSpec);
@@ -162,7 +239,7 @@ export function TransactionsTable({ fixedType }: { fixedType?: "Deposit" | "With
       key,
       header: spec.label,
       align: spec.align,
-      render: (t: Transaction) => cellFor(spec, t, setClient),
+      render: (t: Transaction) => cellFor(spec, t, setClient, totals, totalsLoading),
     };
   });
 
@@ -180,6 +257,10 @@ export function TransactionsTable({ fixedType }: { fixedType?: "Deposit" | "With
           if (key === "reference") return csvCell(t.reference);
           if (key === "type") return csvCell(t.type);
           if (key === "customer") return csvCell(t.client);
+          if (key === "clientTotalDeposits")
+            return csvCell(String(totals?.[t.client]?.deposits.amount ?? ""));
+          if (key === "clientTotalWithdrawals")
+            return csvCell(String(totals?.[t.client]?.withdrawals.amount ?? ""));
           if (key === "amount")
             return csvCell(
               `${t.type === "Withdrawal" ? "-" : ""}${t.amount}`,
