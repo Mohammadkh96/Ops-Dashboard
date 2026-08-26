@@ -246,6 +246,205 @@ export function mapExportRow(row: ExportRow): MappedImport | null {
 }
 
 /**
+ * Where each exported column belongs in a payment as the PROVIDER writes one.
+ *
+ * The dashboard reads almost everything it shows — amounts in other currencies,
+ * commission, external references, billing, card, crypto, lifetime client
+ * totals — out of the stored payload, by the provider's own field names. An
+ * imported payment was stored under the export's human column headings
+ * instead, so "Amount in Shop Base Currency" sat in the payload right next to a
+ * lookup for `amountInShopBaseCurrency` that could never find it, and three
+ * quarters of the table read as "—" for every one of the 70,023 imported rows.
+ *
+ * So a row is reshaped on the way in. After this an imported payment and a
+ * polled one are the same object, and every consumer — table, drawer, CSV
+ * export, anything added later — works on both without knowing the difference.
+ *
+ * `n` marks a money column, read with the same locale rules as the amount, and
+ * `d` a timestamp, normalised to ISO. Dotted paths nest.
+ */
+const PROVIDER_SHAPE: Record<string, { path: string; kind?: 'n' | 'd' }> = {
+  // payment
+  ID: { path: 'id' },
+  'Payment ID': { path: 'id' },
+  'Reference ID': { path: 'referenceId' },
+  Type: { path: 'paymentType' },
+  'Payment Type': { path: 'paymentType' },
+  State: { path: 'state' },
+  Status: { path: 'state' },
+  'Payment Method': { path: 'paymentMethod' },
+  Method: { path: 'paymentMethod' },
+  'Payment Method Details': { path: 'paymentMethodDetails' },
+  Description: { path: 'description' },
+  Created: { path: 'createdAt', kind: 'd' },
+  'Created At': { path: 'createdAt', kind: 'd' },
+  Updated: { path: 'updatedAt', kind: 'd' },
+  'Updated At': { path: 'updatedAt', kind: 'd' },
+  Finalized: { path: 'finalizedAt', kind: 'd' },
+  'Finalized At': { path: 'finalizedAt', kind: 'd' },
+
+  // amounts
+  Amount: { path: 'amount', kind: 'n' },
+  Currency: { path: 'currency' },
+  'Amount in Base Currency': { path: 'amountInBaseCurrency', kind: 'n' },
+  'Base Currency': { path: 'baseCurrency' },
+  'Amount in Shop Base Currency': {
+    path: 'amountInShopBaseCurrency',
+    kind: 'n',
+  },
+  'Shop Base Currency': { path: 'shopBaseCurrency' },
+  'Customer Amount': { path: 'customerAmount', kind: 'n' },
+  'Customer Currency': { path: 'customerCurrency' },
+  Commission: { path: 'commission', kind: 'n' },
+  'Refunded Amount': { path: 'refundedAmount', kind: 'n' },
+
+  // references
+  'External ID': { path: 'externalId' },
+  'External Id': { path: 'externalId' },
+  'External Refs': { path: 'externalRefs' },
+  'External Result Code': { path: 'externalResultCode' },
+  'Parent Payment ID': { path: 'parentPaymentId' },
+  'Parent Payment Id': { path: 'parentPaymentId' },
+  'Parent Reference ID': { path: 'parentReferenceId' },
+  'Additional Parameters': { path: 'additionalParameters' },
+  'Return URL': { path: 'returnUrl' },
+
+  // customer — nested, exactly as the live payload nests it
+  'Customer Reference ID': { path: 'customer.referenceId' },
+  'Customer Email': { path: 'customer.email' },
+  'Customer Phone': { path: 'customer.phone' },
+  'Customer Account Number': { path: 'customer.accountNumber' },
+  'Customer First Name': { path: 'customer.firstName' },
+  'Customer Last Name': { path: 'customer.lastName' },
+  'Date of Birth': { path: 'customer.dateOfBirth' },
+  'Document Number': { path: 'customer.documentNumber' },
+  'Citizenship Country': { path: 'customer.citizenshipCountryCode' },
+  'Customer KYC Status': { path: 'customer.kycStatus' },
+  'KYC Status': { path: 'customer.kycStatus' },
+  'Payment Instrument KYC Status': {
+    path: 'customer.paymentInstrumentKycStatus',
+  },
+  'IP Address': { path: 'customer.ip' },
+  'Customer IP': { path: 'customer.ip' },
+  'IP Country': { path: 'customer.ipCountry' },
+  'Date of First Deposit': { path: 'customer.dateOfFirstDeposit', kind: 'd' },
+  'Lifetime Number of Deposits': { path: 'customer.depositsCount', kind: 'n' },
+  'Lifetime Deposits Amount': { path: 'customer.depositsAmount', kind: 'n' },
+  'Lifetime Number of Withdrawals': {
+    path: 'customer.withdrawalsCount',
+    kind: 'n',
+  },
+  'Lifetime Withdrawals Amount': {
+    path: 'customer.withdrawalsAmount',
+    kind: 'n',
+  },
+  'Routing Group': { path: 'customer.routingGroup' },
+
+  // billing
+  'Billing Country': { path: 'customer.billingAddress.countryCode' },
+  'Billing State': { path: 'customer.billingAddress.state' },
+  'Billing City': { path: 'customer.billingAddress.city' },
+  'Billing Address Line 1': { path: 'customer.billingAddress.addressLine1' },
+  'Billing Address Line 2': { path: 'customer.billingAddress.addressLine2' },
+  'Billing Postal Code': { path: 'customer.billingAddress.postalCode' },
+
+  // card
+  'Card Brand': { path: 'cardData.brand' },
+  'Card Type': { path: 'cardData.type' },
+  'Card Issuing Country': { path: 'cardData.issuingCountry' },
+  'Card Issuing Organization': { path: 'cardData.issuingOrganization' },
+  'Cardholder Name': { path: 'cardData.cardholderName' },
+
+  // crypto — the live payload spreads these across externalRefs and
+  // additionalParameters, and the dashboard reads both bags merged, so one
+  // bag is enough here.
+  'Crypto Amount': { path: 'additionalParameters.cryptoAmount', kind: 'n' },
+  'Crypto Currency': { path: 'additionalParameters.cryptoCurrency' },
+  Network: { path: 'additionalParameters.cryptoNetwork' },
+  'Source Address': { path: 'additionalParameters.cryptoSourceAddress' },
+  'Destination Address': {
+    path: 'additionalParameters.cryptoDestinationAddress',
+  },
+  'Destination Tag': { path: 'additionalParameters.cryptoDestinationTag' },
+  'Transaction Hash': { path: 'additionalParameters.transactionHash' },
+
+  // routing
+  Shop: { path: 'shopName' },
+  'Shop Name': { path: 'shopName' },
+  Terminal: { path: 'terminalName' },
+  'Terminal Name': { path: 'terminalName' },
+  'Connector ID': { path: 'connectorId' },
+  Provider: { path: 'provider' },
+
+  // lifecycle
+  'Error Code': { path: 'errorCode' },
+  'Error Message': { path: 'errorMessage' },
+  'Decline Reason': { path: 'errorMessage' },
+  'Webhook Status': { path: 'webhookStatus' },
+  'Start Recurring': { path: 'startRecurring' },
+};
+
+const SHAPE_BY_HEADER = new Map(
+  Object.entries(PROVIDER_SHAPE).map(([header, spec]) => [norm(header), spec]),
+);
+
+function setPath(
+  target: Record<string, unknown>,
+  path: string,
+  value: unknown,
+) {
+  const parts = path.split('.');
+  let node = target;
+  for (const part of parts.slice(0, -1)) {
+    if (typeof node[part] !== 'object' || node[part] === null) node[part] = {};
+    node = node[part] as Record<string, unknown>;
+  }
+  node[parts[parts.length - 1]] = value;
+}
+
+/**
+ * One exported row as the provider would have sent it.
+ *
+ * A column this build does not recognise is kept under its own heading rather
+ * than dropped: the column nobody mapped is exactly the one that answers next
+ * month's question, and an export costs nothing to keep whole.
+ */
+export function shapeExportRow(row: ExportRow): Record<string, unknown> {
+  const shaped: Record<string, unknown> = {};
+  for (const [header, raw] of Object.entries(row)) {
+    // A cell that is an object or an array is kept whole under its own heading
+    // — it is already structured, and flattening it to "[object Object]" would
+    // destroy it — but it cannot be parsed as an amount or a date.
+    if (raw === null || raw === undefined) continue;
+    if (
+      typeof raw !== 'string' &&
+      typeof raw !== 'number' &&
+      typeof raw !== 'boolean'
+    ) {
+      shaped[header] = raw;
+      continue;
+    }
+    const text = String(raw).trim();
+    if (!text) continue;
+    const spec = SHAPE_BY_HEADER.get(norm(header));
+    if (!spec) {
+      shaped[header] = raw;
+      continue;
+    }
+    if (spec.kind === 'n') {
+      setPath(shaped, spec.path, parseAmount(text));
+    } else if (spec.kind === 'd') {
+      // Left as written when it cannot be read, rather than dropped: an
+      // unreadable date is still evidence of what the file said.
+      setPath(shaped, spec.path, parseWhen(text)?.toISOString() ?? text);
+    } else {
+      setPath(shaped, spec.path, text);
+    }
+  }
+  return shaped;
+}
+
+/**
  * Personal columns an export can carry, on top of the ones the API redacts.
  *
  * The API redaction list is written in the provider's camelCase field names,
@@ -257,23 +456,29 @@ export function mapExportRow(row: ExportRow): MappedImport | null {
  */
 const EXPORT_REDACT = [
   ...DEFAULT_REDACT_KEYS,
+  // The SAME things the API list strips, spelled the way a worksheet spells
+  // them. Nothing more: this list started out wider — it also took the
+  // customer's email, phone and billing address — and a wider list is not the
+  // safer choice here, it is a different one. The poller keeps those, the
+  // dashboard has columns for them, and the client drawer finds a person's
+  // history by matching on their email when the reference is missing. Stripping
+  // them from imported rows only would have made the same client whole when
+  // polled and fragmented when imported, which is the exact bug that had "all
+  // time deposits" reading $0 a fortnight ago.
   'Customer Name',
-  'Customer Email',
-  'Customer Phone',
+  'Customer First Name',
+  'Customer Last Name',
   'Customer Date Of Birth',
+  'Date of Birth',
+  'Customer IP',
+  'IP Address',
   'Card Number',
   'Card Mask',
   'Card Pan',
   'Masked Pan',
-  'Bank Account',
-  'Bank Account Number',
-  'IBAN',
-  'Billing Address',
-  'Address',
-  'City',
-  'Postal Code',
-  'Zip',
-  'Customer IP',
+  'Card Expiry',
+  'Card Expiry Date',
+  'Recurring Token',
 ];
 
 /**
@@ -283,6 +488,11 @@ const EXPORT_REDACT = [
  * exactly what answers tomorrow's question — but a payments export is a
  * personal-data file, and none of the identifying columns are needed for any
  * figure this dashboard shows.
+ *
+ * Walks the whole object, because reshaping puts the personal fields where the
+ * provider puts them — customer.email, cardData.cardholderName — and a
+ * top-level pass would have left every one of them behind the moment the shape
+ * gained a level.
  */
 export function redactExportRow(row: ExportRow): ExportRow {
   if (process.env.PAYMAXIS_STORE_RAW === 'full') return row;
@@ -291,18 +501,31 @@ export function redactExportRow(row: ExportRow): ExportRow {
       .map((k) => norm(k.trim()))
       .filter(Boolean),
   );
-  return Object.fromEntries(
-    Object.entries(row).map(([k, v]) => [
-      k,
-      deny.has(norm(k)) ? '«redacted»' : v,
-    ]),
-  );
+  const walk = (v: unknown): unknown => {
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === 'object') {
+      return Object.fromEntries(
+        Object.entries(v as Record<string, unknown>).map(([k, val]) =>
+          deny.has(norm(k)) ? [k, '«redacted»'] : [k, walk(val)],
+        ),
+      );
+    }
+    return v;
+  };
+  return walk(row) as ExportRow;
 }
 
 export type ImportSummary = {
   read: number;
   mapped: number;
   stored: number;
+  /**
+   * Held from an earlier import and rewritten from this file. How a re-export
+   * with more columns, or a file loaded before a mapping was fixed, repairs
+   * what is already stored. Never counts a webhook or a poll: an export must
+   * not thin out a record the provider sent us in full.
+   */
+  refreshed: number;
   /** Rows that carried no id and no reference, so nothing could key them. */
   unusable: number;
   /** Already held — re-importing an overlapping period is meant to be safe. */

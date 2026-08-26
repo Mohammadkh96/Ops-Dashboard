@@ -60,73 +60,205 @@ export const PAYMENT_FIELDS: FieldSpec[] = [
   { key: 'settled', label: 'Settled', group: 'payment' },
 
   // -- amounts
-  { key: 'amount', label: 'Amount', group: 'amounts', table: true, align: 'right' },
+  {
+    key: 'amount',
+    label: 'Amount',
+    group: 'amounts',
+    table: true,
+    align: 'right',
+  },
   { key: 'currency', label: 'Currency', group: 'amounts' },
-  { key: 'amountInBaseCurrency', label: 'Amount in Base Currency', group: 'amounts', align: 'right' },
+  {
+    key: 'amountInBaseCurrency',
+    label: 'Amount in Base Currency',
+    group: 'amounts',
+    align: 'right',
+  },
   { key: 'baseCurrency', label: 'Base Currency', group: 'amounts' },
-  { key: 'amountInShopBaseCurrency', label: 'Amount in Shop Base Currency', group: 'amounts', align: 'right' },
+  {
+    key: 'amountInShopBaseCurrency',
+    label: 'Amount in Shop Base Currency',
+    group: 'amounts',
+    align: 'right',
+  },
   { key: 'shopBaseCurrency', label: 'Shop Base Currency', group: 'amounts' },
-  { key: 'customerAmount', label: 'Customer Amount', group: 'amounts', align: 'right' },
+  {
+    key: 'customerAmount',
+    label: 'Customer Amount',
+    group: 'amounts',
+    align: 'right',
+  },
   { key: 'customerCurrency', label: 'Customer Currency', group: 'amounts' },
   { key: 'commission', label: 'Commission', group: 'amounts', align: 'right' },
-  { key: 'refundedAmount', label: 'Refunded Amount', group: 'amounts', align: 'right' },
+  {
+    key: 'refundedAmount',
+    label: 'Refunded Amount',
+    group: 'amounts',
+    align: 'right',
+  },
 
   // -- references
   { key: 'externalId', label: 'External ID', group: 'references' },
   { key: 'externalRefs', label: 'External Refs', group: 'references' },
-  { key: 'externalResultCode', label: 'External Result Code', group: 'references' },
+  {
+    key: 'externalResultCode',
+    label: 'External Result Code',
+    group: 'references',
+  },
   { key: 'parentPaymentId', label: 'Parent Payment ID', group: 'references' },
-  { key: 'parentReferenceId', label: 'Parent Reference ID', group: 'references' },
-  { key: 'additionalParameters', label: 'Additional Parameters', group: 'references' },
+  {
+    key: 'parentReferenceId',
+    label: 'Parent Reference ID',
+    group: 'references',
+  },
+  {
+    key: 'additionalParameters',
+    label: 'Additional Parameters',
+    group: 'references',
+  },
   { key: 'returnUrl', label: 'Return URL', group: 'references' },
 
   // -- customer
-  { key: 'customer', label: 'Customer Reference ID', group: 'customer', table: true },
+  {
+    key: 'customer',
+    label: 'Customer Reference ID',
+    group: 'customer',
+    table: true,
+  },
   // Not fields on the payment: aggregates over everything held for the client
   // on the row, served by POST /clients/totals. Catalogued here so the column
   // picker offers them like any other column — the alternative was a second,
   // separate list of columns that the picker did not know about.
-  { key: 'clientTotalDeposits', label: 'Client · Total Deposits', group: 'clientTotals', align: 'right', table: true },
-  { key: 'clientTotalWithdrawals', label: 'Client · Total Withdrawals', group: 'clientTotals', align: 'right', table: true },
+  {
+    key: 'clientTotalDeposits',
+    label: 'Client · Total Deposits',
+    group: 'clientTotals',
+    align: 'right',
+    table: true,
+  },
+  {
+    key: 'clientTotalWithdrawals',
+    label: 'Client · Total Withdrawals',
+    group: 'clientTotals',
+    align: 'right',
+    table: true,
+  },
   { key: 'customerEmail', label: 'Customer Email', group: 'customer' },
   { key: 'customerPhone', label: 'Customer Phone', group: 'customer' },
-  { key: 'customerAccountNumber', label: 'Customer Account Number', group: 'customer' },
-  { key: 'customerFirstName', label: 'Customer First Name', group: 'customer', redacted: true },
-  { key: 'customerLastName', label: 'Customer Last Name', group: 'customer', redacted: true },
-  { key: 'dateOfBirth', label: 'Date of Birth', group: 'customer', redacted: true },
+  {
+    key: 'customerAccountNumber',
+    label: 'Customer Account Number',
+    group: 'customer',
+  },
+  {
+    key: 'customerFirstName',
+    label: 'Customer First Name',
+    group: 'customer',
+    redacted: true,
+  },
+  {
+    key: 'customerLastName',
+    label: 'Customer Last Name',
+    group: 'customer',
+    redacted: true,
+  },
+  {
+    key: 'dateOfBirth',
+    label: 'Date of Birth',
+    group: 'customer',
+    redacted: true,
+  },
   { key: 'documentNumber', label: 'Document Number', group: 'customer' },
-  { key: 'citizenshipCountry', label: 'Citizenship Country', group: 'customer' },
+  {
+    key: 'citizenshipCountry',
+    label: 'Citizenship Country',
+    group: 'customer',
+  },
   { key: 'kycStatus', label: 'Customer KYC Status', group: 'customer' },
-  { key: 'instrumentKycStatus', label: 'Payment Instrument KYC Status', group: 'customer' },
+  {
+    key: 'instrumentKycStatus',
+    label: 'Payment Instrument KYC Status',
+    group: 'customer',
+  },
   { key: 'ipAddress', label: 'IP Address', group: 'customer', redacted: true },
   { key: 'ipCountry', label: 'IP Country', group: 'customer' },
-  { key: 'dateOfFirstDeposit', label: 'Date of First Deposit', group: 'customer' },
-  { key: 'depositsCount', label: 'Lifetime Number of Deposits', group: 'customer', align: 'right' },
-  { key: 'depositsAmount', label: 'Lifetime Deposits Amount', group: 'customer', align: 'right' },
-  { key: 'withdrawalsCount', label: 'Lifetime Number of Withdrawals', group: 'customer', align: 'right' },
-  { key: 'withdrawalsAmount', label: 'Lifetime Withdrawals Amount', group: 'customer', align: 'right' },
+  {
+    key: 'dateOfFirstDeposit',
+    label: 'Date of First Deposit',
+    group: 'customer',
+  },
+  {
+    key: 'depositsCount',
+    label: 'Lifetime Number of Deposits',
+    group: 'customer',
+    align: 'right',
+  },
+  {
+    key: 'depositsAmount',
+    label: 'Lifetime Deposits Amount',
+    group: 'customer',
+    align: 'right',
+  },
+  {
+    key: 'withdrawalsCount',
+    label: 'Lifetime Number of Withdrawals',
+    group: 'customer',
+    align: 'right',
+  },
+  {
+    key: 'withdrawalsAmount',
+    label: 'Lifetime Withdrawals Amount',
+    group: 'customer',
+    align: 'right',
+  },
 
   // -- billing
   { key: 'billingCountry', label: 'Billing Country', group: 'billing' },
   { key: 'billingState', label: 'Billing State', group: 'billing' },
   { key: 'billingCity', label: 'Billing City', group: 'billing' },
-  { key: 'billingAddressLine1', label: 'Billing Address Line 1', group: 'billing' },
-  { key: 'billingAddressLine2', label: 'Billing Address Line 2', group: 'billing' },
+  {
+    key: 'billingAddressLine1',
+    label: 'Billing Address Line 1',
+    group: 'billing',
+  },
+  {
+    key: 'billingAddressLine2',
+    label: 'Billing Address Line 2',
+    group: 'billing',
+  },
   { key: 'billingPostalCode', label: 'Billing Postal Code', group: 'billing' },
 
   // -- card
   { key: 'cardBrand', label: 'Card Brand', group: 'card' },
   { key: 'cardType', label: 'Card Type', group: 'card' },
   { key: 'cardIssuingCountry', label: 'Card Issuing Country', group: 'card' },
-  { key: 'cardIssuingOrganization', label: 'Card Issuing Organization', group: 'card' },
-  { key: 'cardholderName', label: 'Cardholder Name', group: 'card', redacted: true },
+  {
+    key: 'cardIssuingOrganization',
+    label: 'Card Issuing Organization',
+    group: 'card',
+  },
+  {
+    key: 'cardholderName',
+    label: 'Cardholder Name',
+    group: 'card',
+    redacted: true,
+  },
 
   // -- crypto
-  { key: 'cryptoAmount', label: 'Crypto Amount', group: 'crypto', align: 'right' },
+  {
+    key: 'cryptoAmount',
+    label: 'Crypto Amount',
+    group: 'crypto',
+    align: 'right',
+  },
   { key: 'cryptoCurrency', label: 'Crypto Currency', group: 'crypto' },
   { key: 'cryptoNetwork', label: 'Network', group: 'crypto' },
   { key: 'cryptoSourceAddress', label: 'Source Address', group: 'crypto' },
-  { key: 'cryptoDestinationAddress', label: 'Destination Address', group: 'crypto' },
+  {
+    key: 'cryptoDestinationAddress',
+    label: 'Destination Address',
+    group: 'crypto',
+  },
   { key: 'cryptoDestinationTag', label: 'Destination Tag', group: 'crypto' },
   { key: 'cryptoTxHash', label: 'Transaction Hash', group: 'crypto' },
 
@@ -144,7 +276,12 @@ export const PAYMENT_FIELDS: FieldSpec[] = [
   { key: 'errorMessage', label: 'Error Reason', group: 'lifecycle' },
   { key: 'webhookStatus', label: 'Webhook Status', group: 'lifecycle' },
   { key: 'recurringStart', label: 'Start Recurring', group: 'lifecycle' },
-  { key: 'recurringToken', label: 'Recurring Token', group: 'lifecycle', redacted: true },
+  {
+    key: 'recurringToken',
+    label: 'Recurring Token',
+    group: 'lifecycle',
+    redacted: true,
+  },
   { key: 'ingestedVia', label: 'Ingested Via', group: 'lifecycle' },
   { key: 'signatureOk', label: 'Signature Verified', group: 'lifecycle' },
 ];
@@ -177,7 +314,10 @@ function str(payload: Record<string, unknown>, keys: string[]): string | null {
   return clean(pick(payload, keys));
 }
 
-function numOrNull(payload: Record<string, unknown>, keys: string[]): number | null {
+function numOrNull(
+  payload: Record<string, unknown>,
+  keys: string[],
+): number | null {
   const s = str(payload, keys);
   if (s === null) return null;
   const n = Number(s.replace(/[^0-9.-]/g, ''));
@@ -213,7 +353,8 @@ function asRecord(value: unknown): Record<string, unknown> {
 function flatten(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   if (typeof value === 'string') return clean(value);
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (typeof value === 'number' || typeof value === 'boolean')
+    return String(value);
   return clean(JSON.stringify(value));
 }
 
@@ -305,12 +446,16 @@ export function paymentFieldValues(r: MappedRow): FieldValues {
     customerEmail: str(customer, ['email']) ?? str(payload, ['customerEmail']),
     customerPhone: str(customer, ['phone']) ?? str(payload, ['customerPhone']),
     customerAccountNumber:
-      str(customer, ['accountNumber']) ?? str(payload, ['customerAccountNumber']),
+      str(customer, ['accountNumber']) ??
+      str(payload, ['customerAccountNumber']),
     customerFirstName: str(customer, ['firstName', 'givenName']),
     customerLastName: str(customer, ['lastName', 'surname']),
     dateOfBirth: str(customer, ['dateOfBirth', 'birthDate']),
     documentNumber: str(customer, ['documentNumber']),
-    citizenshipCountry: str(customer, ['citizenshipCountryCode', 'citizenshipCountry']),
+    citizenshipCountry: str(customer, [
+      'citizenshipCountryCode',
+      'citizenshipCountry',
+    ]),
     kycStatus: providerLabel(str(customer, ['kycStatus'])),
     instrumentKycStatus: providerLabel(
       str(customer, ['paymentInstrumentKycStatus']) ??
@@ -319,8 +464,14 @@ export function paymentFieldValues(r: MappedRow): FieldValues {
     ipAddress: str(customer, ['ip', 'ipAddress']),
     ipCountry: str(customer, ['ipCountry']) ?? str(payload, ['ipCountry']),
     dateOfFirstDeposit: str(customer, ['dateOfFirstDeposit']),
-    depositsCount: numOrNull(customer, ['depositsCount', 'lifetimeNumberOfDeposits']),
-    depositsAmount: numOrNull(customer, ['depositsAmount', 'lifetimeDepositsAmount']),
+    depositsCount: numOrNull(customer, [
+      'depositsCount',
+      'lifetimeNumberOfDeposits',
+    ]),
+    depositsAmount: numOrNull(customer, [
+      'depositsAmount',
+      'lifetimeDepositsAmount',
+    ]),
     withdrawalsCount: numOrNull(customer, [
       'withdrawalsCount',
       'lifetimeNumberOfWithdrawals',
@@ -359,7 +510,10 @@ export function paymentFieldValues(r: MappedRow): FieldValues {
       'destinationAddress',
       'address',
     ]),
-    cryptoDestinationTag: str(crypto, ['cryptoDestinationTag', 'destinationTag']),
+    cryptoDestinationTag: str(crypto, [
+      'cryptoDestinationTag',
+      'destinationTag',
+    ]),
     cryptoTxHash: r.cryptoTxHash ?? str(crypto, ['transactionHash', 'txHash']),
 
     // routing
@@ -369,7 +523,8 @@ export function paymentFieldValues(r: MappedRow): FieldValues {
     connectorId: str(payload, ['connectorId']),
     shop: r.shop ?? str(payload, ['shop', 'shopName']),
     entity: r.entity,
-    routingGroup: str(customer, ['routingGroup']) ?? str(payload, ['routingGroup']),
+    routingGroup:
+      str(customer, ['routingGroup']) ?? str(payload, ['routingGroup']),
 
     // lifecycle
     errorCode: r.errorCode,
@@ -377,7 +532,16 @@ export function paymentFieldValues(r: MappedRow): FieldValues {
     webhookStatus: providerLabel(str(payload, ['webhookStatus'])),
     recurringStart: str(payload, ['startRecurring', 'recurringStart']),
     recurringToken: str(payload, ['recurringToken']),
-    ingestedVia: r.source === 'poll' ? 'API poll' : 'Webhook',
+    // Three sources now, not two. An imported row reading "Webhook" would say
+    // the provider pushed us a signed callback for a payment that actually came
+    // off a spreadsheet — and this column exists precisely to answer "where did
+    // this figure come from?".
+    ingestedVia:
+      r.source === 'poll'
+        ? 'API poll'
+        : r.source === 'import'
+          ? 'File import'
+          : 'Webhook',
     signatureOk: r.signatureOk,
   };
 }

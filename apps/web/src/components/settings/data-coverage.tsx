@@ -64,6 +64,7 @@ type ImportSummary = {
   read: number;
   mapped: number;
   stored: number;
+  refreshed: number;
   unusable: number;
   duplicates: number;
   oldest: string | null;
@@ -308,6 +309,7 @@ export function DataCoverage() {
         read: 0,
         mapped: 0,
         stored: 0,
+        refreshed: 0,
         unusable: 0,
         duplicates: 0,
         oldest: null,
@@ -327,6 +329,7 @@ export function DataCoverage() {
         totals.read += res.read;
         totals.mapped += res.mapped;
         totals.stored += res.stored;
+        totals.refreshed += res.refreshed;
         totals.unusable += res.unusable;
         totals.duplicates += res.duplicates;
         totals.undated += res.undated;
@@ -534,6 +537,16 @@ export function DataCoverage() {
                 label="Rows read"
                 value={`${imported.read.toLocaleString()} · ${imported.duplicates.toLocaleString()} already held`}
               />
+              {/* Loading the same file again is how rows stored before a
+                  mapping was fixed get repaired, so it needs to be visible
+                  that something happened — "0 stored" alone reads as a
+                  wasted upload. */}
+              {imported.refreshed ? (
+                <Line
+                  label="Already held, rewritten from this file"
+                  value={imported.refreshed.toLocaleString()}
+                />
+              ) : null}
               {/* Named rather than hidden: a row nothing could key on is a row
                   that will never appear in any figure, and how many there were
                   is the difference between "a stray footer line" and "the wrong

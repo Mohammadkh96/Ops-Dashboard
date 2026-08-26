@@ -15,6 +15,7 @@ import {
   mapExportRow,
   missingColumns,
   redactExportRow,
+  shapeExportRow,
   type ExportRow,
   type ImportSummary,
   type MappedImport,
@@ -191,9 +192,15 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
     const raw = (process.env.PAYMAXIS_SHOPS ?? '').trim();
     if (raw.startsWith('[')) {
       try {
-        const parsed = JSON.parse(raw) as { shopId?: unknown; apiKey?: unknown }[];
+        const parsed = JSON.parse(raw) as {
+          shopId?: unknown;
+          apiKey?: unknown;
+        }[];
         return parsed
-          .map((s) => ({ shopId: String(s?.shopId ?? ''), apiKey: String(s?.apiKey ?? '') }))
+          .map((s) => ({
+            shopId: String(s?.shopId ?? ''),
+            apiKey: String(s?.apiKey ?? ''),
+          }))
           .filter((s) => s.shopId && s.apiKey);
       } catch {
         this.log.error(
@@ -291,9 +298,7 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
     const lastRunAt = marks.get(LAST_RUN_KEY) ?? null;
     const lastOkAt = marks.get(LAST_OK_KEY) ?? null;
     const ageMs = lastRunAt ? Date.now() - Date.parse(lastRunAt) : Infinity;
-    const floor = opts.force
-      ? FORCED_REFRESH_MIN_SECONDS
-      : REFRESH_MIN_SECONDS;
+    const floor = opts.force ? FORCED_REFRESH_MIN_SECONDS : REFRESH_MIN_SECONDS;
     if (ageMs < floor * 1000) {
       return {
         ran: false,
@@ -495,18 +500,28 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
     // makes the unique dedupeKey the arbiter of what gets WRITTEN, but it
     // reports only a count — not which rows survived — and the feed must
     // announce exactly the new ones or it repeats itself every cycle.
-    const keys = batch.map((b) => b.payload.dedupeKey).filter(Boolean) as string[];
+    const keys = batch
+      .map((b) => b.payload.dedupeKey)
+      .filter(Boolean) as string[];
     const existing = await this.prisma.paymentEvent
-      .findMany({ where: { dedupeKey: { in: keys } }, select: { dedupeKey: true } })
+      .findMany({
+        where: { dedupeKey: { in: keys } },
+        select: { dedupeKey: true },
+      })
       .catch(() => [] as { dedupeKey: string | null }[]);
     const known = new Set(existing.map((e) => e.dedupeKey));
-    const incoming = batch.filter((b) => !known.has(b.payload.dedupeKey ?? null));
+    const incoming = batch.filter(
+      (b) => !known.has(b.payload.dedupeKey ?? null),
+    );
 
     let stored = 0;
     let broadcast = 0;
     if (incoming.length) {
       const written = await this.prisma.paymentEvent
-        .createMany({ data: incoming.map((b) => b.payload), skipDuplicates: true })
+        .createMany({
+          data: incoming.map((b) => b.payload),
+          skipDuplicates: true,
+        })
         .catch((e: unknown) => {
           this.log.error(`Store failed for shop ${shop.shopId}: ${errText(e)}`);
           return { count: 0 };
@@ -664,14 +679,20 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
     // Bounded so a caller cannot ask for a step longer than the platform will
     // allow the request to live.
     const budgetMs = Math.min(
-      Math.max(opts.budgetMs ?? Number(process.env.PAYMAXIS_BACKFILL_BUDGET_MS ?? 20_000), 1_000),
+      Math.max(
+        opts.budgetMs ??
+          Number(process.env.PAYMAXIS_BACKFILL_BUDGET_MS ?? 20_000),
+        1_000,
+      ),
       45_000,
     );
     const maxPages = Number(process.env.PAYMAXIS_BACKFILL_MAX_PAGES ?? 25);
 
     const out: BackfillProgress[] = [];
     for (const shop of shops) {
-      out.push(await this.backfillShop(shop, budgetMs, maxPages, opts.reset === true));
+      out.push(
+        await this.backfillShop(shop, budgetMs, maxPages, opts.reset === true),
+      );
     }
     return out;
   }
@@ -684,22 +705,33 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
   ): Promise<BackfillProgress> {
     const started = Date.now();
     const blank = {
-      nextPage: 0, pages: 0, fetched: 0, stored: 0,
-      oldestSeen: null as Date | null, done: false,
-      lastError: null as string | null, claimedAt: null as Date | null,
+      nextPage: 0,
+      pages: 0,
+      fetched: 0,
+      stored: 0,
+      oldestSeen: null as Date | null,
+      done: false,
+      lastError: null as string | null,
+      claimedAt: null as Date | null,
     };
 
-    let cursor =
-      (await this.prisma.paymaxisBackfill
-        .upsert({
-          where: { shopId: shop.shopId },
-          create: { shopId: shop.shopId },
-          update: {},
-        })
-        .catch((e: unknown) => {
-          this.log.warn(`Backfill cursor unavailable for ${shop.shopId}: ${errText(e)}`);
-          return null;
-        })) ?? { shopId: shop.shopId, startedAt: new Date(), updatedAt: new Date(), ...blank };
+    let cursor = (await this.prisma.paymaxisBackfill
+      .upsert({
+        where: { shopId: shop.shopId },
+        create: { shopId: shop.shopId },
+        update: {},
+      })
+      .catch((e: unknown) => {
+        this.log.warn(
+          `Backfill cursor unavailable for ${shop.shopId}: ${errText(e)}`,
+        );
+        return null;
+      })) ?? {
+      shopId: shop.shopId,
+      startedAt: new Date(),
+      updatedAt: new Date(),
+      ...blank,
+    };
 
     if (reset) {
       cursor = await this.prisma.paymaxisBackfill.update({
@@ -714,8 +746,14 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
     // run, so a step that ended normally never blocks the next one; short enough
     // that an invocation killed mid-walk unblocks itself within a minute.
     const CLAIM_TTL_MS = 90_000;
-    if (cursor.claimedAt && Date.now() - cursor.claimedAt.getTime() < CLAIM_TTL_MS) {
-      return { ...(await this.backfillProgress(shop.shopId, cursor, 0, 0)), busy: true };
+    if (
+      cursor.claimedAt &&
+      Date.now() - cursor.claimedAt.getTime() < CLAIM_TTL_MS
+    ) {
+      return {
+        ...(await this.backfillProgress(shop.shopId, cursor, 0, 0)),
+        busy: true,
+      };
     }
     cursor = await this.prisma.paymaxisBackfill.update({
       where: { shopId: shop.shopId },
@@ -736,7 +774,9 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
 
     try {
       while (ranPages < maxPages && Date.now() - started < budgetMs) {
-        const { records, hasMore } = await client.listPayments({ page: cursor.nextPage });
+        const { records, hasMore } = await client.listPayments({
+          page: cursor.nextPage,
+        });
 
         if (!records.length) {
           cursor = await this.finishBackfill(shop.shopId, 'the list ran out');
@@ -758,12 +798,15 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
         }
         previousPage = fingerprint;
 
-        const wrote = await this.storePage(shop, records, seen, { broadcast: false });
+        const wrote = await this.storePage(shop, records, seen, {
+          broadcast: false,
+        });
         ranPages += 1;
         ranStored += wrote.stored;
 
         const oldest =
-          wrote.oldest && (!cursor.oldestSeen || wrote.oldest < cursor.oldestSeen)
+          wrote.oldest &&
+          (!cursor.oldestSeen || wrote.oldest < cursor.oldestSeen)
             ? wrote.oldest
             : cursor.oldestSeen;
 
@@ -782,7 +825,10 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
         });
 
         if (!hasMore) {
-          cursor = await this.finishBackfill(shop.shopId, 'the provider reported no more pages');
+          cursor = await this.finishBackfill(
+            shop.shopId,
+            'the provider reported no more pages',
+          );
           break;
         }
       }
@@ -833,17 +879,20 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
    */
   private shopMatch(shopId: string) {
     const entity = entityForShop(shopId);
-    return entity
-      ? { OR: [{ shop: shopId }, { entity }] }
-      : { shop: shopId };
+    return entity ? { OR: [{ shop: shopId }, { entity }] } : { shop: shopId };
   }
 
   /** Cursor state plus what we actually hold, which is the point of the walk. */
   private async backfillProgress(
     shopId: string,
     cursor: {
-      nextPage: number; pages: number; fetched: number; stored: number;
-      oldestSeen: Date | null; done: boolean; lastError: string | null;
+      nextPage: number;
+      pages: number;
+      fetched: number;
+      stored: number;
+      oldestSeen: Date | null;
+      done: boolean;
+      lastError: string | null;
     },
     ranPages: number,
     ranStored: number,
@@ -869,8 +918,12 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
       ranPages,
       ranStored,
       busy: false,
-      coverageFrom: coverage?._min.occurredAt ? coverage._min.occurredAt.toISOString() : null,
-      coverageTo: coverage?._max.occurredAt ? coverage._max.occurredAt.toISOString() : null,
+      coverageFrom: coverage?._min.occurredAt
+        ? coverage._min.occurredAt.toISOString()
+        : null,
+      coverageTo: coverage?._max.occurredAt
+        ? coverage._max.occurredAt.toISOString()
+        : null,
       payments: coverage?._count._all ?? 0,
     };
   }
@@ -881,8 +934,13 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
    * Uses the keys already configured here, so the answer is a button in the
    * dashboard rather than a terminal, a checkout and a key pasted into a shell.
    */
-  async probeHistory(shopId?: string, customer?: string): Promise<HistoryProbe[]> {
-    const shops = shopId ? this.shops.filter((s) => s.shopId === shopId) : this.shops;
+  async probeHistory(
+    shopId?: string,
+    customer?: string,
+  ): Promise<HistoryProbe[]> {
+    const shops = shopId
+      ? this.shops.filter((s) => s.shopId === shopId)
+      : this.shops;
     const out: HistoryProbe[] = [];
     for (const shop of shops) {
       const client = new PaymaxisClient(
@@ -934,8 +992,11 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
     fields: string[];
     note: string;
   }> {
-    const shop = (shopId ? this.shops.find((s) => s.shopId === shopId) : this.shops[0]) ?? null;
-    if (!shop) throw new BadRequestException('PAYMAXIS_SHOPS is not configured');
+    const shop =
+      (shopId ? this.shops.find((s) => s.shopId === shopId) : this.shops[0]) ??
+      null;
+    if (!shop)
+      throw new BadRequestException('PAYMAXIS_SHOPS is not configured');
 
     // A path, not a URL: anything that looks like a host is refused rather than
     // silently turned into a request somewhere else.
@@ -959,9 +1020,16 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
     const dates = records
       .map((r) => {
         const inner = (r.payment ?? r.data ?? r) as Record<string, unknown>;
-        for (const f of ['updatedAt', 'updated', 'createdAt', 'created', 'finalized']) {
+        for (const f of [
+          'updatedAt',
+          'updated',
+          'createdAt',
+          'created',
+          'finalized',
+        ]) {
           const v = inner?.[f];
-          if (typeof v === 'string' && !Number.isNaN(Date.parse(v))) return new Date(v);
+          if (typeof v === 'string' && !Number.isNaN(Date.parse(v)))
+            return new Date(v);
         }
         return null;
       })
@@ -969,7 +1037,9 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
       .sort((a, b) => a.getTime() - b.getTime());
 
     const first = records[0]
-      ? Object.keys((records[0].payment ?? records[0].data ?? records[0]) as object)
+      ? Object.keys(
+          (records[0].payment ?? records[0].data ?? records[0]) as object,
+        )
       : [];
 
     return {
@@ -997,14 +1067,21 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
   async backfillStatus(): Promise<BackfillProgress[]> {
     const rows: (BackfillCursor & { shopId: string })[] =
       await this.prisma.paymaxisBackfill.findMany().catch(() => []);
-    const byShop = new Map(rows.map((r): [string, BackfillCursor] => [r.shopId, r]));
+    const byShop = new Map(
+      rows.map((r): [string, BackfillCursor] => [r.shopId, r]),
+    );
     return Promise.all(
       this.shops.map((s) =>
         this.backfillProgress(
           s.shopId,
           byShop.get(s.shopId) ?? {
-            nextPage: 0, pages: 0, fetched: 0, stored: 0,
-            oldestSeen: null, done: false, lastError: null,
+            nextPage: 0,
+            pages: 0,
+            fetched: 0,
+            stored: 0,
+            oldestSeen: null,
+            done: false,
+            lastError: null,
           },
           0,
           0,
@@ -1092,24 +1169,76 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
         customer: p.customer || null,
         occurredAt: p.occurredAt,
         headers: asJson({}),
-        payload: asJson(redactExportRow(row)),
+        // Reshaped into the provider's own field names before it is stored, so
+        // an imported payment and a polled one are the same object and every
+        // reader works on both. Storing the export's column headings instead is
+        // what left three quarters of the payments table reading "—".
+        payload: asJson(redactExportRow(shapeExportRow(row))),
       });
     }
 
     let stored = 0;
+    let refreshed = 0;
+
     if (batch.length) {
-      const written = await this.prisma.paymentEvent
-        .createMany({ data: batch, skipDuplicates: true })
+      // What is already held, and how it got here.
+      //
+      // An import must not overwrite a webhook or a poll: the provider's own
+      // callback carries the fullest payload and an export the thinnest, so a
+      // file arriving later must not thin out what is already there.
+      //
+      // It SHOULD replace an earlier import, though. That is how a re-export
+      // with more columns shown, or a file loaded before a mapping was fixed,
+      // gets repaired — otherwise the rows are held, the identity matches,
+      // nothing is written, and the missing columns stay missing forever with
+      // the import cheerfully reporting "already held".
+      const keys = batch.map((b) => b.dedupeKey).filter(Boolean) as string[];
+      const existing = await this.prisma.paymentEvent.findMany({
+        where: { dedupeKey: { in: keys } },
+        select: { dedupeKey: true, source: true },
+      });
+      const heldBy = new Map(existing.map((e) => [e.dedupeKey, e.source]));
+
+      const stale = batch
+        .filter((b) => heldBy.get(b.dedupeKey ?? '') === 'import')
+        .map((b) => b.dedupeKey as string);
+
+      const writable = batch.filter((b) => {
+        const held = heldBy.get(b.dedupeKey ?? '');
+        return held === undefined || held === 'import';
+      });
+
+      await this.prisma
+        .$transaction(async (tx) => {
+          if (stale.length) {
+            // Replaced rather than updated: Prisma writes one statement per row
+            // for differing values, and a few hundred round trips to a hosted
+            // database is a request the platform kills at 60 seconds. Delete and
+            // re-insert is two statements whatever the batch size.
+            const removed = await tx.paymentEvent.deleteMany({
+              where: { dedupeKey: { in: stale }, source: 'import' },
+            });
+            refreshed = removed.count;
+          }
+          if (writable.length) {
+            const written = await tx.paymentEvent.createMany({
+              data: writable,
+              skipDuplicates: true,
+            });
+            stored = written.count - refreshed;
+          }
+        })
         .catch((e: unknown) => {
           this.log.error(`Import failed: ${errText(e)}`);
-          throw new BadRequestException(`Could not store the import: ${errText(e)}`);
+          throw new BadRequestException(
+            `Could not store the import: ${errText(e)}`,
+          );
         });
-      stored = written.count;
     }
 
-    if (stored) {
+    if (stored || refreshed) {
       this.log.log(
-        `Imported ${stored} payment(s) from an export` +
+        `Imported ${stored} new and refreshed ${refreshed} payment(s) from an export` +
           (oldest && newest
             ? ` covering ${oldest.toISOString()} → ${newest.toISOString()}`
             : ''),
@@ -1120,10 +1249,11 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
       read: rows.length,
       mapped: mapped.length,
       stored,
+      refreshed,
       unusable,
-      // Everything mappable that was not written: already held, or repeated
-      // inside the file itself.
-      duplicates: mapped.length - stored,
+      // Mappable rows that were neither stored nor refreshed: held from the API
+      // already, or repeated inside the file itself.
+      duplicates: mapped.length - stored - refreshed,
       oldest: oldest ? oldest.toISOString() : null,
       newest: newest ? newest.toISOString() : null,
       undated,

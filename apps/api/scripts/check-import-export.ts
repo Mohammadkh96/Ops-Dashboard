@@ -15,6 +15,7 @@ import {
   parseAmount,
   parseWhen,
   redactExportRow,
+  shapeExportRow,
   type MappedImport,
 } from '../src/paymaxis/import-export';
 import { normalizePayment } from '../src/paymaxis/normalize';
@@ -211,26 +212,108 @@ section('an imported payment and a polled one are ONE record');
   );
 }
 
-section('personal columns do not get stored');
+section('a row is stored in the shape the provider uses');
 {
-  const stored = redactExportRow({
-    ID: 'pm-1',
-    'Cardholder Name': 'A Person',
-    'Customer Email': 'a@example.com',
-    'Card Number': '411111******1111',
-    'Customer IP': '10.0.0.1',
-    State: 'COMPLETED',
+  // The columns the dashboard shows are read out of the payload by the
+  // PROVIDER's field names. Stored under the export's headings instead, they
+  // are present, findable by eye, and invisible to every lookup — which is how
+  // 70,023 imported payments showed "—" down most of the table.
+  const shaped = shapeExportRow({
+    ID: 'pm-900',
+    'Amount in Shop Base Currency': '1.500,00',
+    'Shop Base Currency': 'EUR',
+    'Customer Amount': '1.750,25',
+    'Customer Currency': 'GBP',
+    Commission: '12,50',
+    'Refunded Amount': '0,00',
+    'External Result Code': '00|Approved',
+    'Parent Reference ID': 'REF-100',
+    'Return URL': 'https://example.com/done',
+    'Customer Reference ID': 'CU60573',
+    'Customer Account Number': '778812',
+    'Billing City': 'Port Louis',
+    'Card Brand': 'VISA',
+    Shop: '6321',
+    Terminal: 'Paystrax_Tradin SL',
+    Created: '04/03/2026 09:15:30',
+    'Some Column Nobody Mapped': 'keep me',
   });
+  const at = (path: string): unknown =>
+    path
+      .split('.')
+      .reduce<unknown>((n, k) => (n as Record<string, unknown>)?.[k], shaped);
+
   ok(
-    'spaced header matches the camelCase deny list',
-    stored['Cardholder Name'] === '«redacted»',
+    'money lands under the provider key',
+    at('amountInShopBaseCurrency') === 1500,
   );
-  ok('email', stored['Customer Email'] === '«redacted»');
-  ok('card', stored['Card Number'] === '«redacted»');
-  ok('ip', stored['Customer IP'] === '«redacted»');
+  ok(
+    '...as a NUMBER, not "1.500,00"',
+    typeof at('amountInShopBaseCurrency') === 'number',
+  );
+  ok('shop base currency', at('shopBaseCurrency') === 'EUR');
+  ok('customer amount', at('customerAmount') === 1750.25);
+  ok('commission', at('commission') === 12.5);
+  ok('external result code', at('externalResultCode') === '00|Approved');
+  ok('return url', at('returnUrl') === 'https://example.com/done');
+  // Nested exactly where the live payload nests them, or the drawer's
+  // customer/billing/card sections read empty.
+  ok('customer reference nests', at('customer.referenceId') === 'CU60573');
+  ok('account number nests', at('customer.accountNumber') === '778812');
+  ok('billing nests', at('customer.billingAddress.city') === 'Port Louis');
+  ok('card nests', at('cardData.brand') === 'VISA');
+  ok('shop is shopName', at('shopName') === '6321');
+  ok('terminal is terminalName', at('terminalName') === 'Paystrax_Tradin SL');
+  ok('a date becomes ISO', at('createdAt') === '2026-03-04T09:15:30.000Z');
+  // Nothing is thrown away: the column nobody mapped is the one that answers
+  // next month's question.
+  ok(
+    'an unmapped column is kept',
+    at('Some Column Nobody Mapped') === 'keep me',
+  );
+}
+
+section('an import keeps and strips exactly what a poll does');
+{
+  // Redaction has to be SYMMETRIC. Stripping a field from imported rows that
+  // polled rows keep does not make anything safer — it makes the same client
+  // whole through one door and fragmented through the other.
+  const stored = redactExportRow(
+    shapeExportRow({
+      ID: 'pm-1',
+      'Cardholder Name': 'A Person',
+      'Customer Email': 'a@example.com',
+      'Customer Account Number': '778812',
+      'Billing City': 'Port Louis',
+      'Card Number': '411111******1111',
+      'Customer IP': '10.0.0.1',
+      'Date of Birth': '1980-01-01',
+      State: 'COMPLETED',
+    }),
+  );
+  const at = (path: string): unknown =>
+    path
+      .split('.')
+      .reduce<unknown>((n, k) => (n as Record<string, unknown>)?.[k], stored);
+
+  // Stripped, exactly as the API path strips them...
+  ok('cardholder name', at('cardData.cardholderName') === '«redacted»');
+  ok('card number', at('Card Number') === '«redacted»');
+  ok('ip', at('customer.ip') === '«redacted»');
+  ok('date of birth', at('customer.dateOfBirth') === '«redacted»');
+
+  // ...and KEPT, exactly as the API path keeps them. Email is how the client
+  // drawer finds a person whose payments carry no reference; the dashboard has
+  // columns for the account number and the billing address.
+  ok(
+    'email survives — identity matching needs it',
+    at('customer.email') === 'a@example.com',
+  );
+  ok('account number survives', at('customer.accountNumber') === '778812');
+  ok('billing survives', at('customer.billingAddress.city') === 'Port Louis');
   ok(
     'the payment itself is kept',
-    stored['State'] === 'COMPLETED' && stored['ID'] === 'pm-1',
+    at('state') === 'COMPLETED' && at('id') === 'pm-1',
   );
 }
 
