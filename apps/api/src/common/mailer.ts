@@ -6,17 +6,26 @@
  * an SMTP client here would work on a laptop and fail silently in production,
  * which is the worst of both.
  *
- * Two providers, chosen by which key is configured, and a third state that
- * matters as much as either: NOT CONFIGURED. A dashboard that quietly does
+ * Three providers, chosen by what is configured, and a fourth state that
+ * matters as much as any of them: NOT CONFIGURED. A dashboard that quietly does
  * nothing when it says it sent a handover is worse than one that cannot send
  * at all, so an unconfigured mailer says so in the result and the caller shows
  * it. The handover is still recorded and still readable in the app either way
  * — the email is a delivery mechanism, not the record.
+ *
+ * GMAIL FIRST, when it is set up. The desk already signs in with company Google
+ * accounts, so the handover going out from ops@yourcompany.com is both the
+ * address people recognise and one that does not have to earn a sending
+ * reputation from scratch — a first send from a vendor domain lands in spam.
+ * The sent copy is also in the mailbox's Sent folder, which is where somebody
+ * looks when they ask whether it went.
  */
+
+import { gmailMode, sendViaGmail } from './gmail';
 
 export type MailResult = {
   sent: boolean;
-  provider: 'resend' | 'sendgrid' | 'none';
+  provider: 'gmail' | 'resend' | 'sendgrid' | 'none';
   to: string[];
   /** Why it did not send, in words a person can act on. */
   reason?: string;
@@ -31,6 +40,7 @@ export type Mail = {
 const FROM = process.env.MAIL_FROM ?? 'OpsOS <onboarding@resend.dev>';
 
 function provider(): MailResult['provider'] {
+  if (gmailMode()) return 'gmail';
   if (process.env.RESEND_API_KEY) return 'resend';
   if (process.env.SENDGRID_API_KEY) return 'sendgrid';
   return 'none';
@@ -38,6 +48,16 @@ function provider(): MailResult['provider'] {
 
 export function mailerConfigured(): boolean {
   return provider() !== 'none';
+}
+
+/**
+ * Which provider a send would use right now.
+ *
+ * Reported by /health/connectivity, because the alternative way to find out is
+ * to close a shift and see whether anybody got the handover.
+ */
+export function mailProvider(): MailResult['provider'] {
+  return provider();
 }
 
 export async function sendMail(mail: Mail): Promise<MailResult> {
@@ -59,7 +79,7 @@ export async function sendMail(mail: Mail): Promise<MailResult> {
       provider: 'none',
       to,
       reason:
-        'No mail provider configured. Set RESEND_API_KEY (or SENDGRID_API_KEY) and MAIL_FROM in the API environment. The handover is recorded either way and can be read in the dashboard.',
+        'No mail provider configured. Either connect the company Gmail (GMAIL_REFRESH_TOKEN, via `node scripts/gmail-authorize.mjs`) or set RESEND_API_KEY / SENDGRID_API_KEY, plus MAIL_FROM. The handover is recorded either way and can be read in the dashboard.',
     };
   }
 
@@ -70,6 +90,15 @@ export async function sendMail(mail: Mail): Promise<MailResult> {
   const signal = AbortSignal.timeout(15_000);
 
   try {
+    if (p === 'gmail') {
+      // `to`, not `mail.to`: the addresses have already been filtered above and
+      // an empty or malformed one in the header is refused by Gmail outright.
+      const sent = await sendViaGmail({ ...mail, to });
+      return sent.ok
+        ? { sent: true, provider: p, to }
+        : { sent: false, provider: p, to, reason: sent.reason };
+    }
+
     if (p === 'resend') {
       const res = await fetch('https://api.resend.com/emails', {
         method: 'POST',

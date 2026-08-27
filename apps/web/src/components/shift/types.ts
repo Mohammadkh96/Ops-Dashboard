@@ -95,7 +95,7 @@ export type ShiftFinancials = {
 /** Whether the handover email actually went out, and why not if it did not. */
 export type MailResult = {
   sent: boolean;
-  provider: "resend" | "sendgrid" | "none";
+  provider: "gmail" | "resend" | "sendgrid" | "none";
   to: string[];
   reason?: string;
 };

@@ -7,6 +7,7 @@ import {
   configuredOrigins,
   isOriginAllowed,
 } from '../common/cors';
+import { mailProvider } from '../common/mailer';
 import { pendingMigrations } from '../common/pending-migrations';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -85,6 +86,20 @@ export class HealthController {
         JWT_SECRET: Boolean(process.env.JWT_SECRET),
         PAYMAXIS_SHOPS: Boolean(process.env.PAYMAXIS_SHOPS),
       },
+      // Which door and which postbox are wired up. Both are otherwise
+      // discovered at the worst possible moment — a "Continue with Google"
+      // button that never appears, or a shift closing with a handover nobody
+      // receives. Names and counts only, never a key.
+      signIn: {
+        google: Boolean(
+          process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET,
+        ),
+        allowedDomains: (process.env.GOOGLE_ALLOWED_DOMAINS ?? '')
+          .split(',')
+          .map((d) => d.trim())
+          .filter(Boolean).length,
+      },
+      mail: mailProvider(),
       // Migration names only — no schema contents, nothing confidential, and
       // the one fact that explains a whole class of 500s.
       pendingMigrations: await pendingMigrations(this.prisma),
