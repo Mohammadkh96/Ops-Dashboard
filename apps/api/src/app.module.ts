@@ -12,6 +12,7 @@ import { ReconModule } from './recon/recon.module';
 import { LiveModule } from './live/live.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { PaymaxisModule } from './paymaxis/paymaxis.module';
+import { ShiftsModule } from './shifts/shifts.module';
 import { UsersModule } from './users/users.module';
 
 @Module({
@@ -27,6 +28,7 @@ import { UsersModule } from './users/users.module';
     LiveModule,
     WebhooksModule,
     PaymaxisModule,
+    ShiftsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

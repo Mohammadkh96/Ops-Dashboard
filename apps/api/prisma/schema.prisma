@@ -114,6 +114,8 @@ model User {
   updatedAt    DateTime @updatedAt
 
   shifts            Shift[]
+  shiftsJoined      ShiftParticipant[]
+  assignedTasks     ShiftTask[] @relation("TaskAssignee")
   auditLogs         AuditLog[]
   assignedTickets   Ticket[]   @relation("TicketAssignee")
   assignedIncidents Incident[] @relation("IncidentOwner")
@@ -122,16 +124,131 @@ model User {
   @@index([role])
 }
 
+/// One shift on the desk, from takeover to handover.
+///
+/// A shift is SHARED, not personal. One is open at a time and everybody on
+/// duty joins it, because that is how the desk actually works: three people
+/// covering the same hours are one shift with three pairs of hands, not three
+/// shifts. Actions are attributed to the person who took them; the shift is
+/// the container they all happened in.
 model Shift {
   id        String      @id @default(cuid())
+  /// Which ops day this shift's HANDOVER belongs to (yyyy-mm-dd, desk time,
+  /// rolling over at 04:00). Set when the shift ends — a shift that started
+  /// at 20:00 hands over after midnight and belongs to the day it started.
+  opsDay    String?
+  /// Position within that ops day: 1, 2, 3... See ops-day.ts for why this is
+  /// not simply "the third shift we recorded".
+  slot      Int?
+  /// Morning / Evening / Night / Ad Hoc — chosen by the agent, not the clock.
+  name      String      @default("Ad Hoc")
+  status    ShiftStatus @default(ACTIVE)
+
+  /// Who opened it. Everyone else joins.
   user      User        @relation(fields: [userId], references: [id])
   userId    String
-  status    ShiftStatus @default(ACTIVE)
+  /// Who handed over TO this shift, and who this shift handed over to. Names
+  /// rather than ids: a handover can be to somebody who has not signed in yet.
+  takenOverFrom String?
+  handoverTo    String?
+
   startedAt DateTime    @default(now())
   endedAt   DateTime?
+  /// Who pressed End. Not always the person who started it.
+  endedBy   String?
+
+  /// Live PSP balances at takeover, { "psp name": amount }. The opening
+  /// position the next shift is measured against.
+  startBalances Json?
+  startNotes    String?
+
+  /// Closing KYC/onboarding snapshot per entity, as the desk records it.
+  kyc       Json?
+  /// Support tickets the next shift needs to know about. Carried in the
+  /// handover rather than stored as first-class tickets: they live in Zendesk,
+  /// and duplicating them here would create a second, staler copy.
+  tickets   Json        @default("[]")
+  /// What the next agent needs to know.
   notes     String?
 
+  participants ShiftParticipant[]
+  tasks        ShiftTask[]
+
   @@index([userId, status])
+  @@index([status])
+  @@index([opsDay])
+  @@index([startedAt])
+}
+
+/// Somebody who worked a shift. The opener is one of these too.
+model ShiftParticipant {
+  id       String   @id @default(cuid())
+  shift    Shift    @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  shiftId  String
+  user     User     @relation(fields: [userId], references: [id])
+  userId   String
+  joinedAt DateTime @default(now())
+  leftAt   DateTime?
+
+  @@unique([shiftId, userId])
+  @@index([userId])
+}
+
+/// A standing task the desk does every shift — the task library.
+///
+/// Kept separate from the tasks themselves so that editing "how to check this"
+/// updates the instruction everywhere without rewriting history: a task done
+/// last Tuesday keeps the wording that was in front of the person doing it.
+model TaskTemplate {
+  id        String   @id @default(cuid())
+  title     String
+  /// The instructions, shown with the task. The reason this system beats a
+  /// checklist: what to do is attached to the thing to do.
+  howTo     String?
+  category  String   @default("Operations")
+  /// Which shift it applies to, or "All Shifts".
+  appliesTo String   @default("All Shifts")
+  priority  String   @default("Medium")
+  active    Boolean  @default(true)
+  /// Manual ordering, so the list reads in the order the work is done.
+  position  Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tasks ShiftTask[]
+
+  @@index([active])
+}
+
+/// One task on one shift.
+model ShiftTask {
+  id         String   @id @default(cuid())
+  shift      Shift?   @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  shiftId    String?
+  /// Where it came from, when it came from the library. Null for ad-hoc work.
+  template   TaskTemplate? @relation(fields: [templateId], references: [id])
+  templateId String?
+
+  /// Copied from the template at creation, not read through it — see above.
+  title    String
+  howTo    String?
+  category String  @default("Operations")
+  priority String  @default("Medium")
+  /// Pending / In Progress / Blocked / Done
+  status   String  @default("Pending")
+  notes    String?
+
+  assignee   User?   @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  assigneeId String?
+  /// Who marked it done — not necessarily who it was assigned to.
+  completedBy String?
+  completedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([shiftId, status])
+  @@index([assigneeId])
 }
 
 // ---------- Clients & compliance ----------
