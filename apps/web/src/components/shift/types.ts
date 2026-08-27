@@ -92,8 +92,17 @@ export type ShiftFinancials = {
   currencies: string[];
 };
 
+/** Whether the handover email actually went out, and why not if it did not. */
+export type MailResult = {
+  sent: boolean;
+  provider: "resend" | "sendgrid" | "none";
+  to: string[];
+  reason?: string;
+};
+
 export type ShiftReport = {
   shift: Shift;
+  mail?: MailResult;
   financials: ShiftFinancials;
   incidents: { ref: string; title: string; severity: string; status: string; at: string }[];
   openTasks: { title: string; priority: string; status: string }[];

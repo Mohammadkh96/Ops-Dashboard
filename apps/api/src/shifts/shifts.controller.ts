@@ -167,6 +167,25 @@ export class ShiftsController {
     return this.shifts.updateTask(actorOf(req), id, body ?? {});
   }
 
+  /** Sends (or re-sends) a closed shift's handover to the team. */
+  @Post(':id/send')
+  send(@Param('id') id: string) {
+    return this.shifts.sendHandover(id);
+  }
+
+  /**
+   * The handover as it will look in an inbox — readable without one.
+   *
+   * Returned as a JSON string rather than served as text/html: this is
+   * untrusted content built from notes people typed, and handing the browser a
+   * page to render at an API origin is how a note becomes script. The
+   * dashboard renders it inside a sandboxed frame instead.
+   */
+  @Get(':id/handover')
+  handover(@Param('id') id: string) {
+    return this.shifts.handoverHtml(id);
+  }
+
   /**
    * One shift's handover report. Last, so `active`, `history`, `day`, `team`
    * and `library` are matched as themselves rather than as a shift id.

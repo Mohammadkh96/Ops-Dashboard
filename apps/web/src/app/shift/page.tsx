@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   BookOpen,
+  Mail,
   Check,
   ClipboardList,
   LogIn,
@@ -25,6 +26,7 @@ import { cn } from "@/lib/utils";
 import { StartShiftForm } from "@/components/shift/start-shift";
 import { EndShiftForm } from "@/components/shift/end-shift";
 import { TaskLibrary } from "@/components/shift/task-library";
+import { HandoverView } from "@/components/shift/handover-view";
 import type { ActiveShift, ShiftReport, ShiftTask } from "@/components/shift/types";
 
 const MANAGER_ROLES = ["ADMIN", "OPERATIONS_MANAGER"];
@@ -60,6 +62,10 @@ export default function ShiftPage() {
   const [addingTask, setAddingTask] = useState(false);
   const [newTask, setNewTask] = useState("");
   const [showLibrary, setShowLibrary] = useState(false);
+  // The shift that was just closed, so the handover can be read straight away
+  // and a failed send is visible rather than assumed.
+  const [closed, setClosed] = useState<ShiftReport | null>(null);
+  const [reading, setReading] = useState<string | null>(null);
   // Re-renders the elapsed clock without refetching anything.
   const [, setTick] = useState(0);
 
@@ -207,6 +213,50 @@ export default function ShiftPage() {
         <Card className="glass card-seam">
           <CardContent className="py-10 text-center text-sm text-muted">
             Reading the desk…
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {closed ? (
+        <Card className="glass card-seam">
+          <CardContent className="flex flex-col gap-3 py-4">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <span className="text-sm font-medium">
+                {closed.shift.name} shift closed — {closed.shift.opsDay}, shift{" "}
+                {closed.shift.slot}
+              </span>
+              <button
+                type="button"
+                onClick={() => setClosed(null)}
+                className="text-xs text-muted underline underline-offset-2 hover:text-foreground"
+              >
+                Dismiss
+              </button>
+            </div>
+            {/* Whether the email actually went is stated, never assumed. A
+                dashboard that says "sent" when nothing left the building is
+                worse than one that cannot send at all. */}
+            <p
+              className={cn(
+                "rounded-lg border px-3 py-2 text-xs",
+                closed.mail?.sent
+                  ? "border-accent-green/25 bg-accent-green-soft text-accent-green"
+                  : "border-accent-orange/25 bg-accent-orange-soft text-accent-orange",
+              )}
+            >
+              {closed.mail?.sent
+                ? `Handover emailed to ${closed.mail.to.length} ${closed.mail.to.length === 1 ? "person" : "people"}.`
+                : `Handover not emailed. ${closed.mail?.reason ?? ""} It is recorded and readable here either way.`}
+            </p>
+            <Button
+              variant="secondary"
+              size="sm"
+              className="self-start"
+              onClick={() => setReading(closed.shift.id)}
+            >
+              <Mail className="size-3.5" />
+              Read the handover
+            </Button>
           </CardContent>
         </Card>
       ) : null}
@@ -383,8 +433,9 @@ export default function ShiftPage() {
           <EndShiftForm
             shift={shift}
             canForce={isManager}
-            onDone={() => {
+            onDone={(report) => {
               setEnding(false);
+              setClosed(report);
               void invalidate();
             }}
           />
@@ -393,6 +444,14 @@ export default function ShiftPage() {
 
       <Drawer open={showLibrary} onOpenChange={setShowLibrary} title="Task library">
         <TaskLibrary />
+      </Drawer>
+
+      <Drawer
+        open={!!reading}
+        onOpenChange={(o) => !o && setReading(null)}
+        title="Shift handover"
+      >
+        {reading ? <HandoverView shiftId={reading} /> : null}
       </Drawer>
     </div>
   );

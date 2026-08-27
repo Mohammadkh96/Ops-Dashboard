@@ -11,6 +11,8 @@ import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { directionOf, stateBucket } from '../modules/success-rate';
 import { isSettledState, providerLabel } from '../paymaxis/normalize';
+import { sendMail } from '../common/mailer';
+import { buildHandoverEmail } from './handover-email';
 import {
   deskTime,
   nextSlot,
@@ -26,6 +28,47 @@ export type Actor = { userId: string; email: string; role: string };
 const MANAGER_ROLES = ['ADMIN', 'OPERATIONS_MANAGER'];
 
 export const isManager = (role: string) => MANAGER_ROLES.includes(role);
+
+/** "Wed 26 Aug" — a date a person recognises, not an ISO string. */
+function dayLabel(day: string): string {
+  const [y, m, d] = day.split('-').map(Number);
+  if (!y || !m || !d) return day;
+  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('en-GB', {
+    weekday: 'short',
+    day: '2-digit',
+    month: 'short',
+    timeZone: 'UTC',
+  });
+}
+
+/**
+ * The tickets column, narrowed.
+ *
+ * It is JSON, so it is `any` as far as the compiler is concerned, and an `any`
+ * flowing into the email builder means a typo in a field name would compile
+ * and render as blank. Narrowed once, here, rather than trusted at each use.
+ */
+function ticketsOf(v: unknown): {
+  num?: string;
+  subject?: string;
+  desc?: string;
+  status?: string;
+}[] {
+  if (!Array.isArray(v)) return [];
+  return v.map((t) => {
+    const o = (t ?? {}) as Record<string, unknown>;
+    const str = (k: string) =>
+      typeof o[k] === 'string' || typeof o[k] === 'number'
+        ? String(o[k])
+        : undefined;
+    return {
+      num: str('num'),
+      subject: str('subject'),
+      desc: str('desc'),
+      status: str('status'),
+    };
+  });
+}
 
 function asJson(v: unknown): Prisma.InputJsonValue {
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
@@ -255,6 +298,7 @@ export class ShiftsService {
       kyc?: unknown;
       tickets?: unknown[];
       force?: boolean;
+      sendEmail?: boolean;
     },
   ) {
     const shift = await this.prisma.shift.findFirst({
@@ -315,7 +359,109 @@ export class ShiftsService {
     this.log.log(
       `Shift ${shift.id} closed by ${actor.email} as ${day} shift ${slot}`,
     );
-    return this.report(shift.id);
+
+    const report = await this.report(shift.id);
+    // Sent unless the closing agent asked not to. The failure of an email must
+    // never look like the failure of a handover: the shift is already closed
+    // and recorded by this point, so a provider that is down or unconfigured
+    // comes back as a reason on an otherwise successful close.
+    const mail =
+      body.sendEmail === false
+        ? {
+            sent: false,
+            provider: 'none' as const,
+            to: [],
+            reason: 'Not sent — you unticked it.',
+          }
+        : await this.sendHandover(shift.id);
+    return { ...report, mail };
+  }
+
+  /**
+   * Emails the handover to everyone still on the team.
+   *
+   * Everyone, not just the next agent: a handover is the desk's record of a
+   * day, and the person who needs it most is often the one who was not there.
+   */
+  async sendHandover(shiftId: string) {
+    const report = await this.report(shiftId);
+    const shift = report.shift;
+    if (!shift.opsDay) {
+      return {
+        sent: false,
+        provider: 'none' as const,
+        to: [],
+        reason:
+          'This shift has not been closed yet, so there is nothing to hand over.',
+      };
+    }
+
+    const dayReport = await this.day(shift.opsDay);
+    const recipients = (await this.team()).map((m) => m.email);
+
+    const { subject, html } = buildHandoverEmail({
+      day: dayReport.day,
+      dayLabel: dayLabel(dayReport.day),
+      slotsPerDay: dayReport.slotsPerDay,
+      columns: dayReport.columns,
+      currentId: shift.id,
+      shiftName: shift.name,
+      from: shift.openedBy ?? shift.endedAt ?? 'the desk',
+      to: shift.handoverTo,
+      durationMins: report.durationMins,
+      notes: shift.notes,
+      kyc: shift.kyc,
+      tickets: ticketsOf(shift.tickets),
+      incidents: report.incidents,
+      openTasks: report.openTasks,
+    });
+
+    const result = await sendMail({ to: recipients, subject, html });
+    this.log.log(
+      result.sent
+        ? `Handover for ${shift.id} sent to ${result.to.length} recipient(s)`
+        : `Handover for ${shift.id} NOT sent: ${result.reason}`,
+    );
+    return result;
+  }
+
+  /** The handover as HTML, for reading in the dashboard without an inbox. */
+  async handoverHtml(shiftId: string) {
+    const report = await this.report(shiftId);
+    const shift = report.shift;
+    const day = shift.opsDay ?? opsDay(new Date());
+    const dayReport = await this.day(day);
+    // A shift still running has no column of its own in the day yet; show it
+    // as its own single column so the preview is not empty mid-shift.
+    const columns = dayReport.columns.length
+      ? dayReport.columns
+      : [
+          {
+            id: shift.id,
+            slot: shift.slot,
+            name: shift.name,
+            agent: shift.openedBy ?? '',
+            endedAtLocal: null,
+            financials: report.financials,
+          },
+        ];
+
+    return buildHandoverEmail({
+      day,
+      dayLabel: dayLabel(day),
+      slotsPerDay: dayReport.slotsPerDay,
+      columns,
+      currentId: shift.id,
+      shiftName: shift.name,
+      from: shift.openedBy ?? 'the desk',
+      to: shift.handoverTo,
+      durationMins: report.durationMins,
+      notes: shift.notes,
+      kyc: shift.kyc,
+      tickets: ticketsOf(shift.tickets),
+      incidents: report.incidents,
+      openTasks: report.openTasks,
+    });
   }
 
   // ── the numbers ───────────────────────────────────────────────────────

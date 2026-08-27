@@ -91,7 +91,7 @@ export function EndShiftForm({
 }: {
   shift: Shift;
   canForce: boolean;
-  onDone: () => void;
+  onDone: (report: ShiftReport) => void;
 }) {
   const [mu, setMu] = useState<KycEntity>(emptyKyc());
   const [sl, setSl] = useState<KycEntity>(emptyKyc());
@@ -104,6 +104,7 @@ export function EndShiftForm({
   });
   const [handoverTo, setHandoverTo] = useState("");
   const [notes, setNotes] = useState("");
+  const [sendEmail, setSendEmail] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const team = useQuery({
@@ -119,6 +120,7 @@ export function EndShiftForm({
           handoverTo: handoverTo.trim() || undefined,
           notes: notes.trim() || undefined,
           force,
+          sendEmail,
           // Anything still in the draft row is included rather than lost —
           // typing a ticket and not pressing Add is the commonest way a
           // handover arrives missing the one thing it was written for.
@@ -141,7 +143,7 @@ export function EndShiftForm({
           },
         }),
       }),
-    onSuccess: onDone,
+    onSuccess: (r) => onDone(r),
     onError: (e: unknown) => setError(e instanceof Error ? e.message : String(e)),
   });
 
@@ -273,6 +275,19 @@ export function EndShiftForm({
           ) : null}
         </div>
       ) : null}
+
+      <label className="flex items-start gap-2 text-xs text-muted">
+        <input
+          type="checkbox"
+          checked={sendEmail}
+          onChange={(e) => setSendEmail(e.target.checked)}
+          className="mt-0.5 size-3.5 accent-[var(--accent-blue)]"
+        />
+        <span>
+          Email this handover to the team. The record is kept either way — the
+          email is how people who were not here find out.
+        </span>
+      </label>
 
       <div className="flex gap-2">
         <Button
