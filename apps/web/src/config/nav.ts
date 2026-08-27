@@ -2,6 +2,7 @@ import type { LucideIcon } from "lucide-react";
 import {
   LayoutDashboard,
   Activity,
+  Timer,
   CreditCard,
   ArrowDownToLine,
   ArrowUpFromLine,
@@ -24,6 +25,7 @@ export type NavItem = {
 
 export const primaryNav: NavItem[] = [
   { label: "Dashboard", href: "/", icon: LayoutDashboard },
+  { label: "Shift", href: "/shift", icon: Timer },
   { label: "Operations", href: "/operations", icon: Activity },
   { label: "Payments", href: "/payments", icon: CreditCard },
   { label: "Deposits", href: "/deposits", icon: ArrowDownToLine },
