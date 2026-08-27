@@ -585,7 +585,7 @@ export class ModulesService {
       return true;
     });
 
-    return buildClientProfile(reference, latest as MappedRow[], {
+    return buildClientProfile(reference, latest, {
       from: gte ? gte.toISOString() : null,
       to: lte ? lte.toISOString() : null,
       truncated: events > EVENT_CAP,
@@ -800,7 +800,7 @@ export class ModulesService {
       // The whole catalogue, so the drawer can show every field Paymaxis sent
       // rather than the dozen someone thought to map. Grouped by the UI using
       // the same specs the column picker reads.
-      fields: paymentFieldValues(anchor as MappedRow),
+      fields: paymentFieldValues(anchor),
 
       history: history.map((h) => ({
         state: providerLabel(h.state),
@@ -1615,9 +1615,14 @@ export class ModulesService {
       : [];
     // Stored as { lines, samples }. An array is the older shape, from before
     // the payments themselves were captured.
+    //
+    // The column is JSON, so Prisma types it as `unknown` and every read of it
+    // has to say what it expects. Both shapes are named here rather than cast
+    // at each use, because the older one is still in the table and the two are
+    // told apart by Array.isArray a few lines down.
     const ev = (n.evidence ?? null) as
       | { lines?: string[]; samples?: unknown[]; sampleTotal?: number }
-      | string[]
+      | unknown[]
       | null;
     const lines = Array.isArray(ev) ? ev : (ev?.lines ?? []);
     const samples = Array.isArray(ev) ? [] : (ev?.samples ?? []);
