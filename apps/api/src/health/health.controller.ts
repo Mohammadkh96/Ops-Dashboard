@@ -2,7 +2,11 @@ import { Controller, Get, Headers, Post, Res } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import type { Response } from 'express';
 
-import { allowedOrigins, configuredOrigins, isOriginAllowed } from '../common/cors';
+import {
+  allowedOrigins,
+  configuredOrigins,
+  isOriginAllowed,
+} from '../common/cors';
 import { pendingMigrations } from '../common/pending-migrations';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -25,7 +29,8 @@ export class HealthController {
     // and the first write to a new column returns a 500 that looks like a bug in
     // whatever button was pressed. Named here so the check that is actually
     // monitored says it, rather than an operator discovering it by accident.
-    const pending = database === 'up' ? await pendingMigrations(this.prisma) : [];
+    const pending =
+      database === 'up' ? await pendingMigrations(this.prisma) : [];
 
     return {
       status: database !== 'up' ? 'degraded' : pending.length ? 'behind' : 'ok',

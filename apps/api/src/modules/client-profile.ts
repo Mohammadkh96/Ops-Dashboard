@@ -20,7 +20,11 @@
  * repeated in a meeting as though it meant "ever".
  */
 
-import { isFailedState, isSettledState, providerLabel } from '../paymaxis/normalize';
+import {
+  isFailedState,
+  isSettledState,
+  providerLabel,
+} from '../paymaxis/normalize';
 import { paymentFieldValues, type MappedRow } from './payment-fields';
 
 export type Tally = { count: number; amount: number };
@@ -63,7 +67,12 @@ export type ClientProfile = {
   /** Per currency, because adding USD to EUR produces a number that means nothing. */
   totals: CurrencyTotals[];
   methods: { label: string; count: number; amount: number }[];
-  psps: { psp: string; count: number; amount: number; successRate: number | null }[];
+  psps: {
+    psp: string;
+    count: number;
+    amount: number;
+    successRate: number | null;
+  }[];
   /** Why this client's payments fail, most common first. */
   declineReasons: { reason: string; code: string | null; count: number }[];
   /**
@@ -154,12 +163,25 @@ export function buildClientProfile(
 ): ClientProfile {
   const byCurrency = new Map<string, CurrencyTotals>();
   const methods = new Map<string, { count: number; amount: number }>();
-  const psps = new Map<string, { count: number; amount: number; settled: number; decided: number }>();
-  const reasons = new Map<string, { reason: string; code: string | null; count: number }>();
+  const psps = new Map<
+    string,
+    { count: number; amount: number; settled: number; decided: number }
+  >();
+  const reasons = new Map<
+    string,
+    { reason: string; code: string | null; count: number }
+  >();
 
   // The newest payment that carries each identity field wins: an email or a KYC
   // status can change, and the current value is the useful one.
-  const identity = { email: null, phone: null, accountNumber: null, country: null, citizenship: null, kyc: null } as Record<string, string | null>;
+  const identity = {
+    email: null,
+    phone: null,
+    accountNumber: null,
+    country: null,
+    citizenship: null,
+    kyc: null,
+  } as Record<string, string | null>;
   const lifetime = {
     depositsCount: null as number | null,
     depositsAmount: null as number | null,
@@ -179,16 +201,14 @@ export function buildClientProfile(
     const settled = isSettledState(r.state ?? '');
     const failed = isFailedState(r.state ?? '');
 
-    const totals =
-      byCurrency.get(currency) ??
-      {
-        currency,
-        deposits: tally(),
-        withdrawals: tally(),
-        refunds: tally(),
-        declined: tally(),
-        pending: tally(),
-      };
+    const totals = byCurrency.get(currency) ?? {
+      currency,
+      deposits: tally(),
+      withdrawals: tally(),
+      refunds: tally(),
+      declined: tally(),
+      pending: tally(),
+    };
     byCurrency.set(currency, totals);
 
     // Settled money is counted by direction; everything else is counted as what
@@ -210,7 +230,8 @@ export function buildClientProfile(
       add(totals.pending, amount);
     }
 
-    const methodLabel = typeof f.methodLabel === 'string' ? f.methodLabel : null;
+    const methodLabel =
+      typeof f.methodLabel === 'string' ? f.methodLabel : null;
     if (methodLabel) {
       const m = methods.get(methodLabel) ?? { count: 0, amount: 0 };
       m.count += 1;
@@ -219,7 +240,12 @@ export function buildClientProfile(
     }
 
     if (r.psp) {
-      const p = psps.get(r.psp) ?? { count: 0, amount: 0, settled: 0, decided: 0 };
+      const p = psps.get(r.psp) ?? {
+        count: 0,
+        amount: 0,
+        settled: 0,
+        decided: 0,
+      };
       p.count += 1;
       if (settled) {
         p.amount = Math.round((p.amount + amount) * 100) / 100;
@@ -250,11 +276,18 @@ export function buildClientProfile(
     if (!entity && r.entity) entity = r.entity;
 
     const num = (v: unknown) => (typeof v === 'number' ? v : null);
-    if (lifetime.depositsCount === null) lifetime.depositsCount = num(f.depositsCount);
-    if (lifetime.depositsAmount === null) lifetime.depositsAmount = num(f.depositsAmount);
-    if (lifetime.withdrawalsCount === null) lifetime.withdrawalsCount = num(f.withdrawalsCount);
-    if (lifetime.withdrawalsAmount === null) lifetime.withdrawalsAmount = num(f.withdrawalsAmount);
-    if (lifetime.dateOfFirstDeposit === null && typeof f.dateOfFirstDeposit === 'string') {
+    if (lifetime.depositsCount === null)
+      lifetime.depositsCount = num(f.depositsCount);
+    if (lifetime.depositsAmount === null)
+      lifetime.depositsAmount = num(f.depositsAmount);
+    if (lifetime.withdrawalsCount === null)
+      lifetime.withdrawalsCount = num(f.withdrawalsCount);
+    if (lifetime.withdrawalsAmount === null)
+      lifetime.withdrawalsAmount = num(f.withdrawalsAmount);
+    if (
+      lifetime.dateOfFirstDeposit === null &&
+      typeof f.dateOfFirstDeposit === 'string'
+    ) {
       lifetime.dateOfFirstDeposit = f.dateOfFirstDeposit;
     }
 
@@ -294,7 +327,9 @@ export function buildClientProfile(
           : null,
       }))
       .sort((a, b) => b.count - a.count),
-    declineReasons: [...reasons.values()].sort((a, b) => b.count - a.count).slice(0, 6),
+    declineReasons: [...reasons.values()]
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 6),
     window,
     history: rows.map((r) => {
       const f = paymentFieldValues(r);

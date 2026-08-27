@@ -4,7 +4,12 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { LiveBus } from '../live/live-bus.service';
-import { normalizePayment, redactPayload, toQueueItem, unwrapPayment } from '../paymaxis/normalize';
+import {
+  normalizePayment,
+  redactPayload,
+  toQueueItem,
+  unwrapPayment,
+} from '../paymaxis/normalize';
 
 function asJson(v: unknown): Prisma.InputJsonValue {
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
@@ -46,7 +51,11 @@ export class WebhooksService {
     if (multi) {
       multi.split(',').forEach((pair) => {
         const i = pair.indexOf('=');
-        if (i > 0) out.push({ label: pair.slice(0, i).trim(), key: pair.slice(i + 1).trim() });
+        if (i > 0)
+          out.push({
+            label: pair.slice(0, i).trim(),
+            key: pair.slice(i + 1).trim(),
+          });
         else if (pair.trim()) out.push({ label: 'shop?', key: pair.trim() });
       });
     }
@@ -61,7 +70,10 @@ export class WebhooksService {
   ): { ok: boolean; reason?: string; shopHint?: string } {
     const keys = this.signingKeys();
     if (!keys.length) {
-      return { ok: false, reason: 'no signing key configured (PAYMAXIS_SIGNING_KEYS)' };
+      return {
+        ok: false,
+        reason: 'no signing key configured (PAYMAXIS_SIGNING_KEYS)',
+      };
     }
     if (!raw?.length) return { ok: false, reason: 'raw body unavailable' };
 
@@ -95,10 +107,19 @@ export class WebhooksService {
       // Accept either encoding — providers differ and the header rarely says
       // which. A fresh Hmac per attempt: digest() finalises the instance.
       for (const enc of ['hex', 'base64'] as const) {
-        const expected = Buffer.from(createHmac(algo, key).update(raw).digest(enc));
+        const expected = Buffer.from(
+          createHmac(algo, key).update(raw).digest(enc),
+        );
         for (const [header, value] of candidates) {
-          const given = Buffer.from(String(value).trim().replace(/^sha256=/i, ''));
-          if (expected.length === given.length && timingSafeEqual(expected, given)) {
+          const given = Buffer.from(
+            String(value)
+              .trim()
+              .replace(/^sha256=/i, ''),
+          );
+          if (
+            expected.length === given.length &&
+            timingSafeEqual(expected, given)
+          ) {
             if (!configured) {
               this.log.log(
                 `Signature verified from header "${header}" (${enc}). ` +
@@ -135,7 +156,9 @@ export class WebhooksService {
           `Headers seen: ${Object.keys(headers).join(', ')}`,
       );
     } else if (shopHint && shopHint !== 'default') {
-      this.log.log(`Verified Paymaxis callback with the ${shopHint} signing key.`);
+      this.log.log(
+        `Verified Paymaxis callback with the ${shopHint} signing key.`,
+      );
     }
 
     const p = normalizePayment(unwrapPayment(body));
@@ -175,7 +198,9 @@ export class WebhooksService {
     } catch (e) {
       // Never fail the callback because our storage hiccuped — the provider
       // would retry, and the event is still broadcast below.
-      this.log.error(`Could not persist Paymaxis event: ${(e as Error).message}`);
+      this.log.error(
+        `Could not persist Paymaxis event: ${(e as Error).message}`,
+      );
     }
 
     this.bus.publish(toQueueItem(p), { settled: p.settled, amount: p.amount });

@@ -7,7 +7,8 @@ export type LiveTick = {
     type: string;
     client: string;
     amount: string;
-    status: 'processing' | 'review' | 'pending' | 'escalated' | 'settled' | 'failed';
+    status:
+      'processing' | 'review' | 'pending' | 'escalated' | 'settled' | 'failed';
     /**
      * The provider's own name for the state — "Awaiting Webhook", "Checkout".
      * `status` above is the colour bucket, which is too coarse to act on:

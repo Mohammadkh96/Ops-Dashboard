@@ -96,9 +96,12 @@ export class PaymaxisClient {
     const path =
       pathOverride ?? process.env.PAYMAXIS_PAYMENTS_PATH ?? '/api/v1/payments';
     try {
-      const json = (await this.get(path, params)) as Record<string, unknown> | unknown[];
+      const json = (await this.get(path, params)) as
+        Record<string, unknown> | unknown[];
       const records = extractRecords(json);
-      const hasMore = !Array.isArray(json) ? (json?.hasMore as boolean | undefined) : undefined;
+      const hasMore = !Array.isArray(json)
+        ? (json?.hasMore as boolean | undefined)
+        : undefined;
       return { status: 200, records, hasMore };
     } catch (e) {
       // The probe reports failures rather than throwing them: a 400 from one
@@ -144,14 +147,16 @@ export class PaymaxisClient {
     const sinceParam = process.env.PAYMAXIS_SINCE_PARAM;
     if (sinceParam && opts.updatedSince) params[sinceParam] = opts.updatedSince;
 
-    const json = (await this.get(path, params)) as Record<string, unknown> | unknown[];
+    const json = (await this.get(path, params)) as
+      Record<string, unknown> | unknown[];
 
     const records = extractRecords(json);
     // Paymaxis returns an explicit hasMore boolean; trust it over the guess.
     // The fallback — "a full page implies more" — is wrong at the boundary,
     // claiming another page whenever the last one happens to be exactly full.
     const reported = !Array.isArray(json) ? json?.hasMore : undefined;
-    const hasMore = typeof reported === 'boolean' ? reported : records.length >= limit;
+    const hasMore =
+      typeof reported === 'boolean' ? reported : records.length >= limit;
     return { records, hasMore };
   }
 }

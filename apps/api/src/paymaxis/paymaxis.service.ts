@@ -1037,9 +1037,7 @@ export class PaymaxisService implements OnModuleInit, OnModuleDestroy {
       .sort((a, b) => a.getTime() - b.getTime());
 
     const first = records[0]
-      ? Object.keys(
-          (records[0].payment ?? records[0].data ?? records[0]) as object,
-        )
+      ? Object.keys(records[0].payment ?? records[0].data ?? records[0])
       : [];
 
     return {

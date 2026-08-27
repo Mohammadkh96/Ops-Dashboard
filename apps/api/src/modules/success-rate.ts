@@ -163,7 +163,9 @@ export function buildSuccessRate(
 
   for (const g of Object.values(groups)) {
     const completed = g.slices.find((s) => s.key === 'completed')!.count;
-    g.successRate = g.decided ? Math.round((completed / g.decided) * 100) : null;
+    g.successRate = g.decided
+      ? Math.round((completed / g.decided) * 100)
+      : null;
     g.slices.forEach((s) => {
       s.share = g.count ? Math.round((s.count / g.count) * 100) : 0;
     });

@@ -53,7 +53,9 @@ type PageResult = {
   hasMore?: boolean;
 };
 
-type Fetcher = (params: Record<string, string | number | undefined>) => Promise<PageResult>;
+type Fetcher = (
+  params: Record<string, string | number | undefined>,
+) => Promise<PageResult>;
 
 /** A read against an arbitrary path, for finding an endpoint we do not know. */
 type PathFetcher = (
@@ -62,10 +64,17 @@ type PathFetcher = (
 ) => Promise<PageResult>;
 
 const DAY = 86_400_000;
-const DATE_FIELDS = ['updatedAt', 'updated', 'createdAt', 'created', 'finalized', 'timestamp'];
+const DATE_FIELDS = [
+  'updatedAt',
+  'updated',
+  'createdAt',
+  'created',
+  'finalized',
+  'timestamp',
+];
 
 function dateOf(r: Record<string, unknown>): Date | null {
-  const inner = ((r.payment ?? r.data ?? r) ?? {}) as Record<string, unknown>;
+  const inner = (r.payment ?? r.data ?? r ?? {}) as Record<string, unknown>;
   for (const f of DATE_FIELDS) {
     const v = inner[f];
     if (typeof v === 'string') {
@@ -158,7 +167,13 @@ export async function probeHistory(
 
   const probe: HistoryProbe = {
     shop,
-    paging: { pages: 0, records: 0, oldest: null, daysBack: null, stoppedBecause: 'not run' },
+    paging: {
+      pages: 0,
+      records: 0,
+      oldest: null,
+      daysBack: null,
+      stoppedBecause: 'not run',
+    },
     endpoints: [],
     dateWindow: [],
     ordering: [],
@@ -188,7 +203,9 @@ export async function probeHistory(
         probe.paging.stoppedBecause = 'the list ran out';
         break;
       }
-      const fingerprint = records.map((r) => String(r.id ?? r.paymentId ?? '')).join(',');
+      const fingerprint = records
+        .map((r) => String(r.id ?? r.paymentId ?? ''))
+        .join(',');
       if (fingerprint && fingerprint === previous) {
         // The failure this whole walk is most afraid of: an offset that is
         // accepted and ignored returns the same page forever.
@@ -199,7 +216,8 @@ export async function probeHistory(
       previous = fingerprint;
       const { oldest, newest } = span(records);
       if (oldest && (!deepest || oldest < deepest)) deepest = oldest;
-      if (newest && (!newestOverall || newest > newestOverall)) newestOverall = newest;
+      if (newest && (!newestOverall || newest > newestOverall))
+        newestOverall = newest;
       probe.paging.pages++;
       probe.paging.records += records.length;
       if (hasMore === false) {
@@ -211,7 +229,9 @@ export async function probeHistory(
       }
     }
     probe.paging.oldest = iso(deepest);
-    probe.paging.daysBack = deepest ? Math.round((Date.now() - deepest.getTime()) / DAY) : null;
+    probe.paging.daysBack = deepest
+      ? Math.round((Date.now() - deepest.getTime()) / DAY)
+      : null;
 
     // ── 2. Does a date window work? ─────────────────────────────────────────
     // Asked for a period well before anything plain paging reached, so a
@@ -240,7 +260,12 @@ export async function probeHistory(
         newest: iso(newest),
         oldest: iso(oldest),
         worked,
-        note: status !== 200 ? `HTTP ${status}` : worked ? undefined : 'ignored — returned recent records',
+        note:
+          status !== 200
+            ? `HTTP ${status}`
+            : worked
+              ? undefined
+              : 'ignored — returned recent records',
       });
       if (worked) break;
     }
@@ -259,12 +284,15 @@ export async function probeHistory(
         Boolean(newest && newestOverall) &&
         (newest as Date).getTime() < (newestOverall as Date).getTime() - DAY;
       probe.ordering.push({
-        what: Object.entries(params).map(([k, v]) => `${k}=${v}`).join(' '),
+        what: Object.entries(params)
+          .map(([k, v]) => `${k}=${v}`)
+          .join(' '),
         records: records.length,
         newest: iso(newest),
         oldest: iso(oldest),
         worked,
-        note: status !== 200 ? `HTTP ${status}` : worked ? undefined : 'unchanged',
+        note:
+          status !== 200 ? `HTTP ${status}` : worked ? undefined : 'unchanged',
       });
       if (worked) break;
     }
@@ -273,16 +301,28 @@ export async function probeHistory(
     if (opts.customer) {
       for (const key of CUSTOMER_PARAMS) {
         if (spent() > budgetMs) break;
-        const { status, records } = await fetchPage({ limit, [key]: opts.customer });
+        const { status, records } = await fetchPage({
+          limit,
+          [key]: opts.customer,
+        });
         const mine = records.filter((r) => {
-          const inner = ((r.payment ?? r.data ?? r) ?? {}) as Record<string, unknown>;
+          const inner = (r.payment ?? r.data ?? r ?? {}) as Record<
+            string,
+            unknown
+          >;
           const c = (inner.customer ?? {}) as Record<string, unknown>;
-          return [c.referenceId, c.id, inner.customerReferenceId, inner.customerId].includes(
-            opts.customer,
-          );
+          return [
+            c.referenceId,
+            c.id,
+            inner.customerReferenceId,
+            inner.customerId,
+          ].includes(opts.customer);
         });
         const { oldest, newest } = span(records);
-        const worked = status === 200 && records.length > 0 && mine.length === records.length;
+        const worked =
+          status === 200 &&
+          records.length > 0 &&
+          mine.length === records.length;
         probe.customer.push({
           what: `${key}=${opts.customer}`,
           records: records.length,
@@ -336,7 +376,9 @@ export async function probeHistory(
   }
 
   const endpointOk = probe.endpoints.find((a) => a.worked);
-  const otherLive = probe.endpoints.filter((a) => !a.worked && a.note && !a.note.includes('does not exist'));
+  const otherLive = probe.endpoints.filter(
+    (a) => !a.worked && a.note && !a.note.includes('does not exist'),
+  );
   const dateOk = probe.dateWindow.find((a) => a.worked);
   const orderOk = probe.ordering.find((a) => a.worked);
   const custOk = probe.customer.find((a) => a.worked);
@@ -344,23 +386,23 @@ export async function probeHistory(
   probe.verdict = endpointOk
     ? `${endpointOk.what} returns the requested period — the history is there, behind a different endpoint.`
     : dateOk
-    ? `${dateOk.what} works — the import can walk the history month by month.`
-    : orderOk
-      ? `${orderOk.what} returns the oldest first — the history can be walked forwards.`
-      : custOk
-        ? `${custOk.what} filters by customer — one client's whole history is a single request.`
-        : probe.paging.daysBack !== null && probe.paging.daysBack > 30
-          ? `Plain paging reaches ${probe.paging.daysBack} days back, so the history IS available this way — re-run the import.`
-          : 'None of these reached older payments' +
-            (probe.paging.daysBack !== null && probe.paging.daysBack <= 2
-              ? `, and the list stops about ${probe.paging.daysBack === 0 ? 'a few hours' : `${probe.paging.daysBack} day`} back — it is a recent-activity feed rather than an archive`
-              : '') +
-            '. ' +
-            (otherLive.length
-              ? `These paths answered rather than 404ing and are worth asking about: ${otherLive.map((a) => a.what).join(', ')}. `
-              : '') +
-            'Ask Paymaxis for a date-ranged export, the parameter that pages further back, ' +
-            'or the customer lifetime counters in the payment payload.';
+      ? `${dateOk.what} works — the import can walk the history month by month.`
+      : orderOk
+        ? `${orderOk.what} returns the oldest first — the history can be walked forwards.`
+        : custOk
+          ? `${custOk.what} filters by customer — one client's whole history is a single request.`
+          : probe.paging.daysBack !== null && probe.paging.daysBack > 30
+            ? `Plain paging reaches ${probe.paging.daysBack} days back, so the history IS available this way — re-run the import.`
+            : 'None of these reached older payments' +
+              (probe.paging.daysBack !== null && probe.paging.daysBack <= 2
+                ? `, and the list stops about ${probe.paging.daysBack === 0 ? 'a few hours' : `${probe.paging.daysBack} day`} back — it is a recent-activity feed rather than an archive`
+                : '') +
+              '. ' +
+              (otherLive.length
+                ? `These paths answered rather than 404ing and are worth asking about: ${otherLive.map((a) => a.what).join(', ')}. `
+                : '') +
+              'Ask Paymaxis for a date-ranged export, the parameter that pages further back, ' +
+              'or the customer lifetime counters in the payment payload.';
 
   return probe;
 }

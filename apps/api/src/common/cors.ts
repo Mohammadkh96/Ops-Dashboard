@@ -37,7 +37,10 @@ export function allowedOrigins(): string[] {
  * "<project>-<hash>-<team>.vercel.app", so "*-yourteam.vercel.app" admits your
  * own previews while "*.vercel.app" admits everybody's.
  */
-export function isOriginAllowed(origin: string, allowed = allowedOrigins()): boolean {
+export function isOriginAllowed(
+  origin: string,
+  allowed = allowedOrigins(),
+): boolean {
   return allowed.some((a) =>
     a.startsWith('*') ? origin.endsWith(a.slice(1)) : a === origin,
   );

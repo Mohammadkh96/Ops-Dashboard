@@ -292,9 +292,7 @@ export class DashboardService {
         const wHist = spark('withdrawals');
         const size = dayMs / 8;
         return dHist.map((deposits, i) => ({
-          time: new Date(wStart + i * size)
-            .toISOString()
-            .slice(11, 16), // HH:MM, UTC — same basis as every other figure here
+          time: new Date(wStart + i * size).toISOString().slice(11, 16), // HH:MM, UTC — same basis as every other figure here
           deposits,
           withdrawals: wHist[i],
         }));

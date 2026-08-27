@@ -148,7 +148,9 @@ export class ReconService {
                 ...(c.entity !== undefined ? { entity: c.entity } : {}),
                 ...(c.brand !== undefined ? { brand: c.brand } : {}),
                 ...(c.psp !== undefined ? { psp: c.psp } : {}),
-                ...(c.reference !== undefined ? { reference: c.reference } : {}),
+                ...(c.reference !== undefined
+                  ? { reference: c.reference }
+                  : {}),
                 ...(c.exposure !== undefined ? { exposure: c.exposure } : {}),
               },
             }),

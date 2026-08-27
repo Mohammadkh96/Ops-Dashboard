@@ -47,9 +47,12 @@ export function dbError(e: unknown, doing: string): HttpException {
   // 42703 undefined_column, 42P01 undefined_table — the schema is behind the
   // code. Prisma reports these as P2022/P2021 in its own numbering.
   if (
-    original === '42703' || original === '42P01' ||
-    kind === 'ColumnNotFound' || kind === 'TableNotFound' ||
-    code === 'P2022' || code === 'P2021'
+    original === '42703' ||
+    original === '42P01' ||
+    kind === 'ColumnNotFound' ||
+    kind === 'TableNotFound' ||
+    code === 'P2022' ||
+    code === 'P2021'
   ) {
     return new ServiceUnavailableException(
       `The database is behind this build of the API — ${detail || 'a column or table the code writes does not exist'}. ` +
@@ -66,7 +69,9 @@ export function dbError(e: unknown, doing: string): HttpException {
   }
 
   if (code === 'P2025') {
-    return new ConflictException('The record was changed or removed by someone else.');
+    return new ConflictException(
+      'The record was changed or removed by someone else.',
+    );
   }
 
   // 08006 connection failure, 53300 too many connections, and friends.

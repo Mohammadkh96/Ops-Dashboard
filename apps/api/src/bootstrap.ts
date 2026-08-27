@@ -7,7 +7,11 @@ import type {
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
 import { AppModule } from './app.module';
-import { allowedOrigins, configuredOrigins, isOriginAllowed } from './common/cors';
+import {
+  allowedOrigins,
+  configuredOrigins,
+  isOriginAllowed,
+} from './common/cors';
 import { pendingMigrations } from './common/pending-migrations';
 import { PrismaService } from './prisma/prisma.service';
 

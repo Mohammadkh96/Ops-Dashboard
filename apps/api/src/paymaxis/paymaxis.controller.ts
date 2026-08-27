@@ -93,7 +93,9 @@ export class PaymaxisController {
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
   @Post('backfill')
-  backfill(@Body() body?: { shop?: string; budgetMs?: number; reset?: boolean }) {
+  backfill(
+    @Body() body?: { shop?: string; budgetMs?: number; reset?: boolean },
+  ) {
     const shops = this.paymaxis.shops;
     if (!shops.length) return { error: 'PAYMAXIS_SHOPS is not configured' };
     return this.paymaxis.backfillStep({
@@ -152,9 +154,18 @@ export class PaymaxisController {
   @UseGuards(JwtAuthGuard)
   @Post('try-call')
   tryCall(
-    @Body() body: { path?: string; params?: Record<string, string>; shop?: string },
+    @Body()
+    body: {
+      path?: string;
+      params?: Record<string, string>;
+      shop?: string;
+    },
   ) {
-    return this.paymaxis.tryCall(body?.path ?? '', body?.params ?? {}, body?.shop);
+    return this.paymaxis.tryCall(
+      body?.path ?? '',
+      body?.params ?? {},
+      body?.shop,
+    );
   }
 
   /**
@@ -174,7 +185,9 @@ export class PaymaxisController {
   import(@Body() body: { rows?: Record<string, unknown>[] }) {
     const rows = body?.rows;
     if (!Array.isArray(rows)) {
-      throw new BadRequestException('Send { rows: [...] } — an array of exported rows.');
+      throw new BadRequestException(
+        'Send { rows: [...] } — an array of exported rows.',
+      );
     }
     return this.paymaxis.importExportRows(rows);
   }
