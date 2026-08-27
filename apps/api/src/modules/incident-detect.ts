@@ -31,7 +31,8 @@ export type DetectionKind =
   | 'psp-failing'
   | 'decline-spike'
   | 'stuck-in-flight'
-  | 'data-stopped';
+  | 'data-stopped'
+  | 'double-charge';
 
 /**
  * One of the payments the detection is about.
@@ -114,6 +115,16 @@ const STUCK_MS = 60 * 60_000;
 const MIN_STUCK = 3;
 /** Silence longer than this, while polling is configured, is a fault. */
 const SILENCE_MS = 2 * 60 * 60_000;
+/**
+ * Two identical settled charges closer together than this are one charge that
+ * landed twice.
+ *
+ * Ten minutes, not an hour: a customer topping up twice in an evening is
+ * ordinary and must not be reported, while a customer who pressed pay again
+ * because the first attempt looked stuck does it within a minute or two. The
+ * window has to be short enough that a match is surprising.
+ */
+const DOUBLE_CHARGE_MS = 10 * 60_000;
 
 /** Enough to see the pattern — one terminal or all of them — without a wall. */
 const MAX_SAMPLES = 25;
@@ -153,7 +164,9 @@ export function detectIncidents(input: DetectInput): Detection[] {
   // First, because every other rule reads the same data: if nothing is coming
   // in, a provider showing zero payments is a reporting failure, not an outage,
   // and calling it an outage would send someone to the wrong place.
-  const silence = input.lastEventAt ? now.getTime() - input.lastEventAt.getTime() : null;
+  const silence = input.lastEventAt
+    ? now.getTime() - input.lastEventAt.getTime()
+    : null;
   if (input.pollConfigured && (silence === null || silence > SILENCE_MS)) {
     return [
       {
@@ -197,13 +210,17 @@ export function detectIncidents(input: DetectInput): Detection[] {
 
   for (const r of rows) {
     if (!r.psp || r.at < baselineFrom) continue;
-    const b =
-      byPsp.get(r.psp) ??
-      {
-        recentSettled: 0, recentFailed: 0, baseSettled: 0, baseFailed: 0,
-        firstFailureAt: null, lastSettledAt: null, failedAmount: 0, currency: null,
-        recentFailures: [],
-      };
+    const b = byPsp.get(r.psp) ?? {
+      recentSettled: 0,
+      recentFailed: 0,
+      baseSettled: 0,
+      baseFailed: 0,
+      firstFailureAt: null,
+      lastSettledAt: null,
+      failedAmount: 0,
+      currency: null,
+      recentFailures: [],
+    };
     const isRecent = r.at >= recentFrom;
     const ok = settled(r.state ?? '');
     const bad = failed(r.state ?? '');
@@ -215,10 +232,12 @@ export function detectIncidents(input: DetectInput): Detection[] {
     } else if (bad) {
       if (isRecent) {
         b.recentFailed++;
-        b.failedAmount = Math.round((b.failedAmount + Math.abs(r.amount)) * 100) / 100;
+        b.failedAmount =
+          Math.round((b.failedAmount + Math.abs(r.amount)) * 100) / 100;
         b.currency = b.currency ?? r.currency;
         b.recentFailures.push(r);
-        if (!b.firstFailureAt || r.at < b.firstFailureAt) b.firstFailureAt = r.at;
+        if (!b.firstFailureAt || r.at < b.firstFailureAt)
+          b.firstFailureAt = r.at;
       } else b.baseFailed++;
     }
     byPsp.set(r.psp, b);
@@ -248,7 +267,8 @@ export function detectIncidents(input: DetectInput): Detection[] {
             ? `Last successful payment: ${b.lastSettledAt.toISOString()} (${fmtAge(now.getTime() - b.lastSettledAt.getTime())} ago).`
             : 'No successful payment in the window.',
           b.failedAmount
-            ? `Value of the failed attempts: ${b.failedAmount.toLocaleString()} ${b.currency ?? ''}`.trim() + '.'
+            ? `Value of the failed attempts: ${b.failedAmount.toLocaleString()} ${b.currency ?? ''}`.trim() +
+              '.'
             : '',
         ].filter(Boolean),
         // Newest first: the most recent failures are the ones to quote when
@@ -279,7 +299,8 @@ export function detectIncidents(input: DetectInput): Detection[] {
             `Previous 24 hours: ${b.baseFailed} of ${baseDecided} (${baseRate}%).`,
             `That is ${nowRate - baseRate} percentage points above this provider's own baseline (threshold ${SPIKE_POINTS}).`,
             b.failedAmount
-              ? `Value of the declined attempts in the last hour: ${b.failedAmount.toLocaleString()} ${b.currency ?? ''}`.trim() + '.'
+              ? `Value of the declined attempts in the last hour: ${b.failedAmount.toLocaleString()} ${b.currency ?? ''}`.trim() +
+                '.'
               : '',
           ].filter(Boolean),
           samples: toSamples(b.recentFailures, now),
@@ -309,7 +330,8 @@ export function detectIncidents(input: DetectInput): Detection[] {
       byState.set(k, (byState.get(k) ?? 0) + 1);
     });
     const oldest = stuck.reduce((a, b) => (a.at < b.at ? a : b));
-    const value = Math.round(stuck.reduce((s, r) => s + Math.abs(r.amount), 0) * 100) / 100;
+    const value =
+      Math.round(stuck.reduce((s, r) => s + Math.abs(r.amount), 0) * 100) / 100;
     out.push({
       signature: 'stuck-in-flight',
       kind: 'stuck-in-flight',
@@ -322,12 +344,110 @@ export function detectIncidents(input: DetectInput): Detection[] {
         `${stuck.length} payments older than ${fmtAge(STUCK_MS)} have not reached a final state.`,
         `States: ${[...byState.entries()].map(([s, n]) => `${s} × ${n}`).join(', ')}.`,
         `Oldest: ${oldest.at.toISOString()} (${fmtAge(now.getTime() - oldest.at.getTime())} ago)${oldest.psp ? ` at ${oldest.psp}` : ''}.`,
-        `Combined value: ${value.toLocaleString()} ${stuck[0].currency ?? ''}`.trim() + '.',
+        `Combined value: ${value.toLocaleString()} ${stuck[0].currency ?? ''}`.trim() +
+          '.',
       ],
       // Oldest first: the payment that has been waiting longest is the one the
       // customer is already asking about.
-      samples: toSamples([...stuck].sort((a, b2) => a.at.getTime() - b2.at.getTime()), now),
+      samples: toSamples(
+        [...stuck].sort((a, b2) => a.at.getTime() - b2.at.getTime()),
+        now,
+      ),
       sampleTotal: stuck.length,
+      since: oldest.at.toISOString(),
+      psp: null,
+    });
+  }
+
+  // ── the same customer charged twice for the same thing ──────────────────
+  //
+  // Two settled deposits, same customer, same amount, same terminal, minutes
+  // apart. Almost always one payment the customer made twice — they pressed
+  // again because the first one looked like it had failed — and occasionally a
+  // provider that captured a retry as a second charge.
+  //
+  // This is the only rule here that catches money the desk owes BACK. Every
+  // other detection is about payments that did not work; this one is about a
+  // payment that worked twice, which is invisible in every figure the
+  // dashboard shows — volume, success rate and settled totals all read a
+  // double charge as a good day.
+  //
+  // Found before the customer finds it, a refund is an apology. Found after,
+  // it is a chargeback, and chargebacks are counted against the acquirer at a
+  // ratio that decides whether the account keeps its terminals.
+  const settledDeposits = rows.filter(
+    (r) =>
+      r.at >= baselineFrom &&
+      settled(r.state ?? '') &&
+      // Withdrawals and refunds repeat legitimately; a customer being paid the
+      // same amount twice is a payout schedule, not a mistake.
+      !/withdraw|payout|refund/i.test(r.type ?? ''),
+  );
+
+  const byKey = new Map<string, DetectRow[]>();
+  for (const r of settledDeposits) {
+    if (!r.customer) continue; // nothing to say two payments came from one person
+    // The amount is part of the key at 2dp: two different amounts minutes
+    // apart is somebody topping up, not the same charge landing twice.
+    const key = [
+      r.customer,
+      Math.abs(r.amount).toFixed(2),
+      r.currency ?? '',
+      r.psp ?? '',
+    ].join('|');
+    const list = byKey.get(key);
+    if (list) list.push(r);
+    else byKey.set(key, [r]);
+  }
+
+  const doubles: DetectRow[] = [];
+  let pairs = 0;
+  let doubledValue = 0;
+  for (const list of byKey.values()) {
+    if (list.length < 2) continue;
+    const sorted = [...list].sort((a, b2) => a.at.getTime() - b2.at.getTime());
+    for (let i = 1; i < sorted.length; i++) {
+      const gap = sorted[i].at.getTime() - sorted[i - 1].at.getTime();
+      if (gap > DOUBLE_CHARGE_MS) continue;
+      pairs += 1;
+      // Only the SECOND charge is the money owed back. Counting both would
+      // double the figure being reported as a doubling.
+      doubledValue += Math.abs(sorted[i].amount);
+      if (!doubles.includes(sorted[i - 1])) doubles.push(sorted[i - 1]);
+      doubles.push(sorted[i]);
+    }
+  }
+
+  if (pairs > 0) {
+    const customers = new Set(doubles.map((r) => r.customer));
+    const newest = doubles.reduce((a, b2) => (a.at > b2.at ? a : b2));
+    const oldest = doubles.reduce((a, b2) => (a.at < b2.at ? a : b2));
+    out.push({
+      signature: 'double-charge',
+      kind: 'double-charge',
+      // Money owed to a customer who does not know yet. It outranks a decline
+      // spike, which costs revenue that was never taken.
+      severity: pairs >= 3 ? 'high' : 'medium',
+      title: `${pairs} possible double charge${pairs === 1 ? '' : 's'} across ${customers.size} customer${customers.size === 1 ? '' : 's'}`,
+      impact:
+        'The same customer was charged the same amount at the same terminal ' +
+        'twice within minutes. Refunded now it is an apology; found by the ' +
+        'customer later it is a chargeback, and chargebacks are counted ' +
+        'against the acquirer.',
+      evidence: [
+        `${pairs} pair(s) of settled deposits within ${fmtAge(DOUBLE_CHARGE_MS)} of each other, matching on customer, amount, currency and terminal.`,
+        `${customers.size} customer(s) affected.`,
+        `Value of the second charge in each pair: ${(Math.round(doubledValue * 100) / 100).toLocaleString()} ${doubles[0].currency ?? ''}`.trim() +
+          '.',
+        `Most recent: ${newest.at.toISOString()}${newest.psp ? ` at ${newest.psp}` : ''}.`,
+      ],
+      // Newest first: the pair that just happened is the one that can still be
+      // refunded before the customer notices.
+      samples: toSamples(
+        [...doubles].sort((a, b2) => b2.at.getTime() - a.at.getTime()),
+        now,
+      ),
+      sampleTotal: doubles.length,
       since: oldest.at.toISOString(),
       psp: null,
     });
