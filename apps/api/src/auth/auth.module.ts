@@ -6,11 +6,14 @@ import { jwtSecret } from '../common/jwt-secret';
 import { UsersModule } from '../users/users.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { GoogleAuthService } from './google.service';
+import { PrismaModule } from '../prisma/prisma.module';
 import { JwtStrategy } from './strategies/jwt.strategy';
 
 @Module({
   imports: [
     UsersModule,
+    PrismaModule,
     PassportModule,
     // registerAsync, not register: the object passed to `register` is built
     // while this file is being IMPORTED, which happens before
@@ -37,6 +40,6 @@ import { JwtStrategy } from './strategies/jwt.strategy';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy],
+  providers: [AuthService, GoogleAuthService, JwtStrategy],
 })
 export class AuthModule {}

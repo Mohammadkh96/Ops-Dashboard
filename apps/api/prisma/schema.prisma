@@ -105,7 +105,16 @@ enum ShiftStatus {
 model User {
   id           String   @id @default(cuid())
   email        String   @unique
+  /// Bcrypt hash. An account created by Google sign-in stores unusable text
+  /// here rather than null: the column stays required, and bcrypt.compare
+  /// against it fails for every input, so the account can only be reached
+  /// through Google.
   passwordHash String
+  /// Google's stable subject id, recorded on first Google sign-in. Sign-in
+  /// matches on the verified email — this is here so it is visible which
+  /// accounts use that door, and so a re-used email cannot silently inherit
+  /// a different person's account.
+  googleId     String?  @unique
   firstName    String
   lastName     String
   role         Role     @default(OPERATIONS)

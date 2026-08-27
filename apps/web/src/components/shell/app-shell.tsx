@@ -8,7 +8,17 @@ import { TopBar } from "@/components/shell/top-bar";
 import { CommandPalette } from "@/components/command-palette";
 import { AuthGate } from "@/components/auth-gate";
 
-const BARE_ROUTES = ["/login"];
+/**
+ * Screens that render without the operations chrome — and, more importantly,
+ * outside AuthGate.
+ *
+ * /auth/callback has to be here. It is the page that TAKES a session, and it
+ * runs for a moment with a token stored but no user loaded yet. Inside the gate
+ * that moment reads as "not signed in", and the gate redirects to /login while
+ * the sign-in it was in the middle of is still in flight — Google sign-in would
+ * simply bounce you back to the login page, having worked perfectly.
+ */
+const BARE_ROUTES = ["/login", "/auth/callback"];
 
 /**
  * Path without a trailing slash, so route checks work in both builds.

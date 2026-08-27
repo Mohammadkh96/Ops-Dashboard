@@ -27,6 +27,8 @@ type AuthContextValue = {
   unreachable: string | null;
   retry: () => void;
   login: (email: string, password: string) => Promise<void>;
+  /** Adopts a session issued elsewhere — the Google callback hands one over. */
+  adopt: (accessToken: string) => Promise<void>;
   logout: () => void;
 };
 
@@ -86,6 +88,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUnreachable(null);
   };
 
+  /**
+   * Takes a token the API minted during an OAuth round trip and confirms it
+   * before trusting it.
+   *
+   * Confirms rather than decodes: the token arrives in a URL fragment, which
+   * anybody can type. Asking /auth/me means a forged one is refused by the
+   * server rather than believed by the browser.
+   */
+  const adopt = async (accessToken: string) => {
+    setToken(accessToken);
+    try {
+      const me = await apiFetch<SessionUser>("/auth/me", undefined, { retries: 2 });
+      setUser(me);
+      setUnreachable(null);
+    } catch (e) {
+      clearToken();
+      setUser(null);
+      throw e;
+    }
+  };
+
   const logout = () => {
     clearToken();
     setUser(null);
@@ -105,6 +128,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setAttempt((n) => n + 1);
         },
         login,
+        adopt,
         logout,
       }}
     >

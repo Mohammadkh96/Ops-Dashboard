@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
+import { useQuery } from "@tanstack/react-query";
 import { Radar, Loader2, ShieldCheck, Activity, Zap } from "lucide-react";
 import { motion } from "framer-motion";
 
@@ -10,7 +11,7 @@ import { ConnectionCheck } from "@/components/login/connection-check";
 import { LiveDot } from "@/components/ui/live-dot";
 import { AnimatedNumber } from "@/components/ui/animated-number";
 import { useAuth } from "@/lib/auth";
-import { API_URL, isDemoMode } from "@/lib/api";
+import { API_URL, apiFetch, isDemoMode } from "@/lib/api";
 
 const highlights = [
   { icon: Activity, title: "Live operational telemetry", copy: "Payments, KYC, incidents and MT5 health in one command center." },
@@ -34,27 +35,88 @@ function describeSignInError(err: unknown): string {
   return err instanceof Error ? err.message : "Sign in failed";
 }
 
+/**
+ * The reason a refused Google sign-in redirected back here with.
+ *
+ * Read through useSyncExternalStore rather than an effect. The value only
+ * exists in the browser, so an effect would be the obvious place — but setting
+ * state from an effect renders the page twice, once without the message and
+ * once with, and that flash is exactly what React now refuses to compile.
+ * useSyncExternalStore has a server snapshot for the prerender and a client
+ * snapshot for the browser, so there is one render and no mismatch.
+ *
+ * The first read is cached because the effect below strips the parameter out of
+ * the address bar; without the cache the very next render would read a clean
+ * URL and the message would disappear while the person was still reading it.
+ * A module-level cache is safe here because the redirect that sets the
+ * parameter is a full browser navigation from the API — this module is loaded
+ * fresh every time it can be true.
+ */
+let redirectReason: string | null | undefined;
+
+function readRedirectReason(): string | null {
+  if (redirectReason === undefined) {
+    redirectReason = new URLSearchParams(window.location.search).get("error");
+  }
+  return redirectReason;
+}
+
+/** Nothing ever changes this value after the page loads. */
+const neverChanges = () => () => {};
+
 export default function LoginPage() {
   const { login, user, isDemo } = useAuth();
   const router = useRouter();
-  const [email, setEmail] = useState("mohammad@tradin.com");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  // A refused Google sign-in redirects back here with its reason, because the
+  // person is in a browser mid-flow and a JSON error page is a dead end.
+  const redirected = useSyncExternalStore(
+    neverChanges,
+    readRedirectReason,
+    () => null,
+  );
+  // Dismissed the moment they try something else, so a stale message does not
+  // sit over a fresh attempt.
+  const [dismissed, setDismissed] = useState(false);
+  const error = formError ?? (dismissed ? null : redirected);
+
+  // Whether this deployment has Google configured. Asked rather than assumed:
+  // a "Continue with Google" button on a deployment without it sends people
+  // down a road that ends in an error they cannot act on.
+  const { data: providers } = useQuery({
+    queryKey: ["auth", "providers"],
+    queryFn: () => apiFetch<{ google: boolean }>("/auth/providers"),
+    enabled: !isDemo && !isDemoMode,
+    staleTime: 5 * 60_000,
+  });
+  const hasGoogle = providers?.google ?? false;
 
   useEffect(() => {
     if (isDemo || user) router.replace("/");
   }, [isDemo, user, router]);
 
+  useEffect(() => {
+    // Out of the address bar once it has been read, so a reload does not
+    // resurrect an error the person has already dealt with.
+    if (redirected) {
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+  }, [redirected]);
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setError(null);
+    setDismissed(true);
+    setFormError(null);
     setSubmitting(true);
     try {
       await login(email, password);
       router.replace("/");
     } catch (err) {
-      setError(describeSignInError(err));
+      setFormError(describeSignInError(err));
     } finally {
       setSubmitting(false);
     }
@@ -171,6 +233,31 @@ export default function LoginPage() {
             <h1 className="text-xl font-semibold tracking-tight">Welcome back</h1>
             <p className="mt-1 text-xs text-muted">Sign in to your operations command center.</p>
           </div>
+
+          {hasGoogle ? (
+            <div className="mb-5 flex flex-col gap-3">
+              <a
+                href={`${API_URL}/auth/google`}
+                className="flex h-10 items-center justify-center gap-2.5 rounded-lg border border-border bg-card text-sm font-medium transition-colors hover:bg-card-hover"
+              >
+                {/* Google's own mark, inline: an external image on a sign-in
+                    page is a request to a third party before anybody has
+                    agreed to anything. */}
+                <svg viewBox="0 0 24 24" className="size-4" aria-hidden>
+                  <path fill="#4285F4" d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5a5.6 5.6 0 0 1-2.4 3.6v3h3.9c2.3-2.1 3.5-5.2 3.5-8.8z" />
+                  <path fill="#34A853" d="M12 24c3.2 0 5.9-1.1 7.9-2.9l-3.9-3c-1 .7-2.3 1.1-4 1.1-3.1 0-5.7-2.1-6.6-4.9H1.4v3.1A12 12 0 0 0 12 24z" />
+                  <path fill="#FBBC05" d="M5.4 14.3a7.2 7.2 0 0 1 0-4.6V6.6H1.4a12 12 0 0 0 0 10.8l4-3.1z" />
+                  <path fill="#EA4335" d="M12 4.8c1.8 0 3.3.6 4.6 1.8l3.4-3.4A12 12 0 0 0 1.4 6.6l4 3.1C6.3 6.9 8.9 4.8 12 4.8z" />
+                </svg>
+                Continue with Google
+              </a>
+              <div className="flex items-center gap-3">
+                <span className="h-px flex-1 bg-border" />
+                <span className="text-[10px] uppercase tracking-wider text-muted">or</span>
+                <span className="h-px flex-1 bg-border" />
+              </div>
+            </div>
+          ) : null}
 
           <form onSubmit={onSubmit} className="flex flex-col gap-4">
             <label className="flex flex-col gap-1.5">
