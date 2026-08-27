@@ -6,6 +6,7 @@ import { PageHeader } from "@/components/ui/page-header";
 import { type Stat } from "@/components/ui/stat-tile";
 import { PaymentStats } from "@/components/payments/payment-stats";
 import { SuccessRateOverview } from "@/components/payments/success-rate";
+import { PaymentFunnel } from "@/components/payments/funnel";
 import { cn } from "@/lib/utils";
 import { TransactionsTable } from "@/components/payments/transactions-table";
 import { GatewayGrid } from "@/components/payments/gateway-grid";
@@ -43,6 +44,10 @@ export default function PaymentsPage() {
 
       {/* Volume and outcome over a period of its own — see SuccessRateOverview. */}
       <SuccessRateOverview />
+
+      {/* The same payments, asked a different question: not how many worked,
+          but where the ones that did not stopped. */}
+      <PaymentFunnel />
 
       <div className="flex items-center gap-1 border-b border-border">
         {TABS.map((t) => (

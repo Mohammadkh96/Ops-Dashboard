@@ -11,6 +11,7 @@
     "build": "nest build",
     "check:incidents": "tsx scripts/check-incident-detect.ts",
     "check:handover": "tsx scripts/check-handover-email.ts",
+    "check:funnel": "tsx scripts/check-payment-journey.ts",
     "check:opsday": "tsx scripts/check-ops-day.ts",
     "check:import": "tsx scripts/check-import-export.ts",
     "check:overview": "tsx scripts/check-success-rate.ts",

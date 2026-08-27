@@ -86,7 +86,9 @@ export class ModulesController {
   @UseGuards(JwtAuthGuard)
   @Post('clients/totals')
   clientTotals(@Body() body: { refs?: string[] }) {
-    return this.modules.clientTotals(Array.isArray(body?.refs) ? body.refs : []);
+    return this.modules.clientTotals(
+      Array.isArray(body?.refs) ? body.refs : [],
+    );
   }
 
   /**
@@ -103,6 +105,24 @@ export class ModulesController {
     @Query('shop') shop?: string,
   ) {
     return this.modules.successRate(from, to, shop);
+  }
+
+  /**
+   * Where payments stop, per provider — the funnel.
+   *
+   * Behind the guard, unlike its neighbours: it reports each provider's
+   * approval rate and how it loses payments side by side with the others,
+   * which is commercially sensitive in a way a volume total is not.
+   */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Get('payments/funnel')
+  funnel(
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('shop') shop?: string,
+  ) {
+    return this.modules.funnel(from, to, shop);
   }
 
   /** Headline figures for the payment pages, same filters. */

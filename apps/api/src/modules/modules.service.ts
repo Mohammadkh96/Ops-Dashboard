@@ -24,6 +24,7 @@ import {
   type Detection,
   type DetectRow,
 } from './incident-detect';
+import { buildFunnel, buildJourneys } from './payment-journey';
 import { buildSuccessRate, type SuccessRow } from './success-rate';
 
 /**
@@ -135,7 +136,10 @@ export class ModulesService {
    * For writes, where there is no honest fallback: the caller asked for a
    * change, so either it happened or they need to know exactly why it did not.
    */
-  private async safeOrThrow<T>(fn: () => Promise<T>, doing: string): Promise<T> {
+  private async safeOrThrow<T>(
+    fn: () => Promise<T>,
+    doing: string,
+  ): Promise<T> {
     try {
       return await fn();
     } catch (e) {
@@ -353,11 +357,19 @@ export class ModulesService {
       const before = found.size;
       for (const r of rows) {
         const f = paymentFieldValues(r as MappedRow);
-        for (const key of ['customerReferenceId', 'customerEmail', 'customerAccountNumber']) {
+        for (const key of [
+          'customerReferenceId',
+          'customerEmail',
+          'customerAccountNumber',
+        ]) {
           const v = f[key];
           // An identity has to be a non-empty string that is not obviously a
           // placeholder; merging on "N/A" would join every client that has one.
-          if (typeof v === 'string' && v.trim() && !/^(n\/?a|none|null|-)$/i.test(v.trim())) {
+          if (
+            typeof v === 'string' &&
+            v.trim() &&
+            !/^(n\/?a|none|null|-)$/i.test(v.trim())
+          ) {
             found.add(v.trim());
           }
         }
@@ -421,7 +433,9 @@ export class ModulesService {
    * that changed when someone picked 24h would mean nothing.
    */
   async clientTotals(refs: string[]) {
-    const unique = [...new Set(refs.map((r) => (r ?? '').trim()).filter(Boolean))]
+    const unique = [
+      ...new Set(refs.map((r) => (r ?? '').trim()).filter(Boolean)),
+    ]
       // Bounded by what a page can show. A caller asking for more is asking for
       // a report, not a column.
       .slice(0, 300);
@@ -433,8 +447,14 @@ export class ModulesService {
           where: { customer: { in: unique } },
           orderBy: [{ occurredAt: 'desc' }, { receivedAt: 'desc' }],
           select: {
-            id: true, paymentId: true, reference: true, customer: true,
-            type: true, state: true, amount: true, currency: true,
+            id: true,
+            paymentId: true,
+            reference: true,
+            customer: true,
+            type: true,
+            state: true,
+            amount: true,
+            currency: true,
           },
           take: 50_000,
         }),
@@ -469,7 +489,8 @@ export class ModulesService {
           refunds: { count: 0, amount: 0 },
           currencies: [],
         });
-      if (r.currency && !t.currencies.includes(r.currency)) t.currencies.push(r.currency);
+      if (r.currency && !t.currencies.includes(r.currency))
+        t.currencies.push(r.currency);
 
       // Settled money only. A declined deposit is an attempt, not a deposit,
       // and counting it here would overstate what the client has funded.
@@ -481,7 +502,8 @@ export class ModulesService {
           ? t.withdrawals
           : t.deposits;
       bucket.count += 1;
-      bucket.amount = Math.round((bucket.amount + Math.abs(r.amount)) * 100) / 100;
+      bucket.amount =
+        Math.round((bucket.amount + Math.abs(r.amount)) * 100) / 100;
     }
 
     return out;
@@ -524,7 +546,10 @@ export class ModulesService {
             _min: { occurredAt: true },
             _max: { occurredAt: true },
           }),
-        null as { _min: { occurredAt: Date | null }; _max: { occurredAt: Date | null } } | null,
+        null as {
+          _min: { occurredAt: Date | null };
+          _max: { occurredAt: Date | null };
+        } | null,
       ),
       // The earliest payment we hold for ANYONE. A client whose history starts
       // where the whole store starts has not been quiet — we simply have not
@@ -563,10 +588,16 @@ export class ModulesService {
       from: gte ? gte.toISOString() : null,
       to: lte ? lte.toISOString() : null,
       truncated: events > EVENT_CAP,
-      heldFrom: span?._min.occurredAt ? span._min.occurredAt.toISOString() : null,
+      heldFrom: span?._min.occurredAt
+        ? span._min.occurredAt.toISOString()
+        : null,
       heldTo: span?._max.occurredAt ? span._max.occurredAt.toISOString() : null,
-      storeFrom: store?._min.occurredAt ? store._min.occurredAt.toISOString() : null,
-      storeTo: store?._max.occurredAt ? store._max.occurredAt.toISOString() : null,
+      storeFrom: store?._min.occurredAt
+        ? store._min.occurredAt.toISOString()
+        : null,
+      storeTo: store?._max.occurredAt
+        ? store._max.occurredAt.toISOString()
+        : null,
       storePayments: store?._count._all ?? 0,
       identities,
     });
@@ -592,9 +623,16 @@ export class ModulesService {
         this.prisma.paymentEvent.findMany({
           where: range ? this.inRange(range) : {},
           select: {
-            paymentId: true, reference: true, id: true,
-            amount: true, currency: true, type: true, state: true,
-            psp: true, occurredAt: true, receivedAt: true,
+            paymentId: true,
+            reference: true,
+            id: true,
+            amount: true,
+            currency: true,
+            type: true,
+            state: true,
+            psp: true,
+            occurredAt: true,
+            receivedAt: true,
           },
           take: 50_000,
         }),
@@ -631,7 +669,10 @@ export class ModulesService {
 
     const byPsp = new Map<string, number>();
     settled.forEach((r) =>
-      byPsp.set(r.psp ?? '—', (byPsp.get(r.psp ?? '—') ?? 0) + Math.abs(r.amount)),
+      byPsp.set(
+        r.psp ?? '—',
+        (byPsp.get(r.psp ?? '—') ?? 0) + Math.abs(r.amount),
+      ),
     );
     const topPsp = [...byPsp.entries()].sort((a, b) => b[1] - a[1])[0];
 
@@ -642,14 +683,18 @@ export class ModulesService {
       count: scoped.length,
       settled: settled.length,
       declined: declined.length,
-      average: settled.length ? Number((volume / settled.length).toFixed(2)) : 0,
+      average: settled.length
+        ? Number((volume / settled.length).toFixed(2))
+        : 0,
       largest: settled.length
         ? Number(Math.max(...settled.map((r) => Math.abs(r.amount))).toFixed(2))
         : 0,
       successRate: decided
         ? Number(((settled.length / decided) * 100).toFixed(1))
         : null,
-      topPsp: topPsp ? { psp: topPsp[0], volume: Number(topPsp[1].toFixed(2)) } : null,
+      topPsp: topPsp
+        ? { psp: topPsp[0], volume: Number(topPsp[1].toFixed(2)) }
+        : null,
     };
   }
 
@@ -683,8 +728,14 @@ export class ModulesService {
                 : { reference: anchor.reference },
               orderBy: [{ occurredAt: 'asc' }, { receivedAt: 'asc' }],
               select: {
-                id: true, state: true, errorCode: true, errorMessage: true,
-                amount: true, occurredAt: true, receivedAt: true, source: true,
+                id: true,
+                state: true,
+                errorCode: true,
+                errorMessage: true,
+                amount: true,
+                occurredAt: true,
+                receivedAt: true,
+                source: true,
               },
             }),
           [],
@@ -693,7 +744,8 @@ export class ModulesService {
 
     const payload = (anchor.payload ?? {}) as Record<string, unknown>;
     const billing = (payload.billingAddress ?? {}) as Record<string, unknown>;
-    const str = (v: unknown) => (v === null || v === undefined ? null : String(v));
+    const str = (v: unknown) =>
+      v === null || v === undefined ? null : String(v);
 
     return {
       id: anchor.id,
@@ -858,15 +910,20 @@ export class ModulesService {
         this.prisma.paymentEvent.findMany({
           where: range ? this.inRange(range) : {},
           select: {
-            psp: true, state: true, amount: true,
-            occurredAt: true, receivedAt: true,
+            psp: true,
+            state: true,
+            amount: true,
+            occurredAt: true,
+            receivedAt: true,
           },
           take: 50_000,
         }),
       [],
     );
 
-    const names = [...new Set(rows.map((r) => r.psp).filter(Boolean))] as string[];
+    const names = [
+      ...new Set(rows.map((r) => r.psp).filter(Boolean)),
+    ] as string[];
     return names
       .map((name, i) => {
         const scoped = rows.filter((r) => r.psp === name);
@@ -878,7 +935,9 @@ export class ModulesService {
           : 0;
         // Eight buckets across the window, so the trend is visible whatever
         // period was asked for.
-        const span = range ? range.to.getTime() - range.from.getTime() : 86_400_000;
+        const span = range
+          ? range.to.getTime() - range.from.getTime()
+          : 86_400_000;
         const size = span / 8;
         const start = range ? range.from.getTime() : Date.now() - span;
         const spark = Array.from({ length: 8 }, (_, b) => {
@@ -886,7 +945,9 @@ export class ModulesService {
             const t = (r.occurredAt ?? r.receivedAt).getTime();
             return t >= start + b * size && t < start + (b + 1) * size;
           });
-          const g = inBucket.filter((r) => isSettledState(r.state ?? '')).length;
+          const g = inBucket.filter((r) =>
+            isSettledState(r.state ?? ''),
+          ).length;
           const f = inBucket.filter((r) => isFailedState(r.state ?? '')).length;
           return g + f ? Number(((g / (g + f)) * 100).toFixed(1)) : 0;
         });
@@ -1164,8 +1225,13 @@ export class ModulesService {
             where,
             orderBy: [{ occurredAt: 'desc' }, { receivedAt: 'desc' }],
             select: {
-              id: true, paymentId: true, reference: true,
-              type: true, state: true, amount: true, currency: true,
+              id: true,
+              paymentId: true,
+              reference: true,
+              type: true,
+              state: true,
+              amount: true,
+              currency: true,
             },
             take: 20_000,
           }),
@@ -1180,7 +1246,11 @@ export class ModulesService {
             where: window,
             _count: { _all: true },
           }),
-        [] as { shop: string | null; entity: string | null; _count: { _all: number } }[],
+        [] as {
+          shop: string | null;
+          entity: string | null;
+          _count: { _all: number };
+        }[],
       ),
     ]);
 
@@ -1193,7 +1263,12 @@ export class ModulesService {
       const identity = e.paymentId || e.reference || e.id;
       if (seen.has(identity)) continue;
       seen.add(identity);
-      rows.push({ type: e.type, state: e.state, amount: e.amount, currency: e.currency });
+      rows.push({
+        type: e.type,
+        state: e.state,
+        amount: e.amount,
+        currency: e.currency,
+      });
     }
 
     const report = buildSuccessRate(rows, {
@@ -1218,6 +1293,126 @@ export class ModulesService {
       // is worth noticing.
       events: events.length,
       truncated: events.length >= 20_000,
+    };
+  }
+
+  /**
+   * Where payments stop, per provider.
+   *
+   * The one query in this service that deliberately does NOT collapse a payment
+   * to its latest state. Every other figure wants the answer; this one wants
+   * the route, because "82% approval" hides three different failures with three
+   * different owners — the customer left, the issuer refused, or the provider
+   * never answered — and only the route tells them apart.
+   */
+  async funnel(from?: string, to?: string, shop?: string) {
+    const gte = parseInstant(from);
+    const lte = parseInstant(to);
+    const wanted = (shop ?? '').trim();
+
+    const window =
+      gte || lte
+        ? {
+            OR: [
+              {
+                occurredAt: {
+                  ...(gte ? { gte } : {}),
+                  ...(lte ? { lte } : {}),
+                },
+              },
+              {
+                AND: [
+                  { occurredAt: null },
+                  {
+                    receivedAt: {
+                      ...(gte ? { gte } : {}),
+                      ...(lte ? { lte } : {}),
+                    },
+                  },
+                ],
+              },
+            ],
+          }
+        : {};
+    const where = wanted ? { AND: [window, { shop: wanted }] } : window;
+
+    const events = await this.safe(
+      () =>
+        this.prisma.paymentEvent.findMany({
+          where,
+          orderBy: [{ occurredAt: 'asc' }, { receivedAt: 'asc' }],
+          select: {
+            id: true,
+            paymentId: true,
+            reference: true,
+            state: true,
+            type: true,
+            psp: true,
+            terminal: true,
+            customer: true,
+            amount: true,
+            currency: true,
+            occurredAt: true,
+            receivedAt: true,
+          },
+          // Higher than the other reads: this one needs EVERY state of every
+          // payment, not one row each, so the same period is several times the
+          // rows.
+          take: 60_000,
+        }),
+      [],
+    );
+
+    const now = new Date();
+    const journeys = buildJourneys(
+      events.map((e) => ({
+        key: e.paymentId || e.reference || e.id,
+        state: e.state,
+        type: e.type,
+        psp: e.psp,
+        terminal: e.terminal,
+        customer: e.customer,
+        amount: e.amount,
+        currency: e.currency,
+        at: e.occurredAt ?? e.receivedAt,
+      })),
+      now,
+    );
+
+    const providers = buildFunnel(journeys);
+    const totals = providers.reduce(
+      (a, p) => {
+        a.total += p.total;
+        a.abandoned += p.lostTo.abandoned;
+        a.declined += p.lostTo.declined;
+        a.stalled += p.lostTo.stalled;
+        a.completed +=
+          p.outcomes.find((o) => o.outcome === 'completed')?.count ?? 0;
+        return a;
+      },
+      { total: 0, completed: 0, abandoned: 0, declined: 0, stalled: 0 },
+    );
+
+    return {
+      from: gte ? gte.toISOString() : null,
+      to: lte ? lte.toISOString() : null,
+      shop: wanted || null,
+      providers,
+      totals: {
+        ...totals,
+        approvalRate:
+          totals.completed + totals.declined
+            ? Math.round(
+                (totals.completed / (totals.completed + totals.declined)) *
+                  1000,
+              ) / 10
+            : null,
+      },
+      // Payments read, not payments found: a gap between the two is the whole
+      // point of keeping every state.
+      events: events.length,
+      payments: journeys.length,
+      truncated: events.length >= 60_000,
     };
   }
 
@@ -1247,9 +1442,17 @@ export class ModulesService {
           },
           orderBy: [{ occurredAt: 'desc' }, { receivedAt: 'desc' }],
           select: {
-            id: true, paymentId: true, reference: true, customer: true,
-            psp: true, state: true, type: true, amount: true, currency: true,
-            occurredAt: true, receivedAt: true,
+            id: true,
+            paymentId: true,
+            reference: true,
+            customer: true,
+            psp: true,
+            state: true,
+            type: true,
+            amount: true,
+            currency: true,
+            occurredAt: true,
+            receivedAt: true,
           },
           take: 20_000,
         }),
@@ -1303,10 +1506,18 @@ export class ModulesService {
   }
 
   private incidentView(n: {
-    id: string; ref: number; title: string; description: string;
-    severity: string; status: string; impact: string | null;
-    rootCause: string | null; resolution: string | null;
-    evidence: unknown; timeline: unknown; createdAt: Date;
+    id: string;
+    ref: number;
+    title: string;
+    description: string;
+    severity: string;
+    status: string;
+    impact: string | null;
+    rootCause: string | null;
+    resolution: string | null;
+    evidence: unknown;
+    timeline: unknown;
+    createdAt: Date;
     owner: { firstName: string; lastName: string } | null;
   }) {
     const timeline = Array.isArray(n.timeline)
@@ -1320,7 +1531,9 @@ export class ModulesService {
       | null;
     const lines = Array.isArray(ev) ? ev : (ev?.lines ?? []);
     const samples = Array.isArray(ev) ? [] : (ev?.samples ?? []);
-    const sampleTotal = Array.isArray(ev) ? 0 : (ev?.sampleTotal ?? samples.length);
+    const sampleTotal = Array.isArray(ev)
+      ? 0
+      : (ev?.sampleTotal ?? samples.length);
     return {
       // Stable for the incident's whole life: the list used to number by
       // position, so an incident's reference changed whenever an older one was
@@ -1331,7 +1544,9 @@ export class ModulesService {
       title: n.title,
       severity: this.lower(n.severity),
       status: this.lower(n.status),
-      owner: n.owner ? `${n.owner.firstName} ${n.owner.lastName}` : 'Unassigned',
+      owner: n.owner
+        ? `${n.owner.firstName} ${n.owner.lastName}`
+        : 'Unassigned',
       impact: n.impact ?? n.description,
       rootCause: n.rootCause ?? undefined,
       resolution: n.resolution ?? undefined,
@@ -1375,8 +1590,14 @@ export class ModulesService {
     // this page must not have. It says so rather than appearing from nowhere.
     const closed = new Map(
       declared
-        .filter((d) => d.signature && (d.status === 'RESOLVED' || d.status === 'CLOSED'))
-        .map((d): [string, (typeof declared)[number]] => [d.signature as string, d]),
+        .filter(
+          (d) =>
+            d.signature && (d.status === 'RESOLVED' || d.status === 'CLOSED'),
+        )
+        .map((d): [string, (typeof declared)[number]] => [
+          d.signature as string,
+          d,
+        ]),
     );
 
     return [
@@ -1403,7 +1624,12 @@ export class ModulesService {
         psp: d.psp,
         openedAt: d.since ? this.ago(new Date(d.since)) : 'now',
         timeline: d.since
-          ? [{ time: this.hhmm(new Date(d.since)), text: 'Condition first seen in the payment data' }]
+          ? [
+              {
+                time: this.hhmm(new Date(d.since)),
+                text: 'Condition first seen in the payment data',
+              },
+            ]
           : [],
       })),
       ...declared.map((n) => this.incidentView(n)),
@@ -1480,7 +1706,10 @@ export class ModulesService {
           include: { owner: true },
         });
       }
-      return await this.prisma.incident.create({ data, include: { owner: true } });
+      return await this.prisma.incident.create({
+        data,
+        include: { owner: true },
+      });
     } catch (e) {
       // Never a bare 500: "Internal server error" on this button is
       // indistinguishable between a bug, a dropped connection, and an
@@ -1514,32 +1743,45 @@ export class ModulesService {
     const at = new Date().toISOString();
     const added: { at: string; text: string; by: string }[] = [];
     if (status && status !== current.status) {
-      added.push({ at, text: `Status → ${status.toLowerCase()}`, by: input.by ?? 'Unknown' });
+      added.push({
+        at,
+        text: `Status → ${status.toLowerCase()}`,
+        by: input.by ?? 'Unknown',
+      });
     }
     if (input.note?.trim()) {
       added.push({ at, text: input.note.trim(), by: input.by ?? 'Unknown' });
     }
     if (input.resolution?.trim()) {
-      added.push({ at, text: `Resolution: ${input.resolution.trim()}`, by: input.by ?? 'Unknown' });
+      added.push({
+        at,
+        text: `Resolution: ${input.resolution.trim()}`,
+        by: input.by ?? 'Unknown',
+      });
     }
 
     return this.safeOrThrow(
-      () => this.prisma.incident.update({
-      where: { id },
-      data: {
-        ...(status ? { status: status as never } : {}),
-        ...(input.rootCause !== undefined ? { rootCause: input.rootCause } : {}),
-        ...(input.resolution !== undefined ? { resolution: input.resolution } : {}),
-        // resolvedAt is set on the transition, not on every later edit.
-        ...(status === 'RESOLVED' || status === 'CLOSED'
-          ? { resolvedAt: current.resolvedAt ?? new Date() }
-          : status
-            ? { resolvedAt: null }
-            : {}),
-        timeline: [...entries, ...added] as never,
-      },
-      include: { owner: true },
-      }),
+      () =>
+        this.prisma.incident.update({
+          where: { id },
+          data: {
+            ...(status ? { status: status as never } : {}),
+            ...(input.rootCause !== undefined
+              ? { rootCause: input.rootCause }
+              : {}),
+            ...(input.resolution !== undefined
+              ? { resolution: input.resolution }
+              : {}),
+            // resolvedAt is set on the transition, not on every later edit.
+            ...(status === 'RESOLVED' || status === 'CLOSED'
+              ? { resolvedAt: current.resolvedAt ?? new Date() }
+              : status
+                ? { resolvedAt: null }
+                : {}),
+            timeline: [...entries, ...added] as never,
+          },
+          include: { owner: true },
+        }),
       'Updating the incident',
     );
   }
