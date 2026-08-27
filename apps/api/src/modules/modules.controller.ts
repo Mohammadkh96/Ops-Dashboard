@@ -125,6 +125,19 @@ export class ModulesController {
     return this.modules.funnel(from, to, shop);
   }
 
+  /**
+   * What happens after a decline — recovery measured on our own history.
+   *
+   * Guarded with the funnel and for the same reason: it reports which of a
+   * provider's decline codes come back and which never do.
+   */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Get('payments/recovery')
+  recovery(@Query('from') from?: string, @Query('to') to?: string) {
+    return this.modules.recovery(from, to);
+  }
+
   /** Headline figures for the payment pages, same filters. */
   @Get('payments/stats')
   paymentStats(

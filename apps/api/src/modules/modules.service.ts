@@ -25,6 +25,7 @@ import {
   type DetectRow,
 } from './incident-detect';
 import { buildFunnel, buildJourneys } from './payment-journey';
+import { buildRecovery, type AttemptRow } from './retry-recovery';
 import { buildSuccessRate, type SuccessRow } from './success-rate';
 
 /**
@@ -1413,6 +1414,95 @@ export class ModulesService {
       events: events.length,
       payments: journeys.length,
       truncated: events.length >= 60_000,
+    };
+  }
+
+  /**
+   * What happens after a decline, measured on our own history.
+   *
+   * Reads EVERY attempt in the window, not just the declines: a recovery is a
+   * different payment, so the successes have to be there to find it.
+   */
+  async recovery(from?: string, to?: string) {
+    const gte = parseInstant(from);
+    const lte = parseInstant(to);
+    const window =
+      gte || lte
+        ? {
+            OR: [
+              {
+                occurredAt: {
+                  ...(gte ? { gte } : {}),
+                  ...(lte ? { lte } : {}),
+                },
+              },
+              {
+                AND: [
+                  { occurredAt: null },
+                  {
+                    receivedAt: {
+                      ...(gte ? { gte } : {}),
+                      ...(lte ? { lte } : {}),
+                    },
+                  },
+                ],
+              },
+            ],
+          }
+        : {};
+
+    const events = await this.safe(
+      () =>
+        this.prisma.paymentEvent.findMany({
+          where: window,
+          orderBy: [{ occurredAt: 'desc' }, { receivedAt: 'desc' }],
+          select: {
+            id: true,
+            paymentId: true,
+            reference: true,
+            state: true,
+            psp: true,
+            amount: true,
+            currency: true,
+            customer: true,
+            errorCode: true,
+            errorMessage: true,
+            occurredAt: true,
+            receivedAt: true,
+          },
+          take: 50_000,
+        }),
+      [],
+    );
+
+    // Latest state per payment. A payment that went PENDING then DECLINED is
+    // one declined attempt; counting the pending row too would invent a
+    // decline that never happened.
+    const seen = new Set<string>();
+    const attempts: AttemptRow[] = [];
+    for (const e of events) {
+      const key = e.paymentId || e.reference || e.id;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      attempts.push({
+        key,
+        customer: e.customer,
+        psp: e.psp,
+        amount: e.amount,
+        currency: e.currency,
+        state: e.state,
+        errorCode: e.errorCode,
+        errorMessage: e.errorMessage,
+        at: e.occurredAt ?? e.receivedAt,
+      });
+    }
+
+    return {
+      from: gte ? gte.toISOString() : null,
+      to: lte ? lte.toISOString() : null,
+      ...buildRecovery(attempts),
+      attempts: attempts.length,
+      truncated: events.length >= 50_000,
     };
   }
 

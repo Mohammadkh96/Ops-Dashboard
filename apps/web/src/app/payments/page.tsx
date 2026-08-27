@@ -7,6 +7,7 @@ import { type Stat } from "@/components/ui/stat-tile";
 import { PaymentStats } from "@/components/payments/payment-stats";
 import { SuccessRateOverview } from "@/components/payments/success-rate";
 import { PaymentFunnel } from "@/components/payments/funnel";
+import { RetryRecovery } from "@/components/payments/recovery";
 import { cn } from "@/lib/utils";
 import { TransactionsTable } from "@/components/payments/transactions-table";
 import { GatewayGrid } from "@/components/payments/gateway-grid";
@@ -48,6 +49,9 @@ export default function PaymentsPage() {
       {/* The same payments, asked a different question: not how many worked,
           but where the ones that did not stopped. */}
       <PaymentFunnel />
+
+      {/* And of the ones that were refused: which refusals come back. */}
+      <RetryRecovery />
 
       <div className="flex items-center gap-1 border-b border-border">
         {TABS.map((t) => (
