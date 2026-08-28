@@ -18,7 +18,7 @@ import {
   Settings,
   Users,
   ScrollText,
-  KeyRound,
+  Plug,
   UserPlus,
   Timer,
   FilePlus2,
@@ -45,7 +45,7 @@ const navItems = [
   { label: "Settings", href: "/settings", icon: Settings },
   { label: "Users", href: "/admin/users", icon: Users },
   { label: "Audit Logs", href: "/admin/audit-logs", icon: ScrollText },
-  { label: "API Keys", href: "/admin/api-keys", icon: KeyRound },
+  { label: "Integrations", href: "/admin/integrations", icon: Plug },
 ];
 
 const quickActions = [

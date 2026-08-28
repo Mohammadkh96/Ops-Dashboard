@@ -58,6 +58,19 @@ export const useAdminUsers = () =>
 export const useAdminRoles = () =>
   useAdminQuery<string[]>("roles", "/admin/roles");
 
+/** One thing this dashboard talks to, and whether it is working. */
+export type Integration = {
+  key: string;
+  name: string;
+  what: string;
+  status: "ok" | "degraded" | "off";
+  detail: string;
+  needs?: string[];
+};
+
+export const useAdminIntegrations = () =>
+  useAdminQuery<Integration[]>("integrations", "/admin/integrations");
+
 export const useAdminAuditLog = () =>
   useAdminQuery<AuditEntry[]>("audit", "/admin/audit-logs");
 

@@ -13,6 +13,7 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { AdminUnlockGuard } from '../auth/guards/admin-unlock.guard';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AdminUsersService, ROLES } from './admin-users.service';
+import { IntegrationsService } from './integrations.service';
 
 type Req = { user?: { userId: string; email: string } };
 
@@ -29,7 +30,23 @@ type Req = { user?: { userId: string; email: string } };
 @UseGuards(JwtAuthGuard, AdminUnlockGuard)
 @Controller('admin')
 export class AdminController {
-  constructor(private readonly users: AdminUsersService) {}
+  constructor(
+    private readonly users: AdminUsersService,
+    private readonly integrations: IntegrationsService,
+  ) {}
+
+  /**
+   * What this dashboard is actually connected to.
+   *
+   * Behind the lock with everything else here, even though it carries no
+   * secrets: it names which provider accounts this deployment talks to and how
+   * fresh the data is, which is not a thing to hand to anybody who can reach
+   * the URL.
+   */
+  @Get('integrations')
+  integrationList() {
+    return this.integrations.list();
+  }
 
   /** The roles that exist, so the form is never out of step with the enum. */
   @Get('roles')
