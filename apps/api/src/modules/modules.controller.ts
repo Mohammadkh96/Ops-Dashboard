@@ -296,23 +296,19 @@ export class ModulesController {
 
   // ── the Admin tab ─────────────────────────────────────────────────────
   //
-  // Both of these answered to ANYBODY. No sign-in, no role, no guard: a GET to
-  // /api/admin/users returned the name, email and role of every account on the
-  // desk, and /api/admin/audit-logs returned the whole trail. They were reached
-  // only from an admin screen, which is not a control — it is a habit of the
-  // one client that happens to exist.
+  // This answered to ANYBODY. No sign-in, no role, no guard: a GET to
+  // /api/admin/audit-logs returned the whole trail. It was reached only from an
+  // admin screen, which is not a control — it is a habit of the one client that
+  // happens to exist.
   //
-  // Now behind BOTH: signed in as somebody, and the Admin tab unlocked in the
-  // last few minutes. The second is the one that matters here — being signed in
-  // on a machine somebody walked away from is the ordinary way an operations
-  // dashboard gets misused.
-  @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard, AdminUnlockGuard)
-  @Get('admin/users')
-  users() {
-    return this.modules.users();
-  }
-
+  // Now behind BOTH: signed in as somebody, and the Admin tab unlocked. The
+  // second is the one that matters here — being signed in on a machine somebody
+  // walked away from is the ordinary way an operations dashboard gets misused.
+  //
+  // The account list that used to sit beside this is gone: it invented ids
+  // (u-1, u-2…), so nothing on the screen could address a real account, and it
+  // has been replaced by /api/admin/accounts in AdminController — which can
+  // also write.
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard, AdminUnlockGuard)
   @Get('admin/audit-logs')

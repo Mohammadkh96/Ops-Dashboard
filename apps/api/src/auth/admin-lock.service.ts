@@ -17,8 +17,7 @@ import { PrismaService } from '../prisma/prisma.service';
  * role, read the whole audit trail or touch provider credentials should not be
  * the same state. The ordinary way an operations dashboard gets misused is not
  * a break-in: it is a session left open on an unlocked laptop on a busy desk.
- * This is the step that has to be taken deliberately, and it expires by itself
- * so that forgetting to lock up is not a decision anybody has to remember.
+ * This is the step that has to be taken deliberately.
  *
  * WHY NOT THE SIGN-IN PASSWORD. An account created through Google sign-in has
  * no usable sign-in password — the column holds unusable text on purpose.
@@ -32,15 +31,26 @@ import { PrismaService } from '../prisma/prisma.service';
  *
  * WHAT THIS IS NOT. It is not a second factor — somebody who has taken over the
  * session can watch the passphrase being typed. It raises the cost of casual
- * misuse and puts a deliberate, logged, expiring step in front of the
- * destructive things. Real second-factor authentication is a different feature.
+ * misuse and puts a deliberate, logged step in front of the destructive things.
+ * Real second-factor authentication is a different feature.
  */
 @Injectable()
 export class AdminLockService {
   private readonly log = new Logger(AdminLockService.name);
 
-  /** How long an unlock lasts. Long enough to do a job, short enough to matter. */
-  static readonly TTL_MINUTES = 15;
+  /**
+   * How long an unlock lasts.
+   *
+   * There is no auto-relock. The tab stays open until somebody presses Lock, or
+   * closes the tab — the unlock is held in memory in the browser and never
+   * written to storage, so a closed tab loses it either way.
+   *
+   * The token still CARRIES an expiry, matched to the sign-in session, because
+   * a credential with no expiry at all is valid forever if it ever escapes. It
+   * is not a timer anybody sees: you cannot be unlocked for longer than you are
+   * signed in, which is the only bound that was ever doing real work.
+   */
+  static readonly ttl = (): string => process.env.JWT_EXPIRES_IN ?? '8h';
   /** Wrong attempts before the lock stops answering. */
   static readonly MAX_FAILS = 5;
   /** How long it stays shut after that. */
@@ -72,7 +82,6 @@ export class AdminLockService {
         0,
         AdminLockService.MAX_FAILS - (user.adminFails ?? 0),
       ),
-      ttlMinutes: AdminLockService.TTL_MINUTES,
       minLength: AdminLockService.MIN_LENGTH,
     };
   }
@@ -137,10 +146,10 @@ export class AdminLockService {
   /**
    * Opens the lock, and hands back a token that says so.
    *
-   * A SEPARATE token from the session, with a short life and a scope of its
-   * own. It is never stored — the browser holds it in memory, so closing the
-   * tab locks up. Putting this in localStorage beside the session token would
-   * make the whole thing decorative.
+   * A SEPARATE token from the session, with a scope of its own. It is never
+   * stored — the browser holds it in memory, so closing the tab locks up.
+   * Putting this in localStorage beside the session token would make the whole
+   * thing decorative.
    */
   async unlock(userId: string, passphrase: string) {
     const user = await this.mustBeAdmin(userId);
@@ -188,18 +197,13 @@ export class AdminLockService {
     });
     await this.record(userId, 'admin.unlock', null);
 
-    const expiresAt = new Date(
-      Date.now() + AdminLockService.TTL_MINUTES * 60_000,
-    );
     return {
       adminToken: await this.jwt.signAsync(
         // `scope` is what the guard looks for. A session token has no scope, so
         // one can never be mistaken for the other however it is passed in.
         { sub: user.id, email: user.email, role: user.role, scope: 'admin' },
-        { expiresIn: `${AdminLockService.TTL_MINUTES}m` },
+        { expiresIn: AdminLockService.ttl() as `${number}h` },
       ),
-      expiresAt: expiresAt.toISOString(),
-      ttlMinutes: AdminLockService.TTL_MINUTES,
     };
   }
 

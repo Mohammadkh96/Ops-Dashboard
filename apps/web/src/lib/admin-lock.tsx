@@ -4,7 +4,6 @@ import {
   createContext,
   useCallback,
   useContext,
-  useEffect,
   useMemo,
   useState,
   type ReactNode,
@@ -22,6 +21,12 @@ import { apiFetch } from "@/lib/api";
  * opens the tab. Closing it locks up, which is the behaviour somebody expects
  * from something called a lock.
  *
+ * NO AUTO-RELOCK. It stays open until somebody presses Lock, or closes the tab.
+ * There used to be a fifteen-minute countdown; it went because relocking under
+ * an administrator halfway through a job is an interruption that teaches people
+ * to keep the passphrase in a text file, which costs more than the timer ever
+ * saved.
+ *
  * It is also enforced on the server. Everything here is convenience: which
  * screen to show, when to say "locked", when to stop counting down. A browser
  * that skipped all of it would still be refused by the API.
@@ -32,7 +37,6 @@ type LockStatus = {
   setAt: string | null;
   lockedForSeconds: number;
   attemptsLeft: number;
-  ttlMinutes: number;
   minLength: number;
 };
 
@@ -40,8 +44,6 @@ type AdminLock = {
   /** The elevated token, or null when locked. */
   token: string | null;
   unlocked: boolean;
-  /** Seconds until it expires by itself. */
-  expiresIn: number;
   unlock: (passphrase: string) => Promise<void>;
   lock: () => void;
   /** Adds the header to a request, or refuses if there is nothing to add. */
@@ -52,31 +54,12 @@ const Ctx = createContext<AdminLock | null>(null);
 
 export function AdminLockProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
-  const [expiresAt, setExpiresAt] = useState<number>(0);
-  const [now, setNow] = useState(() => Date.now());
-
-  // Ticks only while a token is held, so a locked tab is not waking up every
-  // second for nothing.
-  useEffect(() => {
-    if (!token) return;
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, [token]);
-
-  const expiresIn = token ? Math.max(0, Math.ceil((expiresAt - now) / 1000)) : 0;
-  // DERIVED, not cleared by an effect. Expiry is a function of the clock, and
-  // the clock is already ticking a state update every second — so "unlocked"
-  // becomes false on its own, in the same render, with no second pass that
-  // shows the tab unlocked for a frame after it is not.
-  const live = Boolean(token) && expiresIn > 0;
 
   const unlock = useCallback(async (passphrase: string) => {
-    const res = await apiFetch<{ adminToken: string; expiresAt: string }>(
-      "/auth/admin/unlock",
-      { method: "POST", body: JSON.stringify({ passphrase }) },
-    );
-    setExpiresAt(Date.parse(res.expiresAt));
-    setNow(Date.now());
+    const res = await apiFetch<{ adminToken: string }>("/auth/admin/unlock", {
+      method: "POST",
+      body: JSON.stringify({ passphrase }),
+    });
     setToken(res.adminToken);
   }, []);
 
@@ -84,10 +67,7 @@ export function AdminLockProvider({ children }: { children: ReactNode }) {
 
   const authFetch = useCallback(
     <T,>(path: string, init?: RequestInit): Promise<T> => {
-      // `live`, not `token`: an expired one is still in memory until the next
-      // unlock, and sending it would spend a round trip to be told what the
-      // clock already knows.
-      if (!live || !token) {
+      if (!token) {
         return Promise.reject(
           new Error("The Admin tab is locked. Enter your admin passphrase."),
         );
@@ -97,19 +77,12 @@ export function AdminLockProvider({ children }: { children: ReactNode }) {
         headers: { ...(init?.headers ?? {}), "X-Admin-Token": token },
       });
     },
-    [token, live],
+    [token],
   );
 
   const value = useMemo<AdminLock>(
-    () => ({
-      token: live ? token : null,
-      unlocked: live,
-      expiresIn,
-      unlock,
-      lock,
-      authFetch,
-    }),
-    [token, live, expiresIn, unlock, lock, authFetch],
+    () => ({ token, unlocked: Boolean(token), unlock, lock, authFetch }),
+    [token, unlock, lock, authFetch],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

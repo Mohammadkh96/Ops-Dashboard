@@ -23,11 +23,11 @@ const field =
  *
  * None of this is the security control — the API refuses every admin route
  * without the unlock, whatever this component renders. What it does is make the
- * state visible: locked, unlocked, and how long that lasts.
+ * state visible, and give somebody a way to shut it again deliberately.
  */
 export function AdminGate({ children }: { children: ReactNode }) {
   const { user } = useAuth();
-  const { unlocked, expiresIn, unlock, lock } = useAdminLock();
+  const { unlocked, unlock, lock } = useAdminLock();
   const [passphrase, setPassphrase] = useState("");
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -99,7 +99,7 @@ export function AdminGate({ children }: { children: ReactNode }) {
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-accent-green/25 bg-accent-green-soft px-3 py-2">
           <span className="flex items-center gap-2 text-xs text-accent-green">
             <LockOpen className="size-3.5" />
-            Unlocked — relocks in {mmss(expiresIn)}
+            Unlocked — stays open until you lock it
           </span>
           <button
             type="button"
@@ -193,8 +193,9 @@ export function AdminGate({ children }: { children: ReactNode }) {
       ) : (
         <>
           <p>
-            Enter your admin passphrase. It stays unlocked for{" "}
-            {s?.ttlMinutes ?? 15} minutes, and closing this tab locks it again.
+            Enter your admin passphrase. It stays unlocked until you press Lock
+            — or until you close this tab, since the unlock is only ever held in
+            memory.
           </p>
           <form
             className="flex flex-col gap-2 pt-1"
@@ -310,7 +311,7 @@ function Problem({ children }: { children: ReactNode }) {
   );
 }
 
-/** Seconds as m:ss — a countdown people read without doing arithmetic. */
+/** Seconds as m:ss — used for the lockout, which is the only clock left here. */
 function mmss(total: number): string {
   const m = Math.floor(total / 60);
   const s = total % 60;

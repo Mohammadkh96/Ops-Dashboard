@@ -78,12 +78,14 @@ async function run() {
     section('the routes it guards');
     {
       // These two answered to ANYBODY before this existed: a plain GET returned
-      // every account's name, email and role, and the whole audit trail.
-      ok('users is not public', (await get('/admin/users')).status === 401);
+      // every account's name, email and role, and the whole audit trail. The
+      // account list has since moved to AdminController, which can also write —
+      // so the lock in front of it matters more, not less.
+      ok('the account list is not public', (await get('/admin/accounts')).status === 401);
       ok('the audit log is not public', (await get('/admin/audit-logs')).status === 401);
       ok(
         'and being signed in is not enough',
-        (await get('/admin/users', adminAuth)).status === 403,
+        (await get('/admin/accounts', adminAuth)).status === 403,
       );
     }
 
@@ -126,12 +128,15 @@ async function run() {
       const good = await post('/auth/admin/unlock', adminAuth, { passphrase: PASS });
       ok('the right one opens it', good.status === 201 || good.status === 200, good.body);
       ok('and returns a token', typeof good.body.adminToken === 'string');
-      ok('with an expiry', Boolean(good.body.expiresAt));
+      // No expiry is reported, because there is no auto-relock to report. The
+      // token still carries one internally, matched to the sign-in session — a
+      // credential with none at all is valid forever if it ever escapes.
+      ok('and no countdown to show', good.body.expiresAt === undefined, good.body);
 
       const token = good.body.adminToken;
       ok(
         'which opens the guarded routes',
-        (await get('/admin/users', adminAuth, token)).status === 200,
+        (await get('/admin/accounts', adminAuth, token)).status === 200,
       );
       ok(
         'and the audit log',
@@ -142,21 +147,21 @@ async function run() {
       // you took the extra step just now. Neither alone is enough.
       ok(
         'the unlock alone is not a session',
-        (await get('/admin/users', null, token)).status === 401,
+        (await get('/admin/accounts', null, token)).status === 401,
       );
 
       section('tokens that must not be mistaken for an unlock');
       {
         // The failure that would make all of this decorative: a session token
         // carries no scope, so it must never satisfy the guard.
-        const r = await get('/admin/users', adminAuth, adminAuth.replace('Bearer ', ''));
+        const r = await get('/admin/accounts', adminAuth, adminAuth.replace('Bearer ', ''));
         ok('a session token is refused as an unlock', r.status === 403, r.body);
 
         // Signed by us, correct shape, wrong scope — a forged elevation.
         const forged = jwt.sign({ sub: admin.id, email: admin.email, scope: 'user' });
         ok(
           'a token with the wrong scope is refused',
-          (await get('/admin/users', adminAuth, forged)).status === 403,
+          (await get('/admin/accounts', adminAuth, forged)).status === 403,
         );
 
         const expired = jwt.sign(
@@ -165,30 +170,31 @@ async function run() {
         );
         ok(
           'an expired unlock is refused',
-          (await get('/admin/users', adminAuth, expired)).status === 403,
+          (await get('/admin/accounts', adminAuth, expired)).status === 403,
         );
 
         // One administrator's unlock, pasted into another person's session.
         // The two halves have to be the same person.
         ok(
           "somebody else's unlock does not raise my session",
-          (await get('/admin/users', session(other), token)).status === 403,
+          (await get('/admin/accounts', session(other), token)).status === 403,
         );
       }
 
       section('an unlock outlives the thing it was granted for');
       {
-        // A token is good for fifteen minutes. An administrator demoted or
-        // deactivated two minutes in still holds a perfectly valid one, so the
-        // account is re-read on every request rather than trusted from the
-        // claims.
+        // A token lasts as long as the sign-in session. An administrator
+        // demoted or deactivated five minutes in still holds a perfectly valid
+        // one for hours, so the account is re-read on every request rather than
+        // trusted from the claims — which matters more now there is no timer to
+        // expire it out from under them.
         await prisma.user.update({
           where: { id: admin.id },
           data: { role: 'OPERATIONS' },
         });
         ok(
           'a demoted administrator is refused',
-          (await get('/admin/users', adminAuth, token)).status === 403,
+          (await get('/admin/accounts', adminAuth, token)).status === 403,
         );
         await prisma.user.update({
           where: { id: admin.id },
@@ -196,7 +202,7 @@ async function run() {
         });
         ok(
           'a deactivated one is refused',
-          (await get('/admin/users', adminAuth, token)).status === 403,
+          (await get('/admin/accounts', adminAuth, token)).status === 403,
         );
         await prisma.user.update({
           where: { id: admin.id },
@@ -204,7 +210,7 @@ async function run() {
         });
         ok(
           'and it works again once they are back',
-          (await get('/admin/users', adminAuth, token)).status === 200,
+          (await get('/admin/accounts', adminAuth, token)).status === 200,
         );
       }
     }

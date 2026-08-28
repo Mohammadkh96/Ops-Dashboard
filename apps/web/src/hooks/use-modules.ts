@@ -15,7 +15,6 @@ import {
   reportTemplates,
   generatedReports,
   scheduledReports,
-  opsUsers,
   auditLog,
   type Transaction,
   type Gateway,
@@ -27,7 +26,6 @@ import {
   type ReportTemplate,
   type GeneratedReport,
   type ScheduledReport,
-  type OpsUser,
   type AuditEntry,
 } from "@/lib/modules";
 
@@ -93,5 +91,4 @@ export const useReports = () =>
     scheduled: scheduledReports,
   });
 
-export const useUsers = () => useApi<OpsUser[]>("users", "/admin/users", opsUsers);
 export const useAuditLog = () => useApi<AuditEntry[]>("audit", "/admin/audit-logs", auditLog);
