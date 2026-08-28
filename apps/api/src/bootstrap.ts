@@ -82,6 +82,11 @@ export async function createApp(
     // on would mean any origin the list admits — including a whole wildcard —
     // could make requests carrying the browser's ambient credentials.
     credentials: false,
+    // Named explicitly because listing any of them replaces the default set.
+    // X-Admin-Token carries the Admin tab's unlock; without it here the browser
+    // refuses the preflight and every admin request fails cross-origin with a
+    // message about headers that looks nothing like the cause.
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Admin-Token'],
   });
 
   app.setGlobalPrefix('api');

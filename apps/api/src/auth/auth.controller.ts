@@ -4,6 +4,7 @@ import {
   Controller,
   Get,
   HttpException,
+  Param,
   Post,
   Query,
   Request,
@@ -13,9 +14,11 @@ import {
 import { ApiBearerAuth, ApiExcludeEndpoint, ApiTags } from '@nestjs/swagger';
 import type { Response } from 'express';
 
+import { AdminLockService } from './admin-lock.service';
 import { AuthService } from './auth.service';
 import { GoogleAuthService } from './google.service';
 import { LoginDto } from './dto/login.dto';
+import { AdminUnlockGuard } from './guards/admin-unlock.guard';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 
 @ApiTags('auth')
@@ -24,6 +27,7 @@ export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly google: GoogleAuthService,
+    private readonly adminLock: AdminLockService,
   ) {}
 
   @Post('login')
@@ -38,6 +42,57 @@ export class AuthController {
     @Request() req: { user: { userId: string; email: string; role: string } },
   ) {
     return req.user;
+  }
+
+  // ── the admin lock ────────────────────────────────────────────────────
+  //
+  // A second password in front of the Admin tab. Being signed in and being able
+  // to change roles, read the audit trail or touch provider credentials are
+  // deliberately not the same state — see AdminLockService for why it is a
+  // separate passphrase rather than the sign-in one.
+
+  /** Set a passphrase, type one, or wait out a lockout — which of the three. */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Get('admin/lock')
+  adminLockStatus(@Request() req: { user: { userId: string } }) {
+    return this.adminLock.status(req.user.userId);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Post('admin/lock')
+  setAdminPassphrase(
+    @Request() req: { user: { userId: string } },
+    @Body() body: { current?: string; next?: string },
+  ) {
+    return this.adminLock.setPassphrase(req.user.userId, body ?? {});
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Post('admin/unlock')
+  adminUnlock(
+    @Request() req: { user: { userId: string } },
+    @Body() body: { passphrase?: string },
+  ) {
+    return this.adminLock.unlock(req.user.userId, body?.passphrase ?? '');
+  }
+
+  /**
+   * Clears somebody else's passphrase so they can set a new one.
+   *
+   * Behind the unlock itself: it takes an administrator who is already through
+   * the door to let another one back in. There is deliberately no master key.
+   */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, AdminUnlockGuard)
+  @Post('admin/lock/reset/:userId')
+  resetAdminPassphrase(
+    @Request() req: { user: { userId: string } },
+    @Param('userId') userId: string,
+  ) {
+    return this.adminLock.resetFor(req.user.userId, userId);
   }
 
   /**

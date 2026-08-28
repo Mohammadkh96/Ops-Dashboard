@@ -7,11 +7,12 @@ import { DataTable, type Column } from "@/components/ui/data-table";
 import { FilterBar } from "@/components/ui/filter-bar";
 import { Button } from "@/components/ui/button";
 import { type AuditEntry } from "@/lib/modules";
-import { useAuditLog } from "@/hooks/use-modules";
+import { useAdminAuditLog } from "@/hooks/use-admin";
 
 export default function AuditLogsPage() {
   const [search, setSearch] = useState("");
-  const { data: auditLog, isLoading } = useAuditLog();
+  const { data, isLoading, isError, error } = useAdminAuditLog();
+  const auditLog = useMemo(() => data ?? [], [data]);
 
   const filtered = useMemo(
     () =>
@@ -85,6 +86,12 @@ export default function AuditLogsPage() {
         >
           <span className="ml-auto text-xs text-muted">Immutable, retained 7 years</span>
         </FilterBar>
+
+        {isError ? (
+          <p className="rounded-lg border border-accent-red/25 bg-accent-red-soft px-3 py-2 text-xs text-accent-red">
+            Could not read the audit trail: {String(error)}
+          </p>
+        ) : null}
 
         <DataTable
           columns={columns}

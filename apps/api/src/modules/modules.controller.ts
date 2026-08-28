@@ -13,6 +13,7 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 
+import { AdminUnlockGuard } from '../auth/guards/admin-unlock.guard';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ModulesService } from './modules.service';
 import { parseRange } from '../common/range';
@@ -293,11 +294,27 @@ export class ModulesController {
     return this.modules.reports();
   }
 
+  // ── the Admin tab ─────────────────────────────────────────────────────
+  //
+  // Both of these answered to ANYBODY. No sign-in, no role, no guard: a GET to
+  // /api/admin/users returned the name, email and role of every account on the
+  // desk, and /api/admin/audit-logs returned the whole trail. They were reached
+  // only from an admin screen, which is not a control — it is a habit of the
+  // one client that happens to exist.
+  //
+  // Now behind BOTH: signed in as somebody, and the Admin tab unlocked in the
+  // last few minutes. The second is the one that matters here — being signed in
+  // on a machine somebody walked away from is the ordinary way an operations
+  // dashboard gets misused.
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, AdminUnlockGuard)
   @Get('admin/users')
   users() {
     return this.modules.users();
   }
 
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard, AdminUnlockGuard)
   @Get('admin/audit-logs')
   auditLogs() {
     return this.modules.auditLog();

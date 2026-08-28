@@ -32,6 +32,7 @@ import {
   STARTER_CATEGORIES,
   toneFor,
 } from './incident-categories';
+import { deskDate, deskTime } from '../shifts/ops-day';
 import { buildFunnel, buildJourneys } from './payment-journey';
 import { buildRecovery, type AttemptRow } from './retry-recovery';
 import { buildSuccessRate, type SuccessRow } from './success-rate';
@@ -1633,10 +1634,11 @@ export class ModulesService {
     // has to say what it expects. Both shapes are named here rather than cast
     // at each use, because the older one is still in the table and the two are
     // told apart by Array.isArray a few lines down.
-    const ev = (n.evidence ?? null) as
+    const ev = n.evidence as
       | { lines?: string[]; samples?: unknown[]; sampleTotal?: number }
       | unknown[]
-      | null;
+      | null
+      | undefined;
     const lines = Array.isArray(ev) ? ev : (ev?.lines ?? []);
     const samples = Array.isArray(ev) ? [] : (ev?.samples ?? []);
     const sampleTotal = Array.isArray(ev)
@@ -2627,26 +2629,39 @@ export class ModulesService {
   }
 
   async auditLog() {
-    // Live: no invented rows. There is no real source for this yet, so an
-    // empty list is the honest answer — see isLive().
-    if (await this.isLive()) return [];
-    const fallback = this.auditFallback();
-    return this.safe(async () => {
-      const rows = await this.prisma.auditLog.findMany({
-        include: { user: true },
-        orderBy: { createdAt: 'desc' },
-        take: 50,
-      });
-      if (rows.length === 0) return fallback;
-      return rows.map((a) => ({
-        id: a.id,
-        user: a.user ? `${a.user.firstName} ${a.user.lastName}` : 'System',
-        action: a.action,
-        entityType: a.entityType,
-        entityId: a.entityId,
-        ip: a.ipAddress ?? '—',
-        at: a.createdAt.toISOString().slice(11, 19),
-      }));
-    }, fallback);
+    const live = await this.isLive();
+    const rows = await this.safe(
+      () =>
+        this.prisma.auditLog.findMany({
+          include: { user: true },
+          orderBy: { createdAt: 'desc' },
+          take: 200,
+        }),
+      [],
+    );
+
+    // Live: the real trail, and an EMPTY one when nothing has been recorded
+    // yet. This used to return [] unconditionally because nothing wrote to the
+    // table — which stopped being true the moment the admin lock started
+    // recording unlocks, and an audit screen that silently shows nothing while
+    // entries are being written is worse than one that was never built.
+    //
+    // The sample rows are for demo mode only. Fabricated entries on an audit
+    // screen are indefensible: the entire value of the page is that what it
+    // shows happened.
+    if (!rows.length) return live ? [] : this.auditFallback();
+
+    return rows.map((a) => ({
+      id: a.id,
+      user: a.user ? `${a.user.firstName} ${a.user.lastName}` : 'System',
+      action: a.action,
+      entityType: a.entityType,
+      entityId: a.entityId,
+      ip: a.ipAddress ?? '—',
+      // Date AND time, in the desk's timezone. It used to be the UTC clock
+      // alone, so an entry from three days ago read as "14:32:07" with nothing
+      // to say which day — on the one screen whose job is to say when.
+      at: `${deskDate(a.createdAt)} ${deskTime(a.createdAt)}`,
+    }));
   }
 }

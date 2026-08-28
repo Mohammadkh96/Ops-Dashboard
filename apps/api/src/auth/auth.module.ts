@@ -6,6 +6,8 @@ import { jwtSecret } from '../common/jwt-secret';
 import { UsersModule } from '../users/users.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { AdminLockService } from './admin-lock.service';
+import { AdminUnlockGuard } from './guards/admin-unlock.guard';
 import { GoogleAuthService } from './google.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { JwtStrategy } from './strategies/jwt.strategy';
@@ -40,6 +42,15 @@ import { JwtStrategy } from './strategies/jwt.strategy';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, GoogleAuthService, JwtStrategy],
+  providers: [
+    AuthService,
+    GoogleAuthService,
+    AdminLockService,
+    AdminUnlockGuard,
+    JwtStrategy,
+  ],
+  // Exported so the modules controller can put the same lock in front of the
+  // routes the Admin tab actually calls. One guard, one definition of unlocked.
+  exports: [AdminLockService, AdminUnlockGuard],
 })
 export class AuthModule {}

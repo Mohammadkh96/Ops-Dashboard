@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { type OpsUser, type UserRole, type UserStatus } from "@/lib/modules";
-import { useUsers } from "@/hooks/use-modules";
+import { useAdminUsers } from "@/hooks/use-admin";
 
 const ROLES: UserRole[] = [
   "Admin",
@@ -36,7 +36,12 @@ export default function AdminUsersPage() {
   const [search, setSearch] = useState("");
   const [role, setRole] = useState("");
   const [status, setStatus] = useState("");
-  const { data: opsUsers, isLoading } = useUsers();
+  // No fallback to sample data: four invented accounts on the admin screen at
+  // the moment the real ones cannot be read is worse than an error.
+  const { data, isLoading, isError, error } = useAdminUsers();
+  // Memoised: two useMemos below take it as a dependency, and `data ?? []`
+  // hands them a fresh array on every render.
+  const opsUsers = useMemo(() => data ?? [], [data]);
 
   const stats: Stat[] = useMemo(
     () => [
@@ -143,6 +148,12 @@ export default function AdminUsersPage() {
             {filtered.length} of {opsUsers.length}
           </span>
         </FilterBar>
+
+        {isError ? (
+          <p className="rounded-lg border border-accent-red/25 bg-accent-red-soft px-3 py-2 text-xs text-accent-red">
+            Could not read the accounts: {String(error)}
+          </p>
+        ) : null}
 
         <DataTable
           columns={columns}

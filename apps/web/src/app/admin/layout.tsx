@@ -6,6 +6,8 @@ import type { ReactNode } from "react";
 import { Users, ScrollText, KeyRound } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { AdminLockProvider } from "@/lib/admin-lock";
+import { AdminGate } from "@/components/admin/admin-gate";
 
 const ADMIN_TABS = [
   { href: "/admin/users", label: "Users", icon: Users },
@@ -41,7 +43,14 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
         })}
       </nav>
 
-      {children}
+      {/* Everything under this tab is behind the second password. The provider
+          holds the unlock in memory only — see admin-lock.tsx — and the gate
+          decides which of the three screens to show. Neither is the control:
+          the API refuses every admin route without the unlock header, whatever
+          the browser renders. */}
+      <AdminLockProvider>
+        <AdminGate>{children}</AdminGate>
+      </AdminLockProvider>
     </div>
   );
 }

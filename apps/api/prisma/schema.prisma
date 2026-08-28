@@ -119,6 +119,26 @@ model User {
   lastName     String
   role         Role     @default(OPERATIONS)
   isActive     Boolean  @default(true)
+
+  /// A SECOND password, for the Admin tab only. Bcrypt, like the first.
+  ///
+  /// Separate from the sign-in password on purpose. A session left open on an
+  /// unlocked laptop is the ordinary way an operations dashboard gets misused,
+  /// and being signed in should not be the same thing as being able to change
+  /// roles, read the audit trail or touch provider credentials. This is the
+  /// step somebody has to take deliberately, and it expires on its own.
+  ///
+  /// Its own passphrase rather than re-typing the sign-in one, because an
+  /// account created through Google sign-in HAS no sign-in password — asking
+  /// for it would lock every Google user out of the Admin tab permanently.
+  adminPassHash  String?
+  adminPassSetAt DateTime?
+  /// Consecutive failed unlock attempts, and when the lockout lifts. A second
+  /// password is worth nothing if it can be guessed a thousand times a minute
+  /// by somebody who already has a session.
+  adminFails     Int       @default(0)
+  adminLockedUntil DateTime?
+
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
