@@ -406,8 +406,59 @@ model Incident {
   updatedAt   DateTime         @updatedAt
   resolvedAt  DateTime?
 
+  categories  IncidentCategoryOnIncident[]
+
   @@index([status])
   @@index([severity])
+}
+
+/// What kind of thing an incident is: "PSP outage", "Deposits", "MT5".
+///
+/// A table rather than an enum, because the desk finds out what the categories
+/// are by running the desk. A fixed list written today is a list somebody has
+/// to file real incidents under wrongly next month, and "Other" swallows
+/// exactly the pattern that would have been worth naming — so agents add their
+/// own, and the list grows out of what actually happened.
+model IncidentCategory {
+  id        String   @id @default(cuid())
+  /// As typed, and shown as typed.
+  name      String
+  /// Lower-cased and squashed, the key uniqueness is judged on. Without it
+  /// "PSP outage", "PSP Outage" and "psp  outage" become three categories that
+  /// mean one thing, and every count computed over them is wrong.
+  slug      String   @unique
+  /// One of the dashboard's accent names, or null to be assigned one. Never a
+  /// raw colour: a hex typed into a form is how a category ends up unreadable
+  /// in one of the two themes.
+  tone      String?
+  /// Retired rather than deleted once anything has been filed under it —
+  /// deleting would silently rewrite the history of every incident using it.
+  active    Boolean  @default(true)
+  /// Who added it. The starter set is seeded and has none.
+  createdBy String?
+  createdAt DateTime @default(now())
+
+  incidents IncidentCategoryOnIncident[]
+
+  @@index([active])
+}
+
+/// Many-to-many: an incident is often more than one thing at once. A card
+/// declined storm on one PSP is both "PSP outage" and "Deposits", and being
+/// made to choose is what makes people choose "Other".
+model IncidentCategoryOnIncident {
+  incident   Incident         @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+  incidentId String
+  category   IncidentCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  categoryId String
+  /// Kept so "who tagged this, and when" is answerable — categories drive
+  /// which incidents people are shown, so mis-tagging is worth being able to
+  /// trace.
+  taggedBy   String?
+  taggedAt   DateTime         @default(now())
+
+  @@id([incidentId, categoryId])
+  @@index([categoryId])
 }
 
 // ---------- Reconciliation (config-driven) ----------

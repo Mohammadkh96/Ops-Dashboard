@@ -1,10 +1,12 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Param,
   Patch,
   Post,
+  Put,
   Query,
   Req,
   UseGuards,
@@ -14,6 +16,9 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ModulesService } from './modules.service';
 import { parseRange } from '../common/range';
+
+/** Who may change the shape of the desk, rather than work within it. */
+const MANAGER_ROLES = ['ADMIN', 'OPERATIONS_MANAGER'];
 
 @ApiTags('modules')
 @Controller()
@@ -183,10 +188,81 @@ export class ModulesController {
       severity?: string;
       impact?: string;
       signature?: string;
+      categories?: string[];
     },
     @Req() req: { user?: { email?: string } },
   ) {
     return this.modules.declareIncident({ ...body, by: req.user?.email });
+  }
+
+  // ── incident categories ───────────────────────────────────────────────
+  //
+  // Readable by anyone signed in, because everybody needs to filter by them.
+  // Adding one takes an account that can act — an agent naming a new kind of
+  // problem is the point of the feature, so it is deliberately not a
+  // manager-only privilege. Retiring one IS manager-only: it changes the list
+  // everybody else works from.
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Get('incident-categories')
+  incidentCategories(@Query('includeRetired') includeRetired?: string) {
+    return this.modules.incidentCategories(includeRetired === 'true');
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Post('incident-categories')
+  createIncidentCategory(
+    @Body() body: { name?: string },
+    @Req() req: { user?: { email?: string; role?: string } },
+  ) {
+    if (req.user?.role === 'READ_ONLY') {
+      throw new ForbiddenException(
+        'A read-only account cannot add categories. Ask a manager to change your role.',
+      );
+    }
+    return this.modules.createIncidentCategory({
+      name: body?.name,
+      by: req.user?.email,
+    });
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Patch('incident-categories/:id')
+  setCategoryActive(
+    @Param('id') id: string,
+    @Body() body: { active?: boolean },
+    @Req() req: { user?: { role?: string } },
+  ) {
+    if (!MANAGER_ROLES.includes(req.user?.role ?? '')) {
+      throw new ForbiddenException(
+        'Only a manager can retire or restore a category — it changes the list everybody else files against.',
+      );
+    }
+    return this.modules.setIncidentCategoryActive(id, body?.active !== false);
+  }
+
+  /** Re-tags an incident. The list sent is the list it ends up with. */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Put('incidents/:id/categories')
+  tagIncident(
+    @Param('id') id: string,
+    @Body() body: { categories?: string[] },
+    @Req() req: { user?: { email?: string; role?: string } },
+  ) {
+    if (req.user?.role === 'READ_ONLY') {
+      throw new ForbiddenException(
+        'A read-only account cannot re-tag incidents.',
+      );
+    }
+    return this.modules.tagIncident(
+      id,
+      body?.categories ?? [],
+      req.user?.email,
+    );
   }
 
   /** Moves one on — status, root cause, resolution, or just a note. */

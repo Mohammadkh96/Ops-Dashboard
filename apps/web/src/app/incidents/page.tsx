@@ -13,6 +13,12 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/toast";
 import { apiFetch, isDemoMode } from "@/lib/api";
+import { cn } from "@/lib/utils";
+import {
+  CategoryChips,
+  CategoryPicker,
+  categoryClass,
+} from "@/components/incidents/category-picker";
 import { staggerContainer, fadeUp } from "@/lib/motion";
 import { incidents as demoIncidents, type IncidentSeverity } from "@/lib/modules";
 
@@ -45,6 +51,8 @@ type Incident = {
   impact: string;
   rootCause?: string;
   resolution?: string;
+  /** What kind of thing this is. Always present, empty for a detection. */
+  categories?: { id: string; name: string; slug: string; tone: string }[];
   evidence?: string[];
   /** The payments the incident is about — see DetectionSample on the API. */
   samples?: {
@@ -95,6 +103,17 @@ export default function IncidentsPage() {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [declaring, setDeclaring] = useState(false);
   const [form, setForm] = useState({ title: "", severity: "medium", impact: "" });
+  // Kept apart from `form` because it is a list rather than a field, and
+  // because it is also what a detection is tagged with on its own declare
+  // button — where there is no form at all.
+  const [categories, setCategories] = useState<string[]>([]);
+  // Null while the incident's own categories are being shown as they are; an
+  // array once somebody has changed them and not yet saved. The distinction
+  // matters — an empty array is "remove every category", which is a real thing
+  // to want and must not be confused with "not editing".
+  const [retag, setRetag] = useState<string[] | null>(null);
+  /** Narrow the list to one category. Null is everything. */
+  const [filter, setFilter] = useState<string | null>(null);
   const [note, setNote] = useState("");
   // A toast disappears before it can be read, let alone acted on. The reason a
   // write failed stays until the next attempt.
@@ -112,7 +131,13 @@ export default function IncidentsPage() {
   // In live mode an error shows as an error. Falling back to the sample list
   // would put four fictional outages on screen at the exact moment the API is
   // in trouble.
-  const incidents: Incident[] = isDemoMode ? DEMO : (data ?? []);
+  // Memoised because three separate useMemos below take it as a dependency: a
+  // fresh array on every render made all of them recompute on every render,
+  // which is the whole reason they exist.
+  const incidents = useMemo<Incident[]>(
+    () => (isDemoMode ? DEMO : (data ?? [])),
+    [data],
+  );
   const selected = incidents.find((i) => i.key === selectedKey) ?? null;
   const sev = selected ? SEVERITY[selected.severity] : null;
   const resolved = selected?.status === "resolved" || selected?.status === "closed";
@@ -120,19 +145,46 @@ export default function IncidentsPage() {
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["incidents"] });
 
   const declare = useMutation({
-    mutationFn: (body: { title?: string; severity?: string; impact?: string; signature?: string }) =>
-      apiFetch("/incidents", { method: "POST", body: JSON.stringify(body) }),
+    mutationFn: (body: {
+      title?: string;
+      severity?: string;
+      impact?: string;
+      signature?: string;
+      categories?: string[];
+    }) => apiFetch("/incidents", { method: "POST", body: JSON.stringify(body) }),
     onSuccess: () => {
       void refresh();
       setDeclaring(false);
       setFailure(null);
       setForm({ title: "", severity: "medium", impact: "" });
+      setCategories([]);
+      void queryClient.invalidateQueries({ queryKey: ["incident-categories"] });
       toast({ title: "Incident declared" });
     },
     onError: (e) => {
       const detail = e instanceof Error ? e.message : String(e);
       setFailure(detail);
       toast({ title: "Could not declare", description: detail });
+    },
+  });
+
+  const saveTags = useMutation({
+    mutationFn: ({ key, categories: names }: { key: string; categories: string[] }) =>
+      apiFetch(`/incidents/${encodeURIComponent(key)}/categories`, {
+        method: "PUT",
+        body: JSON.stringify({ categories: names }),
+      }),
+    onSuccess: () => {
+      setRetag(null);
+      setFailure(null);
+      void refresh();
+      void queryClient.invalidateQueries({ queryKey: ["incident-categories"] });
+      toast({ title: "Categories saved" });
+    },
+    onError: (e) => {
+      const detail = e instanceof Error ? e.message : String(e);
+      setFailure(detail);
+      toast({ title: "Could not save the categories", description: detail });
     },
   });
 
@@ -154,6 +206,31 @@ export default function IncidentsPage() {
       toast({ title: "Could not update", description: detail });
     },
   });
+
+  // The categories actually in use on what is on screen, rather than every
+  // category that exists. A filter row offering twelve chips where eleven
+  // return nothing is a row people learn to skip.
+  const inUse = useMemo(() => {
+    const seen = new Map<string, { name: string; tone: string; count: number }>();
+    for (const i of incidents) {
+      for (const c of i.categories ?? []) {
+        const at = seen.get(c.slug);
+        if (at) at.count++;
+        else seen.set(c.slug, { name: c.name, tone: c.tone, count: 1 });
+      }
+    }
+    return [...seen.entries()]
+      .map(([slug, v]) => ({ slug, ...v }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  }, [incidents]);
+
+  const shown = useMemo(
+    () =>
+      filter
+        ? incidents.filter((i) => (i.categories ?? []).some((c) => c.slug === filter))
+        : incidents,
+    [incidents, filter],
+  );
 
   const stats: Stat[] = useMemo(() => {
     const active = incidents.filter(isActive);
@@ -214,13 +291,45 @@ export default function IncidentsPage() {
         </p>
       ) : null}
 
+      {inUse.length ? (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => setFilter(null)}
+            className={cn(
+              "rounded border px-2 py-0.5 text-[11px] transition",
+              filter === null
+                ? "border-accent-blue/30 bg-accent-blue-soft text-accent-blue"
+                : "border-border text-muted hover:text-foreground",
+            )}
+          >
+            All {incidents.length}
+          </button>
+          {inUse.map((c) => (
+            <button
+              key={c.slug}
+              type="button"
+              onClick={() => setFilter(filter === c.slug ? null : c.slug)}
+              className={cn(
+                "rounded border px-2 py-0.5 text-[11px] transition",
+                filter === c.slug
+                  ? categoryClass(c.tone)
+                  : "border-border text-muted hover:text-foreground",
+              )}
+            >
+              {c.name} {c.count}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
       <motion.div
         variants={staggerContainer}
         initial="hidden"
         animate="show"
         className="flex flex-col gap-3"
       >
-        {incidents.map((incident) => {
+        {shown.map((incident) => {
           const s = SEVERITY[incident.severity];
           return (
             <motion.div key={incident.key} variants={fadeUp}>
@@ -254,6 +363,7 @@ export default function IncidentsPage() {
                       </span>
                       <span className="text-muted-foreground text-sm">{incident.impact}</span>
                     </div>
+                    <CategoryChips categories={incident.categories ?? []} />
                   </div>
                   <div className="flex shrink-0 flex-col items-end gap-1">
                     <span className="text-sm text-muted-foreground">
@@ -299,7 +409,7 @@ export default function IncidentsPage() {
             <Button
               className="flex-1"
               disabled={!form.title.trim() || declare.isPending}
-              onClick={() => declare.mutate(form)}
+              onClick={() => declare.mutate({ ...form, categories })}
             >
               {declare.isPending ? "Declaring…" : "Declare"}
             </Button>
@@ -330,6 +440,16 @@ export default function IncidentsPage() {
               <option value="low">SEV-4 Low — minor</option>
             </select>
           </label>
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium uppercase tracking-wider text-muted">
+              Category
+            </span>
+            {/* Optional on purpose. At 3am the declaration is what matters and
+                a required field is one more thing between a person and the
+                record; the category is how this gets found again next month,
+                which can also be added afterwards from the detail panel. */}
+            <CategoryPicker value={categories} onChange={setCategories} />
+          </div>
           <label className="flex flex-col gap-1.5">
             <span className="text-xs font-medium uppercase tracking-wider text-muted">Impact</span>
             <textarea
@@ -361,7 +481,9 @@ export default function IncidentsPage() {
               <Button
                 className="w-full"
                 disabled={declare.isPending || isDemoMode}
-                onClick={() => declare.mutate({ signature: selected.key })}
+                onClick={() =>
+                  declare.mutate({ signature: selected.key, categories })
+                }
               >
                 {declare.isPending ? "Declaring…" : "Declare this incident"}
               </Button>
@@ -529,6 +651,42 @@ export default function IncidentsPage() {
                 <dd className="tnum">{selected.openedAt}</dd>
               </div>
             </dl>
+
+            {/* Re-taggable after the fact, and that is the common case: what
+                kind of thing an incident was is often only clear once it is
+                over. A category chosen during the outage is a first guess. */}
+            {selected.source === "declared" ? (
+              <div className="flex flex-col gap-1.5">
+                <span className="text-xs font-medium uppercase tracking-wider text-muted">
+                  Category
+                </span>
+                <CategoryPicker
+                  value={retag ?? (selected.categories ?? []).map((c) => c.name)}
+                  onChange={setRetag}
+                  disabled={saveTags.isPending}
+                />
+                {retag ? (
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      disabled={saveTags.isPending}
+                      onClick={() =>
+                        saveTags.mutate({ key: selected.key, categories: retag })
+                      }
+                    >
+                      {saveTags.isPending ? "Saving…" : "Save categories"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => setRetag(null)}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
 
             {selected.source === "declared" ? (
               <label className="flex flex-col gap-1.5">

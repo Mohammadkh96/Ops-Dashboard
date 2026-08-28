@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 
@@ -24,6 +25,13 @@ import {
   type Detection,
   type DetectRow,
 } from './incident-detect';
+import {
+  categoryProblemMessage,
+  categorySlug,
+  checkCategoryName,
+  STARTER_CATEGORIES,
+  toneFor,
+} from './incident-categories';
 import { buildFunnel, buildJourneys } from './payment-journey';
 import { buildRecovery, type AttemptRow } from './retry-recovery';
 import { buildSuccessRate, type SuccessRow } from './success-rate';
@@ -38,6 +46,8 @@ import { buildSuccessRate, type SuccessRow } from './success-rate';
  */
 @Injectable()
 export class ModulesService {
+  private readonly log = new Logger(ModulesService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   private readonly clients = [
@@ -1609,6 +1619,9 @@ export class ModulesService {
     timeline: unknown;
     createdAt: Date;
     owner: { firstName: string; lastName: string } | null;
+    categories?: {
+      category: { id: string; name: string; slug: string; tone: string | null };
+    }[];
   }) {
     const timeline = Array.isArray(n.timeline)
       ? (n.timeline as { at?: string; text?: string; by?: string }[])
@@ -1645,6 +1658,15 @@ export class ModulesService {
       impact: n.impact ?? n.description,
       rootCause: n.rootCause ?? undefined,
       resolution: n.resolution ?? undefined,
+      // What kind of thing this is. Always an array, even when empty, so the
+      // page never has to distinguish "no categories" from "an older incident
+      // from before there were any".
+      categories: (n.categories ?? []).map((c) => ({
+        id: c.category.id,
+        name: c.category.name,
+        slug: c.category.slug,
+        tone: c.category.tone ?? toneFor(c.category.slug),
+      })),
       evidence: lines,
       // Captured when it was declared: the condition may be long over, and the
       // references are what the provider and the customers are asked about.
@@ -1662,7 +1684,7 @@ export class ModulesService {
     const declared = await this.safe(
       () =>
         this.prisma.incident.findMany({
-          include: { owner: true },
+          include: { owner: true, categories: { include: { category: true } } },
           orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
           take: 100,
         }),
@@ -1741,6 +1763,8 @@ export class ModulesService {
     severity?: string;
     impact?: string;
     signature?: string;
+    /** What kind of thing this is. Names, so one can be invented here. */
+    categories?: string[];
     by?: string;
   }) {
     const now = new Date();
@@ -1793,18 +1817,33 @@ export class ModulesService {
     // The same live condition declared twice is one incident, reopened — not a
     // second row competing with the first.
     try {
-      if (input.signature) {
-        return await this.prisma.incident.upsert({
-          where: { signature: input.signature },
-          create: { ...data, signature: input.signature },
-          update: { status: 'OPEN', resolvedAt: null },
-          include: { owner: true },
-        });
-      }
-      return await this.prisma.incident.create({
-        data,
-        include: { owner: true },
-      });
+      const incident = input.signature
+        ? await this.prisma.incident.upsert({
+            where: { signature: input.signature },
+            create: { ...data, signature: input.signature },
+            update: { status: 'OPEN', resolvedAt: null },
+            include: { owner: true },
+          })
+        : await this.prisma.incident.create({ data, include: { owner: true } });
+
+      // After the incident exists, and never in a way that can fail it. The
+      // declaration is the thing that matters at 3am; a tag is how it gets
+      // found again next month, and losing the first to save the second would
+      // be the wrong trade.
+      const categories = input.categories?.length
+        ? await this.tagIncident(incident.id, input.categories, input.by).catch(
+            (e: unknown) => {
+              this.log.warn(
+                `Incident ${incident.id} declared but not categorised: ${
+                  e instanceof Error ? e.message : String(e)
+                }`,
+              );
+              return [];
+            },
+          )
+        : [];
+
+      return { ...incident, categories };
     } catch (e) {
       // Never a bare 500: "Internal server error" on this button is
       // indistinguishable between a bug, a dropped connection, and an
@@ -1812,6 +1851,216 @@ export class ModulesService {
       // two-minute fix.
       throw dbError(e, 'Declaring the incident');
     }
+  }
+
+  // ── incident categories ───────────────────────────────────────────────
+
+  /**
+   * Puts the starter categories in, once, if the table has never had any.
+   *
+   * On the EMPTY table rather than on missing names, so a desk that has retired
+   * "CRM" does not find it back tomorrow — the seed is a starting point being
+   * offered, not a list being enforced. Once anything exists this does nothing
+   * at all.
+   *
+   * Here rather than in a deployment step because a categories picker that is
+   * blank on the first incident is a picker nobody uses: they type a free-text
+   * name under pressure, and the vocabulary is inconsistent from the first day.
+   */
+  private async seedStarterCategories() {
+    const count = await this.safe(
+      () => this.prisma.incidentCategory.count(),
+      -1,
+    );
+    // -1 means the query failed — an unapplied migration, most likely. Seeding
+    // into that would turn a clear error into a confusing one.
+    if (count !== 0) return;
+
+    await this.safe(
+      () =>
+        this.prisma.incidentCategory.createMany({
+          data: STARTER_CATEGORIES.map((name) => ({
+            name,
+            slug: categorySlug(name),
+            tone: toneFor(categorySlug(name)),
+          })),
+          // Two requests arriving together on a cold start both see an empty
+          // table; the second must not fail the read it was called from.
+          skipDuplicates: true,
+        }),
+      null,
+    );
+    this.log.log(
+      `Seeded ${STARTER_CATEGORIES.length} starter incident categories.`,
+    );
+  }
+
+  /**
+   * The categories on offer, most-used first.
+   *
+   * Ordered by how often they have actually been used rather than
+   * alphabetically, so the four a desk really files against rise to the top of
+   * the picker and the long tail sinks. An alphabetical list puts "CRM" above
+   * "PSP outage" forever, however lopsided the real traffic is.
+   */
+  async incidentCategories(includeRetired = false) {
+    await this.seedStarterCategories();
+    const rows = await this.safe(
+      () =>
+        this.prisma.incidentCategory.findMany({
+          where: includeRetired ? {} : { active: true },
+          include: { _count: { select: { incidents: true } } },
+        }),
+      [],
+    );
+    return rows
+      .map((c) => ({
+        id: c.id,
+        name: c.name,
+        slug: c.slug,
+        tone: c.tone ?? toneFor(c.slug),
+        active: c.active,
+        createdBy: c.createdBy,
+        uses: c._count.incidents,
+      }))
+      .sort((a, b) => b.uses - a.uses || a.name.localeCompare(b.name));
+  }
+
+  /**
+   * Adds a category, or hands back the one that already means this.
+   *
+   * Returning the existing row rather than refusing is the whole point: this is
+   * called from a picker mid-incident, where somebody types "psp outage"
+   * without looking at the list. An error there makes them retype; a match
+   * makes them right.
+   */
+  async createIncidentCategory(input: { name?: string; by?: string }) {
+    const checked = checkCategoryName(input.name ?? '');
+    if (!checked.ok) {
+      throw new BadRequestException(categoryProblemMessage(checked.why));
+    }
+    const { name, slug } = checked;
+
+    const existing = await this.safe(
+      () => this.prisma.incidentCategory.findUnique({ where: { slug } }),
+      null,
+    );
+    if (existing) {
+      // A retired category being typed again is somebody saying it is relevant
+      // after all. Bringing it back keeps its history attached, where a new row
+      // would split one category's incidents across two.
+      if (!existing.active) {
+        await this.safe(
+          () =>
+            this.prisma.incidentCategory.update({
+              where: { id: existing.id },
+              data: { active: true },
+            }),
+          null,
+        );
+      }
+      return { ...existing, active: true, reused: true };
+    }
+
+    try {
+      const created = await this.prisma.incidentCategory.create({
+        data: { name, slug, tone: toneFor(slug), createdBy: input.by ?? null },
+      });
+      return { ...created, reused: false };
+    } catch (e) {
+      throw dbError(e, 'Adding the category');
+    }
+  }
+
+  /**
+   * Retires a category, or brings it back.
+   *
+   * Never a delete. Anything already filed under it would silently lose a tag,
+   * and an incident review a month later would be reading a rewritten past.
+   */
+  async setIncidentCategoryActive(id: string, active: boolean) {
+    const found = await this.safeOrThrow(
+      () => this.prisma.incidentCategory.findUnique({ where: { id } }),
+      'Reading the category',
+    );
+    if (!found) throw new NotFoundException('category not found');
+    return this.safeOrThrow(
+      () =>
+        this.prisma.incidentCategory.update({
+          where: { id },
+          data: { active },
+        }),
+      active ? 'Restoring the category' : 'Retiring the category',
+    );
+  }
+
+  /**
+   * Sets the categories on an incident to exactly this list.
+   *
+   * Names, not ids: the picker lets somebody type one that does not exist yet,
+   * and making the client create it first would leave a category behind every
+   * time the declaration that prompted it was abandoned.
+   */
+  async tagIncident(
+    incidentId: string,
+    names: string[],
+    by?: string,
+  ): Promise<{ id: string; name: string; slug: string; tone: string }[]> {
+    const wanted = new Map<string, string>();
+    for (const raw of names ?? []) {
+      const checked = checkCategoryName(String(raw ?? ''));
+      // Silently skipped rather than refused: this runs inside declaring an
+      // incident, and failing the whole declaration over a stray blank chip
+      // would lose the thing that actually matters.
+      if (checked.ok) wanted.set(checked.slug, checked.name);
+    }
+
+    const categories: {
+      id: string;
+      name: string;
+      slug: string;
+      tone: string | null;
+    }[] = [];
+    for (const [slug, name] of wanted) {
+      const existing = await this.prisma.incidentCategory.findUnique({
+        where: { slug },
+      });
+      categories.push(
+        existing?.active
+          ? existing
+          : await this.prisma.incidentCategory.upsert({
+              where: { slug },
+              create: {
+                name,
+                slug,
+                tone: toneFor(slug),
+                createdBy: by ?? null,
+              },
+              update: { active: true },
+            }),
+      );
+    }
+
+    const keep = new Set(categories.map((c) => c.id));
+    await this.prisma.incidentCategoryOnIncident.deleteMany({
+      where: { incidentId, categoryId: { notIn: [...keep] } },
+    });
+    for (const c of categories) {
+      await this.prisma.incidentCategoryOnIncident.upsert({
+        where: { incidentId_categoryId: { incidentId, categoryId: c.id } },
+        create: { incidentId, categoryId: c.id, taggedBy: by ?? null },
+        // Left alone on a re-tag, so taggedBy stays the person who first put it
+        // there rather than whoever last pressed Save.
+        update: {},
+      });
+    }
+
+    return categories.map((c) => ({
+      id: c.id,
+      name: c.name,
+      slug: c.slug,
+      tone: c.tone ?? toneFor(c.slug),
+    }));
   }
 
   /** Moves an incident on, and records that it moved. */

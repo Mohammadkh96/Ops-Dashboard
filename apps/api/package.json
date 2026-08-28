@@ -10,6 +10,7 @@
     "postinstall": "prisma generate",
     "build": "nest build",
     "check:incidents": "tsx scripts/check-incident-detect.ts",
+    "check:categories": "tsx scripts/check-incident-categories.ts",
     "check:handover": "tsx scripts/check-handover-email.ts",
     "check:funnel": "tsx scripts/check-payment-journey.ts",
     "check:recovery": "tsx scripts/check-retry-recovery.ts",
