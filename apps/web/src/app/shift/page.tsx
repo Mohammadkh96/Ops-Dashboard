@@ -86,7 +86,13 @@ export default function ShiftPage() {
   const shift = active.data?.shift ?? null;
   const joined = active.data?.joined ?? false;
 
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["shift-active"] });
+  // Both, always. Ending a shift changes which one is "the last that closed",
+  // so a stale shift-previous would show the next agent the handover from two
+  // shifts ago — the one thing this whole flow exists to prevent.
+  const invalidate = async () => {
+    await queryClient.invalidateQueries({ queryKey: ["shift-active"] });
+    await queryClient.invalidateQueries({ queryKey: ["shift-previous"] });
+  };
 
   const join = useMutation({
     mutationFn: () => apiFetch<ActiveShift>("/shifts/join", { method: "POST" }),
@@ -302,6 +308,24 @@ export default function ShiftPage() {
                   {shift.startNotes}
                 </p>
               ) : null}
+              {/* The read receipt the email could never give you. Stated on the
+                  desk rather than buried in a record, so it is a fact anybody
+                  can check now — not a question a manager thinks to ask after
+                  something has already been missed. */}
+              {shift.readHandoverOf ? (
+                <button
+                  type="button"
+                  onClick={() => setReading(shift.readHandoverOf)}
+                  className="flex items-center gap-1.5 self-start text-[11px] text-accent-green hover:underline"
+                >
+                  <Mail className="size-3" />
+                  Previous handover read at {shift.handoverReadAtLocal ?? "takeover"}
+                </button>
+              ) : (
+                <span className="self-start text-[11px] text-muted">
+                  No previous handover was read at takeover.
+                </span>
+              )}
               {!joined ? (
                 <p className="rounded-lg border border-accent-orange/25 bg-accent-orange-soft px-3 py-2 text-xs text-accent-orange">
                   You are watching this shift, not on it. Join before you tick

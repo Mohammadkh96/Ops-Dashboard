@@ -150,6 +150,81 @@ export class ShiftsService {
     };
   }
 
+  /**
+   * The shift this one is taking over from — the last one that closed.
+   *
+   * Read at Start shift so the incoming agent sees the outgoing agent's
+   * handover before they are on the desk, rather than in an inbox afterwards.
+   * The summary here is only enough to set expectations before the document
+   * loads; the document itself comes from GET /shifts/:id/handover, which is
+   * the same HTML the email carries.
+   *
+   * Null on the first shift of all — and null is a fine answer. It is also
+   * null while a shift is open, because there is no taking over to do.
+   */
+  async previous() {
+    const shift = await this.prisma.shift.findFirst({
+      where: { status: 'ENDED' },
+      // endedAt first: shifts are handed over in the order they CLOSE, and a
+      // long shift opened before a short one can close after it.
+      orderBy: [{ endedAt: 'desc' }, { startedAt: 'desc' }],
+      include: {
+        user: { select: { firstName: true, lastName: true } },
+        tasks: { select: { status: true } },
+      },
+    });
+    if (!shift) return { shift: null };
+
+    const openTasks = shift.tasks.filter((t) => t.status !== 'Done').length;
+    const tickets = Array.isArray(shift.tickets) ? shift.tickets.length : 0;
+    return {
+      shift: {
+        id: shift.id,
+        name: shift.name,
+        opsDay: shift.opsDay,
+        slot: shift.slot,
+        endedAt: shift.endedAt ? shift.endedAt.toISOString() : null,
+        endedAtLocal: shift.endedAt ? deskTime(shift.endedAt) : null,
+        endedBy:
+          (await this.nameOf(shift.endedBy)) ??
+          (shift.user
+            ? `${shift.user.firstName} ${shift.user.lastName}`.trim()
+            : null),
+        handoverTo: shift.handoverTo,
+        // What the reader is about to find, said before the document loads —
+        // "nothing outstanding" and "four tasks still open" are very different
+        // shifts to be walking into.
+        hasNotes: Boolean((shift.notes ?? '').trim()),
+        openTasks,
+        tickets,
+      },
+    };
+  }
+
+  /**
+   * A person's name, given whatever `endedBy` happens to hold.
+   *
+   * It stores the email of whoever pressed End. That is the right thing to
+   * store — an address identifies somebody after they have been renamed, and
+   * after they have left — but it is the wrong thing to SHOW. "Morning shift
+   * closed by mohammad@tradin.com" is how a person becomes a login, and the
+   * "taking over from" list is by name, so an address there also matches
+   * nobody and the suggestion silently never appears.
+   *
+   * An address that belongs to no account is returned as it is, rather than
+   * dropped: an unfamiliar address is still more use than a blank.
+   */
+  private async nameOf(who: string | null): Promise<string | null> {
+    const value = (who ?? '').trim();
+    if (!value || !value.includes('@')) return value || null;
+    const user = await this.prisma.user.findUnique({
+      where: { email: value.toLowerCase() },
+      select: { firstName: true, lastName: true },
+    });
+    const name = user ? `${user.firstName} ${user.lastName}`.trim() : '';
+    return name || value;
+  }
+
   private shiftView(shift: {
     id: string;
     name: string;
@@ -162,6 +237,8 @@ export class ShiftsService {
     handoverTo: string | null;
     startBalances: unknown;
     startNotes: string | null;
+    readHandoverOf?: string | null;
+    handoverReadAt?: Date | null;
     notes: string | null;
     kyc: unknown;
     tickets: unknown;
@@ -191,6 +268,20 @@ export class ShiftsService {
       handoverTo: shift.handoverTo,
       startBalances: shift.startBalances ?? null,
       startNotes: shift.startNotes,
+      // Whether whoever opened this shift read the one before it. Shown on the
+      // desk, so it is a fact anybody can check rather than a question only a
+      // manager thinks to ask after something is missed.
+      readHandoverOf: shift.readHandoverOf ?? null,
+      handoverReadAt: shift.handoverReadAt
+        ? shift.handoverReadAt.toISOString()
+        : null,
+      // In the desk's timezone, like startedAtLocal beside it. Left to the
+      // browser it is whatever that machine is set to — which put "read at
+      // 06:56" directly under "Started 09:56" for the same three minutes of
+      // the same shift, on a card whose whole job is to be checkable.
+      handoverReadAtLocal: shift.handoverReadAt
+        ? deskTime(shift.handoverReadAt)
+        : null,
       notes: shift.notes,
       kyc: shift.kyc ?? null,
       tickets: shift.tickets ?? [],
@@ -220,6 +311,8 @@ export class ShiftsService {
       takenOverFrom?: string;
       balances?: Record<string, number>;
       startNotes?: string;
+      /** The id of the handover the opener says they have just read. */
+      readHandoverOf?: string;
     },
   ) {
     const open = await this.prisma.shift.findFirst({
@@ -232,6 +325,19 @@ export class ShiftsService {
     }
 
     const name = (body.name ?? '').trim() || suggestShiftName(new Date());
+
+    // The acknowledgement is only recorded if it is true. The client sends the
+    // id of what it showed, and that has to be the shift this one is actually
+    // taking over from — otherwise a stale tab, a replayed request or a
+    // hand-written one could log "handover read" against a shift nobody opened.
+    // A read receipt that can be claimed without reading is worth less than
+    // nothing, because people would rely on it.
+    const previous = await this.previous();
+    const readHandoverOf =
+      body.readHandoverOf && body.readHandoverOf === previous.shift?.id
+        ? body.readHandoverOf
+        : null;
+
     const templates = await this.prisma.taskTemplate.findMany({
       where: {
         active: true,
@@ -247,6 +353,8 @@ export class ShiftsService {
         takenOverFrom: (body.takenOverFrom ?? '').trim() || null,
         startBalances: body.balances ? asJson(body.balances) : Prisma.DbNull,
         startNotes: (body.startNotes ?? '').trim() || null,
+        readHandoverOf,
+        handoverReadAt: readHandoverOf ? new Date() : null,
         participants: { create: { userId: actor.userId } },
         tasks: {
           create: templates.map((t) => ({

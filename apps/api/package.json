@@ -17,6 +17,7 @@
     "check:google": "tsx scripts/check-google-claims.ts",
     "check:gmail": "tsx scripts/check-gmail.ts",
     "check:googleflow": "npm run build && node scripts/check-google-flow.mjs",
+    "check:handoverread": "npm run build && node scripts/check-handover-read.mjs",
     "check:import": "tsx scripts/check-import-export.ts",
     "check:overview": "tsx scripts/check-success-rate.ts",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",

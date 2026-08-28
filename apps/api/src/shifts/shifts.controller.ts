@@ -48,6 +48,17 @@ export class ShiftsController {
     return this.shifts.active(actorOf(req));
   }
 
+  /**
+   * The last shift that closed — the one this desk is taking over from.
+   *
+   * Read at Start shift, so the incoming agent meets the outgoing agent's
+   * handover before they are on the desk rather than in an inbox afterwards.
+   */
+  @Get('previous')
+  previous() {
+    return this.shifts.previous();
+  }
+
   @Post('start')
   start(
     @Req() req: Req,
@@ -57,6 +68,7 @@ export class ShiftsController {
       takenOverFrom?: string;
       balances?: Record<string, number>;
       startNotes?: string;
+      readHandoverOf?: string;
     },
   ) {
     return this.shifts.start(actorOf(req), body ?? {});

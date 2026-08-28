@@ -27,6 +27,11 @@ export type Shift = {
   handoverTo: string | null;
   startBalances: Record<string, number> | null;
   startNotes: string | null;
+  /** The handover this shift's opener read before starting, and when. */
+  readHandoverOf: string | null;
+  handoverReadAt: string | null;
+  /** The same instant in the desk's timezone, like startedAtLocal. */
+  handoverReadAtLocal: string | null;
   notes: string | null;
   kyc: unknown;
   tickets: ShiftTicket[];
@@ -40,6 +45,30 @@ export type ActiveShift = {
   shift: Shift | null;
   joined: boolean;
   suggestedName: string;
+};
+
+/**
+ * The shift this desk is taking over from — the last one that closed.
+ *
+ * Enough to set expectations before the handover document loads: "nothing
+ * outstanding" and "four tasks still open" are very different shifts to be
+ * walking into, and the reader should know which one it is before they start
+ * reading. Null on the first shift of all.
+ */
+export type PreviousShift = {
+  shift: {
+    id: string;
+    name: string;
+    opsDay: string | null;
+    slot: number | null;
+    endedAt: string | null;
+    endedAtLocal: string | null;
+    endedBy: string | null;
+    handoverTo: string | null;
+    hasNotes: boolean;
+    openTasks: number;
+    tickets: number;
+  } | null;
 };
 
 /** A support ticket the next shift needs to know about. */

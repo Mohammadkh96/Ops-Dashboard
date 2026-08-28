@@ -171,6 +171,19 @@ model Shift {
   startBalances Json?
   startNotes    String?
 
+  /// The handover this shift's opener read before starting, and when.
+  ///
+  /// The email has no read receipt: it goes out and nobody knows whether the
+  /// incoming agent opened it. Showing the previous handover at Start shift
+  /// does, and this is where that fact lives — so "was the night shift told
+  /// about the PSP outage?" has an answer rather than an assumption.
+  ///
+  /// Null means it was not read, which happens honestly: the first shift of
+  /// all, or a handover the dashboard could not build at that moment. Never
+  /// backfilled, because a guess here is worse than a gap.
+  readHandoverOf String?
+  handoverReadAt DateTime?
+
   /// Closing KYC/onboarding snapshot per entity, as the desk records it.
   kyc       Json?
   /// Support tickets the next shift needs to know about. Carried in the

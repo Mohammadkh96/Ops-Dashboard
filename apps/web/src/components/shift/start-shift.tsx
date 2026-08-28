@@ -5,7 +5,14 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import { apiFetch } from "@/lib/api";
-import { SHIFT_NAMES, type ActiveShift, type Shift, type TeamMember } from "./types";
+import { HandoverView, useHandover } from "./handover-view";
+import {
+  SHIFT_NAMES,
+  type ActiveShift,
+  type PreviousShift,
+  type Shift,
+  type TeamMember,
+} from "./types";
 
 const field =
   "w-full rounded-md border border-border bg-surface px-3 py-2 text-sm outline-none focus:border-accent-blue";
@@ -27,11 +34,24 @@ export function StartShiftForm({ onDone }: { onDone: () => void }) {
   const [startNotes, setStartNotes] = useState("");
   const [balances, setBalances] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
+  // Whether the outgoing agent's handover has been read. Starts false and is
+  // only ever set by the button under the document — see the note on the
+  // handover step below for why it is not simply skipped.
+  const [acknowledged, setAcknowledged] = useState(false);
 
   const active = useQuery({
     queryKey: ["shift-active"],
     queryFn: () => apiFetch<ActiveShift>("/shifts/active"),
   });
+  const previous = useQuery({
+    queryKey: ["shift-previous"],
+    queryFn: () => apiFetch<PreviousShift>("/shifts/previous"),
+  });
+  const prev = previous.data?.shift ?? null;
+  // The same request HandoverView makes, deduped by react-query. Asked here
+  // only so the button can say something true: a document that failed to build
+  // must not be acknowledged as read.
+  const handover = useHandover(prev?.id ?? null);
   const team = useQuery({
     queryKey: ["shift-team"],
     queryFn: () => apiFetch<TeamMember[]>("/shifts/team"),
@@ -49,6 +69,16 @@ export function StartShiftForm({ onDone }: { onDone: () => void }) {
   const suggested = active.data?.suggestedName ?? "";
   const chosen = name || suggested;
 
+  // Whoever closed the last shift is who this one is taking over from. Offered
+  // rather than imposed, and only when it matches somebody on the team — the
+  // same shape as the shift name above, which is suggested by the clock and
+  // overridable because the clock is not always right about what this is.
+  const suggestedFrom =
+    prev?.endedBy && (team.data ?? []).some((m) => m.name === prev.endedBy)
+      ? prev.endedBy
+      : "";
+  const from = takenOverFrom || suggestedFrom;
+
   const pspNames = Array.from(
     new Set(
       (psps.data?.terminals ?? [])
@@ -63,8 +93,12 @@ export function StartShiftForm({ onDone }: { onDone: () => void }) {
         method: "POST",
         body: JSON.stringify({
           name: chosen,
-          takenOverFrom: takenOverFrom.trim() || undefined,
+          takenOverFrom: from.trim() || undefined,
           startNotes: startNotes.trim() || undefined,
+          // Only when it is true. The server checks it against the shift that
+          // actually closed last and drops it otherwise, so this is a claim
+          // being made rather than a fact being asserted.
+          readHandoverOf: acknowledged && prev ? prev.id : undefined,
           balances: Object.fromEntries(
             Object.entries(balances)
               .map(([k, v]) => [k, Number(v)] as const)
@@ -76,8 +110,85 @@ export function StartShiftForm({ onDone }: { onDone: () => void }) {
     onError: (e: unknown) => setError(e instanceof Error ? e.message : String(e)),
   });
 
+  // ── step one: read what you are walking into ────────────────────────────
+  //
+  // The handover used to go out only by email, which nobody can prove was read
+  // — and the person who most needs it is the one just sitting down, before
+  // they have opened an inbox. Putting it here makes reading it part of
+  // starting, and records that it happened.
+  //
+  // Not blocking when there is nothing to read (the first shift of all) and not
+  // blocking when the document cannot be built: somebody has to take the desk
+  // either way, and a dashboard that will not let them is a dashboard they work
+  // around. What it will not do is record a read that did not happen.
+  if (previous.isLoading) {
+    return (
+      <p className="py-8 text-center text-sm text-muted">
+        Looking for the last handover…
+      </p>
+    );
+  }
+
+  if (prev && !acknowledged) {
+    const broken = handover.isError;
+    return (
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-1">
+          <span className="text-sm font-medium">
+            {prev.name} shift closed
+            {prev.endedAtLocal ? ` at ${prev.endedAtLocal}` : ""}
+            {prev.endedBy ? ` by ${prev.endedBy}` : ""}
+          </span>
+          <span className="text-xs text-muted">
+            {carriedForward(prev)}
+          </span>
+        </div>
+
+        {broken ? (
+          <p className="rounded-lg border border-accent-orange/25 bg-accent-orange-soft px-3 py-2 text-xs text-accent-orange">
+            The handover could not be built just now: {String(handover.error)}.
+            You can still take the desk — it will be recorded as not read, which
+            is the truth, and it stays readable from the shift history.
+          </p>
+        ) : (
+          <HandoverView shiftId={prev.id} height="64vh" />
+        )}
+
+        <div className="flex flex-wrap gap-2">
+          {broken ? (
+            <Button variant="secondary" onClick={() => start.mutate()}>
+              Take the desk without it
+            </Button>
+          ) : (
+            <Button
+              onClick={() => setAcknowledged(true)}
+              disabled={!handover.data}
+            >
+              {handover.data ? "I've read this — continue" : "Loading…"}
+            </Button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-5">
+      {prev && acknowledged ? (
+        <div className="flex items-center justify-between gap-2 rounded-lg border border-accent-green/25 bg-accent-green-soft px-3 py-2 text-xs text-accent-green">
+          <span>
+            {prev.name} handover read{prev.endedBy ? ` — from ${prev.endedBy}` : ""}.
+          </span>
+          <button
+            type="button"
+            onClick={() => setAcknowledged(false)}
+            className="underline underline-offset-2"
+          >
+            Read it again
+          </button>
+        </div>
+      ) : null}
+
       <div className="flex flex-col gap-1.5">
         <span className={label}>Which shift</span>
         <div className="flex flex-wrap gap-2">
@@ -106,7 +217,7 @@ export function StartShiftForm({ onDone }: { onDone: () => void }) {
       <label className="flex flex-col gap-1.5">
         <span className={label}>Taking over from</span>
         <select
-          value={takenOverFrom}
+          value={from}
           onChange={(e) => setTakenOverFrom(e.target.value)}
           className={field}
         >
@@ -117,6 +228,12 @@ export function StartShiftForm({ onDone }: { onDone: () => void }) {
             </option>
           ))}
         </select>
+        {suggestedFrom && !takenOverFrom ? (
+          <span className="text-[11px] text-muted">
+            {suggestedFrom} closed the last shift — change it if somebody else
+            actually handed over to you.
+          </span>
+        ) : null}
       </label>
 
       {pspNames.length ? (
@@ -171,6 +288,25 @@ export function StartShiftForm({ onDone }: { onDone: () => void }) {
       </Button>
     </div>
   );
+}
+
+/**
+ * What the last shift is leaving behind, in one line.
+ *
+ * Said before the document loads, because "nothing outstanding" and "4 tasks
+ * still open" are very different shifts to be walking into and the reader
+ * should know which one this is before they start reading.
+ */
+function carriedForward(prev: NonNullable<PreviousShift["shift"]>): string {
+  const parts: string[] = [];
+  if (prev.openTasks)
+    parts.push(`${prev.openTasks} task${prev.openTasks === 1 ? "" : "s"} still open`);
+  if (prev.tickets)
+    parts.push(`${prev.tickets} ticket${prev.tickets === 1 ? "" : "s"} carried over`);
+  if (prev.hasNotes) parts.push("notes for you");
+  return parts.length
+    ? `Carrying forward: ${parts.join(", ")}.`
+    : "Nothing flagged as outstanding — read it anyway, that is the point.";
 }
 
 /** Exported for the end-of-shift form, which shows the opening balances back. */
