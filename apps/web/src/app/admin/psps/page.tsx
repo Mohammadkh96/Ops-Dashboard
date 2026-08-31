@@ -296,6 +296,9 @@ function PspForm({
   const [accountField, setAccountField] = useState(
     balance.fields?.account ?? "",
   );
+  // Written the way a URL writes them, because that is how provider
+  // documentation shows them: "user=f854cc1d-…&locale=en".
+  const [query, setQuery] = useState(queryToText(balance.query));
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<TestResult | null>(null);
 
@@ -318,6 +321,7 @@ function PspForm({
           currency: currencyField.trim() || undefined,
           account: accountField.trim() || undefined,
         },
+        query: textToQuery(query),
       },
     },
   });
@@ -486,6 +490,17 @@ function PspForm({
             className={field}
           />
         </div>
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Query parameters, e.g. user=f854cc1d-4715-4380"
+          className={field}
+        />
+        <span className="text-[11px] text-muted">
+          Query parameters go in the last box, written as they appear in a URL —{" "}
+          <code className="font-mono">a=1&amp;b=2</code>. Several providers use
+          one to pick which account or brand to report on.
+        </span>
         <span className="text-[11px] text-muted">
           Not sure of the paths? Press “Save and test” and read the response
           below — it shows exactly what the provider sent.
@@ -576,6 +591,34 @@ function PspForm({
       </div>
     </div>
   );
+}
+
+/**
+ * Query parameters, as a URL writes them.
+ *
+ * `user=abc&locale=en` rather than a key/value table, because that is the form
+ * every provider's documentation prints them in — copying is then transcription
+ * rather than translation, and there is one fewer thing to get subtly wrong.
+ */
+function textToQuery(text: string): Record<string, string> | undefined {
+  const out: Record<string, string> = {};
+  for (const pair of text.replace(/^[?&]+/, "").split("&")) {
+    if (!pair.trim()) continue;
+    const i = pair.indexOf("=");
+    // A name with no value is dropped, not sent empty: "?user=" means
+    // something different to some providers than sending nothing at all.
+    if (i <= 0) continue;
+    const name = pair.slice(0, i).trim();
+    const value = pair.slice(i + 1).trim();
+    if (name && value) out[name] = value;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+function queryToText(query?: Record<string, string>): string {
+  return Object.entries(query ?? {})
+    .map(([k, v]) => `${k}=${v}`)
+    .join("&");
 }
 
 /**
