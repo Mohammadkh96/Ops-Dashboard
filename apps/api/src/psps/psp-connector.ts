@@ -222,6 +222,33 @@ export function describeStatus(status: number): string {
   }
 }
 
+/**
+ * An error a provider reported inside a 200.
+ *
+ * Not every provider uses HTTP status codes to say no. ForumPay answers a
+ * refused call with `200 OK` and `{"err":"Permission denied!"}`, and there are
+ * others. Without this the call counts as a success that happened to contain no
+ * balances, and the screen says "check your field paths" — sending somebody to
+ * re-read JSON paths that were right all along, while the provider's own
+ * explanation sits unread in the response.
+ *
+ * Deliberately narrow: only an object (a records array is never this), only
+ * these two keys, only a non-empty string. A record that happens to have an
+ * `error` column must not take a whole reading down.
+ */
+export function providerError(body: unknown): string | null {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+  const o = body as Record<string, unknown>;
+  for (const k of ['err', 'error']) {
+    const v = o[k];
+    if (typeof v === 'string' && v.trim()) {
+      const code = typeof o.err_code === 'string' ? ` (${o.err_code})` : '';
+      return `${v.trim()}${code}`;
+    }
+  }
+  return null;
+}
+
 /** Follows a dotted path into a parsed response. */
 export function at(value: unknown, path?: string): unknown {
   if (!path) return value;

@@ -16,6 +16,7 @@ import {
 import {
   AUTH_MODES,
   callPsp,
+  providerError,
   readBalances,
   type AuthMode,
   type EndpointConfig,
@@ -301,6 +302,23 @@ export class PspsService {
 
     const result = await callPsp(conn, endpoint, creds);
     const now = new Date();
+
+    // A provider that says no inside a 200 is still saying no, and its own
+    // words beat anything we would infer from an empty result.
+    const stated = result.ok ? providerError(result.body) : null;
+    if (stated) {
+      await this.prisma.pspConnection.update({
+        where: { id },
+        data: { lastTriedAt: now, lastError: stated.slice(0, 500) },
+      });
+      return {
+        ok: false as const,
+        status: result.status,
+        error: `The provider answered, but refused: ${stated}`,
+        ms: result.ms,
+        body: preview(result.body),
+      };
+    }
 
     if (!result.ok) {
       await this.prisma.pspConnection.update({

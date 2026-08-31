@@ -19,6 +19,7 @@ import {
 import {
   at,
   describeStatus,
+  providerError,
   readBalances,
   type EndpointConfig,
 } from '../src/psps/psp-connector';
@@ -265,6 +266,52 @@ section('errors a person can act on');
   ok('404 points at the URL', /base URL|path/i.test(describeStatus(404)));
   ok('429 says rate limited', /rate limit/i.test(describeStatus(429)));
   ok('5xx says it is probably theirs', /theirs/i.test(describeStatus(502)));
+}
+
+section('ForumPay, against its published API manual');
+{
+  // GET /GetBalance/ — HTTP Basic, and the response IS the array, with no
+  // wrapper object. Taken from the OpenAPI document, not guessed.
+  const endpoint: EndpointConfig = {
+    path: '/GetBalance/',
+    recordsPath: '',
+    fields: { amount: 'balance', currency: 'currency', account: 'address' },
+  };
+  const body = [
+    {
+      address: '38wGZr2xLgbHWsYrsNCER1C9mZkNHwyd69',
+      currency: 'BTC',
+      balance: '0.21164052',
+    },
+    { address: '0xab12', currency: 'USDT', balance: '15320.44' },
+  ];
+  const rows = readBalances(body, endpoint);
+  ok('a bare array needs no records path', rows.length === 2, rows);
+  // Amounts arrive as strings, and BTC has eight decimal places — a reading
+  // that rounds is a reading that is wrong.
+  ok('the string amount parses exactly', rows[0].amount === 0.21164052, rows[0]);
+  ok('the currency comes through', rows[0].currency === 'BTC');
+  ok('the wallet address is the account', rows[1].account === '0xab12');
+
+  // ForumPay refuses inside a 200. Without this the call looks like a success
+  // with no balances, and the screen blames the field paths.
+  const refused = providerError({
+    err: 'Permission denied!',
+    err_code: 'actionNotAllowed',
+  });
+  ok('a refusal inside a 200 is found', refused !== null, refused);
+  ok('and carries the provider’s own words', /Permission denied/.test(refused ?? ''));
+  ok('and its code', /actionNotAllowed/.test(refused ?? ''));
+}
+
+section('what is not a provider error');
+{
+  ok('a successful array is not', providerError([{ balance: '1' }]) === null);
+  ok('a plain object is not', providerError({ balances: [] }) === null);
+  // A row with an `error` COLUMN must not take a whole reading down.
+  ok('an empty string is not', providerError({ err: '   ' }) === null);
+  ok('a non-string is not', providerError({ error: 0 }) === null);
+  ok('nothing at all is not', providerError(null) === null);
 }
 
 console.log(
