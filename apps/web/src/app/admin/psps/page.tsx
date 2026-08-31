@@ -415,6 +415,17 @@ function PspForm({
           placeholder="/v1/balances"
           className={field}
         />
+        {/* Pasting the base URL again here is the obvious mistake — the field
+            above wanted a URL, so this one looks like it does too. It gets
+            joined onto the base, and the resulting nonsense fails as an
+            unparseable URL rather than as the plain error it is. */}
+        {/^https?:\/\//i.test(path.trim()) ? (
+          <span className="text-[11px] text-accent-orange">
+            This is joined onto the base URL, so it wants only the path —{" "}
+            <code className="font-mono">/v1/balances</code>, not the whole
+            address again.
+          </span>
+        ) : null}
         <div className="grid grid-cols-2 gap-2">
           <input
             value={recordsPath}

@@ -204,7 +204,19 @@ export class PspsService {
     if (input.authName !== undefined) {
       data.authName = input.authName.trim() || null;
     }
-    if (input.endpoints !== undefined) data.endpoints = input.endpoints;
+    if (input.endpoints !== undefined) {
+      // A whole URL here gets concatenated onto the base and fails later as
+      // "not a valid URL", which reads like a broken base URL rather than the
+      // one wrong field it is.
+      for (const [name, ep] of Object.entries(input.endpoints)) {
+        if (/^https?:\/\//i.test((ep?.path ?? '').trim())) {
+          throw new BadRequestException(
+            `The ${name} endpoint wants only the path, not a full address — "/v1/balances", not "${ep.path}". It is joined onto the base URL.`,
+          );
+        }
+      }
+      data.endpoints = input.endpoints;
+    }
     if (input.enabled !== undefined) data.enabled = input.enabled;
 
     if (input.apiKey !== undefined) {
