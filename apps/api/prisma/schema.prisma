@@ -658,3 +658,69 @@ model AuditLog {
   @@index([userId])
   @@index([createdAt])
 }
+
+/// A payment provider this dashboard talks to directly.
+///
+/// Deliberately CONFIGURATION rather than one class per provider. Seven
+/// providers arrived at once and more will follow; a bespoke connector each
+/// means a deploy to add the eighth, and the "Add PSP" button exists precisely
+/// so that adding one is a form rather than a release.
+///
+/// Everything a request needs is a field here — base URL, how it authenticates,
+/// which path to call, where in the response the numbers are. A new provider
+/// that speaks JSON over HTTPS needs no code at all.
+model PspConnection {
+  id       String @id @default(cuid())
+  /// The terminal name as Paymaxis reports it — "Paystrax_Tradin SL". Kept
+  /// exactly, because it is what joins this row to the payment data already in
+  /// the database, and a tidied-up version would join to nothing.
+  terminal String @unique
+  /// The provider behind it: paystrax, forumpay, aps… Several terminals share
+  /// one provider, and therefore one set of endpoint shapes.
+  provider String
+  /// What a person calls it on screen.
+  label    String
+
+  /// Where the API lives, e.g. https://api.provider.com
+  baseUrl  String?
+  /// bearer | header | basic | query — how the credential is presented.
+  authMode String  @default("bearer")
+  /// For header/query modes: which header or parameter carries the key.
+  authName String?
+
+  /// AES-256-GCM, key from CREDENTIALS_KEY. Never returned by any endpoint.
+  /// See common/secret-box.ts for why this is not plaintext and what that does
+  /// and does not protect against.
+  apiKeyEnc    String?
+  apiSecretEnc String?
+  /// The last four characters of the key, so somebody who has just pasted one
+  /// can confirm the right one landed. Not a general-purpose mask.
+  keyHint      String?
+
+  /// Per-capability request shapes: { balance: { path, recordsPath, fields } }.
+  /// JSON because the shape differs per provider and per capability, and a
+  /// column per field would be a migration every time a provider is added.
+  endpoints Json @default("{}")
+
+  /// Off until somebody has filled it in and tested it. A connection that has
+  /// never returned anything must not be polled on a schedule, and must not be
+  /// reported as working.
+  enabled Boolean @default(false)
+
+  /// What the last test or poll did. Reported on the PSPs screen so a broken
+  /// connection says so rather than showing a stale balance for ever.
+  lastOkAt    DateTime?
+  lastTriedAt DateTime?
+  lastError   String?
+
+  /// The most recent reading, and when. Kept here rather than in a time series
+  /// because the question this answers is "what is the balance now" — the
+  /// history that matters is already in the payments themselves.
+  balances Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([provider])
+  @@index([enabled])
+}

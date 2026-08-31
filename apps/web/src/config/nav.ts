@@ -46,6 +46,7 @@ export const secondaryNav: NavItem[] = [
     children: [
       { label: "Users", href: "/admin/users" },
       { label: "Audit Logs", href: "/admin/audit-logs" },
+      { label: "Payment providers", href: "/admin/psps" },
       { label: "Integrations", href: "/admin/integrations" },
     ],
   },

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
-import { Users, ScrollText, Plug } from "lucide-react";
+import { Users, ScrollText, Plug, CreditCard } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { AdminLockProvider } from "@/lib/admin-lock";
@@ -12,6 +12,7 @@ import { AdminGate } from "@/components/admin/admin-gate";
 const ADMIN_TABS = [
   { href: "/admin/users", label: "Users", icon: Users },
   { href: "/admin/audit-logs", label: "Audit Logs", icon: ScrollText },
+  { href: "/admin/psps", label: "Payment providers", icon: CreditCard },
   { href: "/admin/integrations", label: "Integrations", icon: Plug },
 ];
 

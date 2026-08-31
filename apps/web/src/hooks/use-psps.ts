@@ -1,0 +1,110 @@
+"use client";
+
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+
+import { useAdminLock } from "@/lib/admin-lock";
+
+/** One endpoint's request shape, as typed in from the provider's docs. */
+export type EndpointConfig = {
+  path: string;
+  recordsPath?: string;
+  fields?: { amount?: string; currency?: string; account?: string };
+  query?: Record<string, string>;
+};
+
+/** A provider connection. Never carries the credential — only whether one is stored. */
+export type Psp = {
+  id: string;
+  terminal: string;
+  provider: string;
+  label: string;
+  baseUrl: string | null;
+  authMode: string;
+  authName: string | null;
+  hasKey: boolean;
+  hasSecret: boolean;
+  keyHint: string | null;
+  endpoints: Record<string, EndpointConfig>;
+  enabled: boolean;
+  lastOkAt: string | null;
+  lastTriedAt: string | null;
+  lastError: string | null;
+  balances: { at: string; rows: Balance[] } | null;
+  ready: boolean;
+};
+
+export type Balance = {
+  account: string | null;
+  currency: string | null;
+  amount: number;
+};
+
+export type TestResult =
+  | { ok: true; status: number; ms: number; balances: Balance[]; note?: string; body: unknown }
+  | { ok: false; status: number | null; error: string; ms: number; body?: unknown };
+
+export const AUTH_MODES = ["bearer", "header", "basic", "query", "hmac"] as const;
+
+export function usePsps() {
+  const { authFetch, unlocked } = useAdminLock();
+  return useQuery<Psp[]>({
+    queryKey: ["admin", "psps", unlocked],
+    queryFn: () => authFetch<Psp[]>("/psps"),
+    enabled: unlocked,
+    retry: false,
+  });
+}
+
+export function useCredentialsKey() {
+  const { authFetch, unlocked } = useAdminLock();
+  return useQuery<{ configured: boolean; variable: string }>({
+    queryKey: ["admin", "psp-key", unlocked],
+    queryFn: () => authFetch("/psps/key-status"),
+    enabled: unlocked,
+    retry: false,
+  });
+}
+
+/**
+ * Every write the PSP screen makes.
+ *
+ * `test` is a POST and is not in the query cache on purpose: it spends a real
+ * outbound call against a live payment credential, and a cached "last test
+ * result" shown as if it were current is how somebody concludes a provider is
+ * fine ten minutes after it stopped answering.
+ */
+export function usePspAdmin() {
+  const { authFetch } = useAdminLock();
+  const queryClient = useQueryClient();
+  const refresh = () =>
+    queryClient.invalidateQueries({ queryKey: ["admin", "psps"] });
+
+  const create = useMutation({
+    mutationFn: (body: { terminal: string; provider?: string; label?: string }) =>
+      authFetch<Psp>("/psps", { method: "POST", body: JSON.stringify(body) }),
+    onSuccess: refresh,
+  });
+
+  const update = useMutation({
+    mutationFn: ({ id, ...body }: { id: string } & Record<string, unknown>) =>
+      authFetch<{ ok: boolean }>(`/psps/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
+    onSuccess: refresh,
+  });
+
+  const remove = useMutation({
+    mutationFn: (id: string) =>
+      authFetch<{ ok: boolean }>(`/psps/${id}`, { method: "DELETE" }),
+    onSuccess: refresh,
+  });
+
+  const test = useMutation({
+    mutationFn: (id: string) =>
+      authFetch<TestResult>(`/psps/${id}/test`, { method: "POST" }),
+    onSuccess: refresh,
+  });
+
+  return { create, update, remove, test };
+}
