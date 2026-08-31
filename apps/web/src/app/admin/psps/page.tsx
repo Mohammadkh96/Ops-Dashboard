@@ -67,8 +67,8 @@ export default function PspsPage() {
       {keyStatus.data && !keyStatus.data.configured ? (
         <p className="rounded-lg border border-accent-orange/25 bg-accent-orange-soft px-3 py-2 text-xs text-accent-orange">
           <span className="font-medium">Credentials cannot be stored yet.</span>{" "}
-          Set <code className="font-mono">{keyStatus.data.variable}</code> in the
-          API environment — generate one by running{" "}
+          Set <code className="font-mono">{keyStatus.data.variable}</code> in
+          the API environment — generate one by running{" "}
           <code className="font-mono">
             node -e
             &quot;console.log(require(&apos;crypto&apos;).randomBytes(48).toString(&apos;base64&apos;))&quot;
@@ -107,9 +107,9 @@ export default function PspsPage() {
 
       <p className="text-[11px] leading-relaxed text-muted">
         Every request these make is a GET — there is no code path here that can
-        move money, whatever is configured. Keys are encrypted before storage and
-        are never sent back to this screen; only their last four characters are,
-        so you can confirm the right one landed.
+        move money, whatever is configured. Keys are encrypted before storage
+        and are never sent back to this screen; only their last four characters
+        are, so you can confirm the right one landed.
       </p>
 
       <Drawer
@@ -149,7 +149,10 @@ export default function PspsPage() {
                   onSuccess: () => {
                     setTerminal("");
                     setAdding(false);
-                    toast({ kind: "success", title: "Added — now configure it" });
+                    toast({
+                      kind: "success",
+                      title: "Added — now configure it",
+                    });
                   },
                   onError: (e: unknown) =>
                     setAddError(e instanceof Error ? e.message : String(e)),
@@ -192,8 +195,16 @@ function PspRow({ psp, onOpen }: { psp: Psp; onOpen: () => void }) {
       ? { Icon: TriangleAlert, cls: "text-accent-orange", word: "Failing" }
       : psp.lastOkAt
         ? { Icon: CheckCircle2, cls: "text-accent-green", word: "Connected" }
-        : { Icon: TriangleAlert, cls: "text-accent-orange", word: "Never tested" }
-    : { Icon: CircleSlash, cls: "text-muted", word: psp.ready ? "Off" : "Not set up" };
+        : {
+            Icon: TriangleAlert,
+            cls: "text-accent-orange",
+            word: "Never tested",
+          }
+    : {
+        Icon: CircleSlash,
+        cls: "text-muted",
+        word: psp.ready ? "Off" : "Not set up",
+      };
 
   const rows = psp.balances?.rows ?? [];
 
@@ -209,7 +220,9 @@ function PspRow({ psp, onOpen }: { psp: Psp; onOpen: () => void }) {
             {psp.keyHint ? ` · key ${psp.keyHint}` : " · no key"}
           </span>
           {psp.lastError ? (
-            <span className="text-[11px] text-accent-orange">{psp.lastError}</span>
+            <span className="text-[11px] text-accent-orange">
+              {psp.lastError}
+            </span>
           ) : null}
         </div>
 
@@ -221,18 +234,27 @@ function PspRow({ psp, onOpen }: { psp: Psp; onOpen: () => void }) {
                   minimumFractionDigits: 2,
                   maximumFractionDigits: 2,
                 })}{" "}
-                <span className="text-[11px] text-muted">{b.currency ?? ""}</span>
+                <span className="text-[11px] text-muted">
+                  {b.currency ?? ""}
+                </span>
               </span>
             ))}
             {/* The age, always. A balance with no timestamp is read as "now",
                 and a six-hour-old reading is not the one you inherited. */}
             {psp.balances?.at ? (
-              <span className="text-[10px] text-muted">{ago(psp.balances.at)}</span>
+              <span className="text-[10px] text-muted">
+                {ago(psp.balances.at)}
+              </span>
             ) : null}
           </div>
         ) : null}
 
-        <span className={cn("shrink-0 text-[10px] font-medium uppercase tracking-wider", state.cls)}>
+        <span
+          className={cn(
+            "shrink-0 text-[10px] font-medium uppercase tracking-wider",
+            state.cls,
+          )}
+        >
           {state.word}
         </span>
         <Button variant="ghost" size="sm" onClick={onOpen}>
@@ -268,8 +290,12 @@ function PspForm({
   const [path, setPath] = useState(balance.path ?? "");
   const [recordsPath, setRecordsPath] = useState(balance.recordsPath ?? "");
   const [amountField, setAmountField] = useState(balance.fields?.amount ?? "");
-  const [currencyField, setCurrencyField] = useState(balance.fields?.currency ?? "");
-  const [accountField, setAccountField] = useState(balance.fields?.account ?? "");
+  const [currencyField, setCurrencyField] = useState(
+    balance.fields?.currency ?? "",
+  );
+  const [accountField, setAccountField] = useState(
+    balance.fields?.account ?? "",
+  );
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<TestResult | null>(null);
 
@@ -319,15 +345,13 @@ function PspForm({
           out on Save that there was nowhere to put it. */}
       {!canStore ? (
         <div className="flex flex-col gap-1.5 rounded-lg border border-accent-orange/25 bg-accent-orange-soft px-3 py-2.5 text-xs text-accent-orange">
-          <span className="font-medium">
-            Nothing here can be saved yet.
-          </span>
+          <span className="font-medium">Nothing here can be saved yet.</span>
           <span>
             Provider keys are encrypted before they touch the database, and the
             key that does it is not set on this deployment. Add{" "}
             <code className="font-mono">{keyVariable}</code> to the API
-            environment and redeploy, then come back — this form will work as
-            it looks.
+            environment and redeploy, then come back — this form will work as it
+            looks.
           </span>
           {/* node, not openssl: this gets run on a Windows machine as often as
               not, and PowerShell has no openssl. Whoever is deploying this
@@ -336,8 +360,10 @@ function PspForm({
             node -e
             &quot;console.log(require(&apos;crypto&apos;).randomBytes(48).toString(&apos;base64&apos;))&quot;
           </code>
-          <span>The line it prints is the value. Keep it — every credential
-            stored under it becomes unreadable if it changes.</span>
+          <span>
+            The line it prints is the value. Keep it — every credential stored
+            under it becomes unreadable if it changes.
+          </span>
         </div>
       ) : null}
 
@@ -401,7 +427,9 @@ function PspForm({
           value={apiSecret}
           onChange={(e) => setApiSecret(e.target.value)}
           placeholder={
-            psp.hasSecret ? "Replace the secret" : "API secret (if the provider uses one)"
+            psp.hasSecret
+              ? "Replace the secret"
+              : "API secret (if the provider uses one)"
           }
           className={field}
         />
@@ -453,8 +481,8 @@ function PspForm({
           />
         </div>
         <span className="text-[11px] text-muted">
-          Not sure of the paths? Save, press Test, and read the response below —
-          it shows exactly what the provider sent.
+          Not sure of the paths? Press “Save and test” and read the response
+          below — it shows exactly what the provider sent.
         </span>
       </div>
 
@@ -468,23 +496,44 @@ function PspForm({
         <Button disabled={update.isPending || !canStore} onClick={() => save()}>
           {update.isPending ? "Saving…" : canStore ? "Save" : "Cannot save yet"}
         </Button>
+        {/* Saves first, always. The call is made by the SERVER from the stored
+            row — it has to be, the credential never leaves it — so testing
+            without saving silently tries the previous settings. Changing the
+            auth mode, pressing Test, and getting the identical error back is
+            the exact shape of that bug, and it reads as "my key is wrong". */}
         <Button
           variant="secondary"
-          disabled={test.isPending || !psp.ready || !canStore}
+          disabled={update.isPending || test.isPending || !canStore}
           onClick={() => {
             setError(null);
             setResult(null);
-            test.mutate(psp.id, {
-              onSuccess: setResult,
+            update.mutate(body(), {
+              onSuccess: () => {
+                setApiKey("");
+                setApiSecret("");
+                test.mutate(psp.id, {
+                  onSuccess: setResult,
+                  onError: (e: unknown) =>
+                    setError(e instanceof Error ? e.message : String(e)),
+                });
+              },
               onError: (e: unknown) =>
                 setError(e instanceof Error ? e.message : String(e)),
             });
           }}
         >
-          {test.isPending ? "Calling…" : "Test connection"}
+          {update.isPending
+            ? "Saving…"
+            : test.isPending
+              ? "Calling…"
+              : "Save and test"}
         </Button>
         {psp.enabled ? (
-          <Button variant="ghost" size="sm" onClick={() => save({ enabled: false }, "Switched off")}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => save({ enabled: false }, "Switched off")}
+          >
             Switch off
           </Button>
         ) : (
@@ -550,7 +599,9 @@ function TestPanel({ result }: { result: TestResult }) {
           {result.balances.map((b, i) => (
             <span key={i} className="tnum text-sm">
               {b.account ? `${b.account}: ` : ""}
-              {b.amount.toLocaleString(undefined, { minimumFractionDigits: 2 })}{" "}
+              {b.amount.toLocaleString(undefined, {
+                minimumFractionDigits: 2,
+              })}{" "}
               {b.currency ?? ""}
             </span>
           ))}

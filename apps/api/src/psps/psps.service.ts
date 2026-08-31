@@ -321,14 +321,22 @@ export class PspsService {
     }
 
     if (!result.ok) {
+      // Our reading of the status code is a guess between four likely
+      // mistakes; the provider's own sentence is not. "no api key" says which
+      // of the four it is, where "check the API key, and whether it expects a
+      // different auth mode" leaves somebody re-typing a key that was right.
+      const said = providerError(result.body);
+      const message = said
+        ? `${result.error} The provider said: ${said}`
+        : result.error;
       await this.prisma.pspConnection.update({
         where: { id },
-        data: { lastTriedAt: now, lastError: result.error.slice(0, 500) },
+        data: { lastTriedAt: now, lastError: message.slice(0, 500) },
       });
       return {
         ok: false as const,
         status: result.status,
-        error: result.error,
+        error: message,
         ms: result.ms,
         // What arrived, so a wrong path is diagnosable rather than mysterious.
         body: preview(result.body),
