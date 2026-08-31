@@ -24,6 +24,9 @@ export type Psp = {
   hasKey: boolean;
   hasSecret: boolean;
   keyHint: string | null;
+  /** Lengths only, never the values — providers reject on length. */
+  keyLength: number | null;
+  secretLength: number | null;
   endpoints: Record<string, EndpointConfig>;
   enabled: boolean;
   lastOkAt: string | null;
@@ -40,10 +43,29 @@ export type Balance = {
 };
 
 export type TestResult =
-  | { ok: true; status: number; ms: number; balances: Balance[]; note?: string; body: unknown }
-  | { ok: false; status: number | null; error: string; ms: number; body?: unknown };
+  | {
+      ok: true;
+      status: number;
+      ms: number;
+      balances: Balance[];
+      note?: string;
+      body: unknown;
+    }
+  | {
+      ok: false;
+      status: number | null;
+      error: string;
+      ms: number;
+      body?: unknown;
+    };
 
-export const AUTH_MODES = ["bearer", "header", "basic", "query", "hmac"] as const;
+export const AUTH_MODES = [
+  "bearer",
+  "header",
+  "basic",
+  "query",
+  "hmac",
+] as const;
 
 export function usePsps() {
   const { authFetch, unlocked } = useAdminLock();
@@ -80,7 +102,11 @@ export function usePspAdmin() {
     queryClient.invalidateQueries({ queryKey: ["admin", "psps"] });
 
   const create = useMutation({
-    mutationFn: (body: { terminal: string; provider?: string; label?: string }) =>
+    mutationFn: (body: {
+      terminal: string;
+      provider?: string;
+      label?: string;
+    }) =>
       authFetch<Psp>("/psps", { method: "POST", body: JSON.stringify(body) }),
     onSuccess: refresh,
   });

@@ -11,6 +11,7 @@ import {
   hint,
   open,
   seal,
+  sealedLength,
   SecretBoxError,
 } from '../common/secret-box';
 import {
@@ -84,6 +85,14 @@ export class PspsService {
       hasKey: Boolean(p.apiKeyEnc),
       hasSecret: Boolean(p.apiSecretEnc),
       keyHint: p.keyHint,
+      /**
+       * Lengths only. Providers state the expected length in their rejections
+       * ("should be 60 characters, but is 30"), and that is unactionable
+       * without knowing what was actually stored — the alternative is counting
+       * the characters of a live secret somewhere it should not be pasted.
+       */
+      keyLength: p.apiKeyEnc ? sealedLength(p.apiKeyEnc) : null,
+      secretLength: p.apiSecretEnc ? sealedLength(p.apiSecretEnc) : null,
       endpoints: p.endpoints ?? {},
       enabled: p.enabled,
       lastOkAt: p.lastOkAt?.toISOString() ?? null,

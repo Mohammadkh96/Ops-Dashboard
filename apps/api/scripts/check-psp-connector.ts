@@ -14,6 +14,7 @@ import {
   open,
   sameSecret,
   seal,
+  sealedLength,
   SecretBoxError,
 } from '../src/common/secret-box';
 import {
@@ -164,6 +165,30 @@ section('the hint shown after pasting a key');
   );
   // A short value has no safe last-four to show.
   ok('a tiny value is fully hidden', hint('abcd') === '••••');
+}
+
+section('the length of a stored credential');
+{
+  const secret = 'a'.repeat(60);
+  const sealed = withKey(KEY, () => seal(secret));
+
+  ok('is reported exactly', sealedLength(sealed) === 60, sealedLength(sealed));
+  // The whole point of reading it off the ciphertext: it must work when the
+  // key is gone or has changed, which is when somebody most needs to see it.
+  ok(
+    'without the key being set',
+    withKey(undefined, () => sealedLength(sealed)) === 60,
+  );
+  ok(
+    'and under a different key',
+    withKey(OTHER, () => sealedLength(sealed)) === 60,
+  );
+  ok(
+    'a 30-character value reports 30',
+    withKey(KEY, () => sealedLength(seal('b'.repeat(30)))) === 30,
+  );
+  ok('garbage reports nothing', sealedLength('nonsense') === null);
+  ok('an empty value reports nothing', sealedLength('') === null);
 }
 
 section('comparing secrets');

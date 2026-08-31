@@ -422,6 +422,11 @@ function PspForm({
           placeholder={psp.hasKey ? "Replace the API key" : "API key"}
           className={field}
         />
+        {/* The length, because providers reject on it — "should be 60
+            characters, but is 30" is a provider saying the wrong one of these
+            two boxes was pasted, and the only other way to act on that is to
+            count the characters of a live secret somewhere it must not go. */}
+        <Stored what="key" length={psp.keyLength} typed={apiKey} />
         <input
           type="password"
           value={apiSecret}
@@ -433,6 +438,7 @@ function PspForm({
           }
           className={field}
         />
+        <Stored what="secret" length={psp.secretLength} typed={apiSecret} />
       </div>
 
       <div className="flex flex-col gap-2">
@@ -569,6 +575,38 @@ function PspForm({
         </button>
       </div>
     </div>
+  );
+}
+
+/**
+ * How long the credential is — the stored one, or the one being typed.
+ *
+ * Counting characters is the only way to act on "should be 60 characters, but
+ * is 30", and doing it by hand means pasting a live secret into a text editor
+ * or a terminal. Shown while typing too, so a half-copied paste is visible
+ * before it is saved rather than after a provider rejects it.
+ */
+function Stored({
+  what,
+  length,
+  typed,
+}: {
+  what: string;
+  length: number | null;
+  typed: string;
+}) {
+  if (typed) {
+    return (
+      <span className="text-[11px] text-muted">
+        {typed.length} characters typed.
+      </span>
+    );
+  }
+  if (length === null) return null;
+  return (
+    <span className="text-[11px] text-muted">
+      Stored {what} is {length} characters.
+    </span>
   );
 }
 

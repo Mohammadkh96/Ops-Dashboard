@@ -57,8 +57,8 @@ function key(): Buffer {
   if (raw.length < 32) {
     throw new SecretBoxError(
       'CREDENTIALS_KEY is not set, or is shorter than 32 characters. ' +
-        'Generate one with `node -e "console.log(require(\'crypto\')' +
-        '.randomBytes(48).toString(\'base64\'))"` and set it in the API ' +
+        "Generate one with `node -e \"console.log(require('crypto')" +
+        ".randomBytes(48).toString('base64'))\"` and set it in the API " +
         'environment. Without it, provider credentials cannot be stored or read.',
     );
   }
@@ -87,6 +87,29 @@ export function seal(plaintext: string): string {
   ]);
   const tag = cipher.getAuthTag();
   return [PREFIX, b64(iv), b64(tag), b64(body)].join('.');
+}
+
+/**
+ * How long the sealed value is, without decrypting it.
+ *
+ * GCM is a stream cipher mode: the ciphertext is exactly as long as the
+ * plaintext, so this is a measurement, not a decryption — it needs no key and
+ * cannot fail on a changed one.
+ *
+ * Worth showing. "Should be 60 characters, but is 30" is a provider telling you
+ * the wrong one of two fields was pasted, and without this the only way to act
+ * on that is to count the characters of a live secret somewhere it should never
+ * be pasted. The provider states the length itself in the error, so displaying
+ * it behind the admin lock gives away nothing it did not.
+ */
+export function sealedLength(sealed: string): number | null {
+  const parts = (sealed ?? '').split('.');
+  if (parts.length !== 4 || parts[0] !== PREFIX) return null;
+  try {
+    return unb64(parts[3]).length;
+  } catch {
+    return null;
+  }
 }
 
 /** Decrypts one secret, or throws. */
