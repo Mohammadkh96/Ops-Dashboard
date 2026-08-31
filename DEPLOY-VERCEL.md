@@ -73,17 +73,56 @@ npm-workspaces lockfile lives.
 Everything else comes from `apps/api/vercel.json` — build command, the rewrite
 that sends every path into Nest, `maxDuration`, and the cron entry.
 
-Environment variables:
+### Environment variables
+
+**Every secret in OpsOS lives in this project and nowhere else.** The dashboard
+project below gets three non-secret values and no credentials at all — see the
+warning there for why that is not a matter of tidiness.
+
+Set all of these for **Production, Preview and Development** unless a line says
+otherwise, and add them through Vercel's UI. None of them belong in a file in
+the repo.
+
+Vercel reads environment variables at **build** time as well as run time, and a
+change to any of them only takes effect on a **new deployment**. Adding a
+variable to a project that is already deployed does nothing until you redeploy.
+
+#### Required — the API will not work without these
 
 ```ini
+# Neon, the POOLED connection string (the one with -pooler in the host).
 DATABASE_URL="<pooled postgres url>"
+
+# Signs the session token every logged-in browser carries. Anyone holding this
+# can mint a token for any account, including ADMIN, without a password.
+#   node -e "console.log(require('crypto').randomBytes(48).toString('base64'))"
+JWT_SECRET="<random string>"
+
+# Encrypts PSP credentials before they are written to the database.
+# Generate ONCE and never change it: every provider key stored under the old
+# value becomes permanently unreadable and all 11 terminals must be re-entered.
+#   node -e "console.log(require('crypto').randomBytes(48).toString('base64'))"
+CREDENTIALS_KEY="<random string>"
+
+# Which browser origin may call this API (CORS). The dashboard's address, with
+# no trailing slash. Wrong here reads as "the API is down" in the browser.
 WEB_ORIGIN="https://ops.dashboard.tradin.com"
 
-# One signing key per shop — each shop signs with its own.
+# This API's own public address. Google's redirect URI is derived from it.
+API_PUBLIC_URL="https://api.dashboard.tradin.com"
+```
+
+#### Required — live payment data
+
+```ini
+# Webhook verification. One signing key per shop; each shop signs with its own.
 PAYMAXIS_SIGNING_KEYS="5141=<mauritius key>,6321=<saint lucia key>"
 
+# Read-only polling. shopId:apiKey pairs.
+PAYMAXIS_SHOPS="5141:<key>,6321:<key>"
+PAYMAXIS_POLL_ENABLED="1"
+
 # Vercel sends this back as `Authorization: Bearer <value>` on cron invocations.
-# Generate one: openssl rand -hex 32
 CRON_SECRET="<random string>"
 
 # Never 1 in production — while it is on, anyone who finds the webhook URL can
@@ -94,7 +133,37 @@ PAYMAXIS_WEBHOOK_CAPTURE="0"
 LIVE_SIMULATE="false"
 ```
 
-Paste the signing keys into Vercel's UI. They must not go into a file in the repo.
+#### Optional — Google sign-in
+
+Leave these unset and the login page shows only the email/password form. It asks
+the API which providers exist rather than guessing, so an unconfigured
+deployment never shows a button that leads nowhere.
+
+```ini
+GOOGLE_CLIENT_ID="<from Google Cloud Console>"
+GOOGLE_CLIENT_SECRET="<from Google Cloud Console>"
+# Blank REFUSES every sign-in — there is deliberately no "empty means everyone".
+GOOGLE_ALLOWED_DOMAINS="tradin.com"
+GOOGLE_DEFAULT_ROLE="READ_ONLY"
+```
+
+#### Optional — sending the handover email
+
+```ini
+GMAIL_REFRESH_TOKEN="<from scripts/gmail-authorize.mjs>"
+GMAIL_SENDER="ops@tradin.com"
+MAIL_FROM="OpsOS <ops@tradin.com>"
+```
+
+Without these the handover is still written, read and acknowledged in the
+dashboard; only the emailed copy is skipped.
+
+#### Not needed on Vercel
+
+`PORT` (Vercel assigns it), `REDIS_URL` (unused on serverless),
+`SHADOW_DATABASE_URL` (only for authoring migrations locally), and the whole
+`PAYMAXIS_BASE_URL` / `_PATH` / `_PARAM` block — those defaults were confirmed
+against the live API and setting them by hand is how they get set wrong.
 
 Check it: `GET https://<api domain>/api/health` → `{"status":"ok","database":"up"}`.
 
@@ -115,6 +184,18 @@ Optional:
 NEXT_PUBLIC_LIVE_POLL_MS = 4000    # feed poll interval; default 4000
 NEXT_PUBLIC_LIVE_TRANSPORT = sse   # only if the API is on an always-on host
 ```
+
+> **Never put a secret in this project.** Not a Paymaxis key, not
+> `DATABASE_URL`, not `CREDENTIALS_KEY` — and in particular never as a
+> `NEXT_PUBLIC_` variable. This app is a **static export**: `NEXT_PUBLIC_` values
+> are not read on a server at request time, they are **compiled into the
+> JavaScript files served to every visitor**. Anyone who opens the site can read
+> them with View Source, and they stay readable in the browser cache and in
+> Vercel's deployment history after the variable is deleted. A key that reaches
+> this project has to be treated as published and rotated at the provider.
+>
+> The dashboard never talks to a payment provider. It calls the API, the API
+> holds the keys. That is the whole reason the two projects are separate.
 
 ## 4. Custom domains
 
