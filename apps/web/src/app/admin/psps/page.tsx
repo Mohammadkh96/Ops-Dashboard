@@ -443,6 +443,35 @@ function PspForm({
           className={field}
         />
         <Stored what="secret" length={psp.secretLength} typed={apiSecret} />
+
+        {/* An empty box KEEPS the stored value — which is right, this form is
+            reopened to change a URL far more often than a credential. But it
+            left no way at all to take one back out, and "the wrong key is in
+            here" is not a rare event: it is what happens the first time
+            somebody pastes a credential belonging to another system. Deleting
+            the whole provider to remove a key is not an answer. */}
+        {psp.hasKey || psp.hasSecret ? (
+          <button
+            type="button"
+            disabled={update.isPending}
+            onClick={() => {
+              setApiKey("");
+              setApiSecret("");
+              // Empty strings, explicitly: this is the one case that means
+              // "clear it" rather than "leave it alone". Switched off with
+              // them — a connection left on with no credentials would be
+              // polled on a schedule and fail every time, which is a provider
+              // watching us retry a bad login forever.
+              save(
+                { apiKey: "", apiSecret: "", enabled: false },
+                "Credentials removed",
+              );
+            }}
+            className="self-start text-[11px] text-accent-red underline underline-offset-2"
+          >
+            Remove the stored credentials
+          </button>
+        ) : null}
       </div>
 
       <div className="flex flex-col gap-2">
