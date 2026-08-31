@@ -207,6 +207,12 @@ function PspRow({ psp, onOpen }: { psp: Psp; onOpen: () => void }) {
       };
 
   const rows = psp.balances?.rows ?? [];
+  // A crypto provider reports every wallet it can hold, and sweeps them, so
+  // nineteen of twenty are zero. Showing the first two shows two zeros and
+  // buries the one wallet with money in it — which is the only row anybody
+  // opened this screen to see.
+  const holding = rows.filter((b) => b.amount !== 0);
+  const empty = rows.length - holding.length;
 
   return (
     <Card className="glass card-seam">
@@ -228,17 +234,24 @@ function PspRow({ psp, onOpen }: { psp: Psp; onOpen: () => void }) {
 
         {rows.length ? (
           <div className="flex shrink-0 flex-col items-end">
-            {rows.slice(0, 2).map((b, i) => (
+            {holding.slice(0, 2).map((b, i) => (
               <span key={i} className="tnum text-sm">
-                {b.amount.toLocaleString(undefined, {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2,
-                })}{" "}
+                {money(b.amount)}{" "}
                 <span className="text-[11px] text-muted">
                   {b.currency ?? ""}
                 </span>
               </span>
             ))}
+            {/* Said, not hidden. "Nothing here" and "we could not read it" look
+                identical on a screen that simply shows no rows, and they are
+                not the same fact at 4am. */}
+            {empty ? (
+              <span className="text-[10px] text-muted">
+                {holding.length
+                  ? `+${empty} empty`
+                  : `${empty} wallet${empty === 1 ? "" : "s"}, all empty`}
+              </span>
+            ) : null}
             {/* The age, always. A balance with no timestamp is read as "now",
                 and a six-hour-old reading is not the one you inherited. */}
             {psp.balances?.at ? (
@@ -623,6 +636,24 @@ function PspForm({
 }
 
 /**
+ * A balance, at the precision it was actually reported.
+ *
+ * Two decimal places is right for money and wrong for crypto. 0.009989 XRP
+ * rendered as "0.01" is a rounding that invents value; 0.00000001 BTC rendered
+ * as "0.00" reports a wallet with something in it as empty, which is the more
+ * dangerous of the two on a screen the desk uses to decide whether a provider
+ * has run dry.
+ */
+function money(n: number): string {
+  const abs = Math.abs(n);
+  const digits = n === 0 ? 2 : abs < 0.01 ? 8 : abs < 1 ? 6 : 2;
+  return n.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: digits,
+  });
+}
+
+/**
  * Query parameters, as a URL writes them.
  *
  * `user=abc&locale=en` rather than a key/value table, because that is the form
@@ -709,10 +740,7 @@ function TestPanel({ result }: { result: TestResult }) {
           {result.balances.map((b, i) => (
             <span key={i} className="tnum text-sm">
               {b.account ? `${b.account}: ` : ""}
-              {b.amount.toLocaleString(undefined, {
-                minimumFractionDigits: 2,
-              })}{" "}
-              {b.currency ?? ""}
+              {money(b.amount)} {b.currency ?? ""}
             </span>
           ))}
         </div>
