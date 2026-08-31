@@ -167,6 +167,11 @@ export default function PspsPage() {
         {editing ? (
           <PspForm
             psp={editing}
+            // Passed in rather than looked up again: the form has to be able to
+            // say "this cannot be saved" BEFORE somebody fills it in, and the
+            // banner on the page behind is hidden by this very drawer.
+            canStore={keyStatus.data?.configured ?? true}
+            keyVariable={keyStatus.data?.variable ?? "CREDENTIALS_KEY"}
             onClose={() => setEditing(null)}
             onSaved={(m) => toast({ kind: "success", title: m })}
           />
@@ -237,10 +242,14 @@ function PspRow({ psp, onOpen }: { psp: Psp; onOpen: () => void }) {
 /** The configuration form for one provider. */
 function PspForm({
   psp,
+  canStore,
+  keyVariable,
   onClose,
   onSaved,
 }: {
   psp: Psp;
+  canStore: boolean;
+  keyVariable: string;
   onClose: () => void;
   onSaved: (message: string) => void;
 }) {
@@ -301,6 +310,27 @@ function PspForm({
 
   return (
     <div className="flex flex-col gap-5">
+      {/* First thing in the drawer, not on the page behind it. Somebody filled
+          in this whole form — including pasting a live API key — and only found
+          out on Save that there was nowhere to put it. */}
+      {!canStore ? (
+        <div className="flex flex-col gap-1.5 rounded-lg border border-accent-orange/25 bg-accent-orange-soft px-3 py-2.5 text-xs text-accent-orange">
+          <span className="font-medium">
+            Nothing here can be saved yet.
+          </span>
+          <span>
+            Provider keys are encrypted before they touch the database, and the
+            key that does it is not set on this deployment. Add{" "}
+            <code className="font-mono">{keyVariable}</code> to the API
+            environment and redeploy, then come back — this form will work as
+            it looks.
+          </span>
+          <code className="mt-0.5 block rounded bg-elevated px-2 py-1 font-mono text-[11px] text-muted-foreground">
+            openssl rand -base64 48
+          </code>
+        </div>
+      ) : null}
+
       <label className="flex flex-col gap-1.5">
         <span className={label}>Base URL</span>
         <input
@@ -414,12 +444,12 @@ function PspForm({
       ) : null}
 
       <div className="flex flex-wrap gap-2">
-        <Button disabled={update.isPending} onClick={() => save()}>
-          {update.isPending ? "Saving…" : "Save"}
+        <Button disabled={update.isPending || !canStore} onClick={() => save()}>
+          {update.isPending ? "Saving…" : canStore ? "Save" : "Cannot save yet"}
         </Button>
         <Button
           variant="secondary"
-          disabled={test.isPending || !psp.ready}
+          disabled={test.isPending || !psp.ready || !canStore}
           onClick={() => {
             setError(null);
             setResult(null);
