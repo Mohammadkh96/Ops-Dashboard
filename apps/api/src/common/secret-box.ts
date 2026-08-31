@@ -57,7 +57,8 @@ function key(): Buffer {
   if (raw.length < 32) {
     throw new SecretBoxError(
       'CREDENTIALS_KEY is not set, or is shorter than 32 characters. ' +
-        'Generate one with `openssl rand -base64 48` and set it in the API ' +
+        'Generate one with `node -e "console.log(require(\'crypto\')' +
+        '.randomBytes(48).toString(\'base64\'))"` and set it in the API ' +
         'environment. Without it, provider credentials cannot be stored or read.',
     );
   }

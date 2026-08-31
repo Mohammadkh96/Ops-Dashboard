@@ -68,10 +68,14 @@ export default function PspsPage() {
         <p className="rounded-lg border border-accent-orange/25 bg-accent-orange-soft px-3 py-2 text-xs text-accent-orange">
           <span className="font-medium">Credentials cannot be stored yet.</span>{" "}
           Set <code className="font-mono">{keyStatus.data.variable}</code> in the
-          API environment — generate one with{" "}
-          <code className="font-mono">openssl rand -base64 48</code>. Provider
-          keys are encrypted with it before they touch the database, so without
-          it there is nowhere safe to put them.
+          API environment — generate one by running{" "}
+          <code className="font-mono">
+            node -e
+            &quot;console.log(require(&apos;crypto&apos;).randomBytes(48).toString(&apos;base64&apos;))&quot;
+          </code>{" "}
+          and pasting what it prints. Provider keys are encrypted with it before
+          they touch the database, so without it there is nowhere safe to put
+          them.
         </p>
       ) : null}
 
@@ -325,9 +329,15 @@ function PspForm({
             environment and redeploy, then come back — this form will work as
             it looks.
           </span>
-          <code className="mt-0.5 block rounded bg-elevated px-2 py-1 font-mono text-[11px] text-muted-foreground">
-            openssl rand -base64 48
+          {/* node, not openssl: this gets run on a Windows machine as often as
+              not, and PowerShell has no openssl. Whoever is deploying this
+              already has node. */}
+          <code className="mt-0.5 block rounded bg-elevated px-2 py-1 font-mono text-[11px] break-all text-muted-foreground">
+            node -e
+            &quot;console.log(require(&apos;crypto&apos;).randomBytes(48).toString(&apos;base64&apos;))&quot;
           </code>
+          <span>The line it prints is the value. Keep it — every credential
+            stored under it becomes unreadable if it changes.</span>
         </div>
       ) : null}
 

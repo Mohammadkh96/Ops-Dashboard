@@ -134,9 +134,12 @@ section('a missing or weak key');
     withKey('too-short', () => throws(() => seal('x'))) !== null,
   );
   const e = withKey(undefined, () => throws(() => seal('x')));
+  // A runnable command, not a description of one. The command has to work on
+  // the machine the person is actually sitting at, which is often Windows —
+  // where `openssl` does not exist and the error would send them in a circle.
   ok(
     'and the message says how to make one',
-    /openssl rand/.test(e?.message ?? ''),
+    /randomBytes\(48\)/.test(e?.message ?? ''),
     e?.message,
   );
   ok(
