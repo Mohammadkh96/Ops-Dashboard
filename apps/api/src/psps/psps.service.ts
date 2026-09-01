@@ -85,6 +85,7 @@ export class PspsService {
       baseUrl: p.baseUrl,
       authMode: p.authMode,
       authName: p.authName,
+      ledgerSource: p.ledgerSource,
       /** Whether a key is stored, and its last four — never the key. */
       hasKey: Boolean(p.apiKeyEnc),
       hasSecret: Boolean(p.apiSecretEnc),
@@ -186,6 +187,7 @@ export class PspsService {
       baseUrl?: string;
       authMode?: string;
       authName?: string;
+      ledgerSource?: string;
       apiKey?: string;
       apiSecret?: string;
       endpoints?: Record<string, EndpointConfig>;
@@ -215,6 +217,14 @@ export class PspsService {
       data.baseUrl = input.baseUrl.trim().replace(/\/$/, '') || null;
     }
     if (input.authMode !== undefined) data.authMode = input.authMode;
+    if (input.ledgerSource !== undefined) {
+      if (!['provider', 'paymaxis'].includes(input.ledgerSource)) {
+        throw new BadRequestException(
+          'A ledger comes either from the provider\'s own API ("provider") or from what Paymaxis already imported ("paymaxis").',
+        );
+      }
+      data.ledgerSource = input.ledgerSource;
+    }
     if (input.authName !== undefined) {
       data.authName = input.authName.trim() || null;
     }

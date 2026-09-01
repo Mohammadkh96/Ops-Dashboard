@@ -84,6 +84,16 @@ export class PspSyncService {
     const conn = await this.prisma.pspConnection.findUnique({ where: { id } });
     if (!conn) throw new BadRequestException('No such PSP connection.');
 
+    if (conn.ledgerSource === 'paymaxis') {
+      // Said as a fact rather than an error, because nothing is wrong: this
+      // terminal's transactions arrive by callback and are already here. A
+      // "no endpoint configured" message would send somebody looking for an
+      // API that does not exist.
+      throw new BadRequestException(
+        `${conn.label} has nothing to sync — its transactions arrive through Paymaxis and are already stored. The list is live.`,
+      );
+    }
+
     const endpoints = (conn.endpoints ?? {}) as Record<string, EndpointConfig>;
     const endpoint = endpoints.transactions;
     if (!endpoint?.path) {
@@ -312,6 +322,94 @@ export class PspSyncService {
    * storing them. Opening a page must not cost fifty calls to somebody's
    * payment API.
    */
+  /**
+   * The same ledger, from what Paymaxis already imported.
+   *
+   * Several providers have no read API. Match2Pay publishes two endpoints,
+   * both of which create money movements, and pushes everything else by
+   * callback — to Paymaxis, which imports it here keyed by terminal. So the
+   * transactions were in this database all along; the screen just had to know
+   * where to look.
+   *
+   * Read through the SAME shape as a provider ledger, so the page cannot tell
+   * the difference and nothing downstream has to branch. The Paymaxis record
+   * is richer than several providers manage: it carries the customer, the
+   * billing country and the on-chain hash.
+   */
+  private async listFromPaymaxis(
+    conn: { terminal: string; endpoints: unknown },
+    q: {
+      limit?: number;
+      offset?: number;
+      status?: string;
+      direction?: string;
+      from?: string;
+      to?: string;
+      search?: string;
+    },
+  ) {
+    const take = Math.min(Math.max(q.limit ?? 100, 1), 500);
+    const skip = Math.max(q.offset ?? 0, 0);
+
+    const where: Prisma.PaymentEventWhereInput = { terminal: conn.terminal };
+    if (q.status) where.state = q.status;
+    if (q.direction) where.type = q.direction;
+    if (q.from || q.to) {
+      where.occurredAt = {
+        ...(q.from ? { gte: new Date(q.from) } : {}),
+        ...(q.to ? { lte: new Date(q.to) } : {}),
+      };
+    }
+    if (q.search?.trim()) {
+      const s = q.search.trim();
+      where.OR = [
+        { paymentId: { contains: s, mode: 'insensitive' } },
+        { externalId: { contains: s, mode: 'insensitive' } },
+        { reference: { contains: s, mode: 'insensitive' } },
+        { customer: { contains: s, mode: 'insensitive' } },
+      ];
+    }
+
+    const endpoints = (conn.endpoints ?? {}) as Record<string, EndpointConfig>;
+    const extraSpec = endpoints.transactions?.fields?.extras;
+
+    const [rows, total] = await Promise.all([
+      this.prisma.paymentEvent.findMany({
+        where,
+        orderBy: [{ occurredAt: 'desc' }, { receivedAt: 'desc' }],
+        take,
+        skip,
+      }),
+      this.prisma.paymentEvent.count({ where }),
+    ]);
+
+    return {
+      total,
+      limit: take,
+      offset: skip,
+      source: 'paymaxis',
+      extraColumns: Object.keys(extraSpec ?? {}),
+      rows: rows.map((r) => ({
+        id: r.id,
+        externalId: r.paymentId ?? r.externalId ?? r.id,
+        reference: r.reference,
+        direction: r.type,
+        status: r.state,
+        amount: r.amount,
+        currency: r.currency,
+        occurredAt: r.occurredAt?.toISOString() ?? null,
+        // Paymaxis timestamps ARE parsed and carry a zone, unlike several
+        // providers' — so ours is the one to show rather than a raw string.
+        rawAt: null,
+        customer: r.customer,
+        // Mapped out of the whole Paymaxis record, the same way a provider's
+        // extras are — which is how "Email = customer.email" works here
+        // without any of this knowing what Paymaxis calls things.
+        extras: extraSpec ? readExtras(r.payload, extraSpec) : {},
+      })),
+    };
+  }
+
   async list(
     connectionId: string,
     q: {
@@ -352,8 +450,11 @@ export class PspSyncService {
     // days and the rows we hold are the only copy left.
     const conn = await this.prisma.pspConnection.findUnique({
       where: { id: connectionId },
-      select: { endpoints: true },
+      select: { endpoints: true, ledgerSource: true, terminal: true },
     });
+    if (conn?.ledgerSource === 'paymaxis') {
+      return this.listFromPaymaxis(conn, q);
+    }
     const endpoints = (conn?.endpoints ?? {}) as Record<string, EndpointConfig>;
     const extraSpec = endpoints.transactions?.fields?.extras;
 
@@ -389,6 +490,7 @@ export class PspSyncService {
       total,
       limit: take,
       offset: skip,
+      source: 'provider',
       /** The column labels, in the order they were configured. */
       extraColumns: Object.keys(extraSpec ?? {}),
       rows: rows.map(({ raw, ...r }) => ({
@@ -410,7 +512,7 @@ export class PspSyncService {
    * is the failure the second password exists to prevent.
    */
   async directory() {
-    const [conns, counts, latest] = await Promise.all([
+    const [conns, counts, latest, viaPaymaxis] = await Promise.all([
       this.prisma.pspConnection.findMany({
         orderBy: [{ provider: 'asc' }, { terminal: 'asc' }],
         select: {
@@ -423,6 +525,7 @@ export class PspSyncService {
           balances: true,
           lastSyncAt: true,
           lastError: true,
+          ledgerSource: true,
         },
       }),
       this.prisma.pspTransaction.groupBy({
@@ -433,25 +536,46 @@ export class PspSyncService {
         by: ['connectionId'],
         _max: { occurredAt: true },
       }),
+      // Terminals whose transactions came in through Paymaxis, counted where
+      // they actually live.
+      this.prisma.paymentEvent.groupBy({
+        by: ['terminal'],
+        _count: { _all: true },
+        _max: { occurredAt: true },
+      }),
     ]);
 
     const stored = new Map(counts.map((c) => [c.connectionId, c._count._all]));
     const newest = new Map(
       latest.map((c) => [c.connectionId, c._max.occurredAt]),
     );
+    const pmCount = new Map(
+      viaPaymaxis.map((c) => [c.terminal, c._count._all]),
+    );
+    const pmNewest = new Map(
+      viaPaymaxis.map((c) => [c.terminal, c._max.occurredAt]),
+    );
 
     return conns.map((c) => {
       const endpoints = (c.endpoints ?? {}) as Record<string, EndpointConfig>;
+      const fromPaymaxis = c.ledgerSource === 'paymaxis';
       return {
         id: c.id,
         terminal: c.terminal,
         label: c.label,
         provider: c.provider,
         enabled: c.enabled,
+        ledgerSource: c.ledgerSource,
         /** Whether there is a ledger to open — a card that leads nowhere is worse than no card. */
-        hasTransactions: Boolean(endpoints.transactions?.path),
-        stored: stored.get(c.id) ?? 0,
-        newest: newest.get(c.id)?.toISOString() ?? null,
+        hasTransactions: fromPaymaxis || Boolean(endpoints.transactions?.path),
+        stored: fromPaymaxis
+          ? (pmCount.get(c.terminal) ?? 0)
+          : (stored.get(c.id) ?? 0),
+        newest:
+          (fromPaymaxis
+            ? pmNewest.get(c.terminal)
+            : newest.get(c.id)
+          )?.toISOString() ?? null,
         lastSyncAt: c.lastSyncAt?.toISOString() ?? null,
         /** Said plainly on the card: a provider that is failing should say so. */
         lastError: c.lastError,
@@ -512,6 +636,43 @@ export class PspSyncService {
 
   /** What the stored set looks like as a whole — the header of the page. */
   async summary(connectionId: string) {
+    const conn = await this.prisma.pspConnection.findUnique({
+      where: { id: connectionId },
+      select: { ledgerSource: true, terminal: true },
+    });
+    if (conn?.ledgerSource === 'paymaxis') {
+      const where = { terminal: conn.terminal };
+      const [count, oldest, newest, states] = await Promise.all([
+        this.prisma.paymentEvent.count({ where }),
+        this.prisma.paymentEvent.findFirst({
+          where: { ...where, occurredAt: { not: null } },
+          orderBy: { occurredAt: 'asc' },
+          select: { occurredAt: true },
+        }),
+        this.prisma.paymentEvent.findFirst({
+          where: { ...where, occurredAt: { not: null } },
+          orderBy: { occurredAt: 'desc' },
+          select: { occurredAt: true },
+        }),
+        this.prisma.paymentEvent.groupBy({
+          by: ['state'],
+          where,
+          _count: { _all: true },
+        }),
+      ]);
+      return {
+        count,
+        oldest: oldest?.occurredAt?.toISOString() ?? null,
+        newest: newest?.occurredAt?.toISOString() ?? null,
+        byStatus: states
+          .map((s) => ({ status: s.state ?? '—', count: s._count._all }))
+          .sort((a, b) => b.count - a.count),
+      };
+    }
+    return this.summaryFromStore(connectionId);
+  }
+
+  private async summaryFromStore(connectionId: string) {
     const [count, oldest, newest, statuses] = await Promise.all([
       this.prisma.pspTransaction.count({ where: { connectionId } }),
       this.prisma.pspTransaction.findFirst({

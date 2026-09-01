@@ -35,6 +35,8 @@ export type Psp = {
   baseUrl: string | null;
   authMode: string;
   authName: string | null;
+  /** "provider" — call its API. "paymaxis" — read what Paymaxis imported. */
+  ledgerSource: string;
   hasKey: boolean;
   hasSecret: boolean;
   keyHint: string | null;
@@ -199,6 +201,8 @@ export type LedgerPage = {
   total: number;
   limit: number;
   offset: number;
+  /** Where these rows came from: the provider's API, or Paymaxis. */
+  source?: string;
   /** Labels in the order they were configured, so the table can head them. */
   extraColumns: string[];
   rows: LedgerRow[];
@@ -299,6 +303,7 @@ export type PspCard = {
   label: string;
   provider: string;
   enabled: boolean;
+  ledgerSource: string;
   hasTransactions: boolean;
   stored: number;
   newest: string | null;

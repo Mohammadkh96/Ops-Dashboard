@@ -104,6 +104,10 @@ function Ledger() {
   // which is the point: a new provider gets its own columns without a change
   // to this file.
   const extraColumns = ledger.data?.extraColumns ?? [];
+  // A terminal whose transactions arrive through Paymaxis has nothing to pull:
+  // they are pushed by the provider and imported already. Buttons that cannot
+  // do anything are worse than no buttons — they read as broken.
+  const viaPaymaxis = ledger.data?.source === "paymaxis";
 
   // A filter change with a page-3 offset shows an empty table and reads as
   // "there is nothing", when what happened is that the result is shorter.
@@ -136,65 +140,74 @@ function Ledger() {
         description="As the provider reported them — their status words, their timestamps."
         actions={
           <div className="flex items-center gap-2">
+            {viaPaymaxis ? (
+              <span className="text-[11px] text-muted">
+                Arrives through Paymaxis — always current
+              </span>
+            ) : null}
             <Link href="/providers">
               <Button variant="ghost" size="sm">
                 <ArrowLeft className="size-3.5" />
                 Providers
               </Button>
             </Link>
-            <Button
-              size="sm"
-              disabled={sync.isPending}
-              onClick={() =>
-                sync.mutate(
-                  { id },
-                  {
-                    onSuccess: (r) =>
-                      toast({
-                        kind: r.ok ? "success" : "warning",
-                        title: r.ok
-                          ? `${r.created} new, ${r.updated} updated`
-                          : (r.error ?? "Sync failed"),
-                        description: r.stopped,
-                      }),
-                    onError: (e: unknown) =>
-                      toast({
-                        kind: "warning",
-                        title: e instanceof Error ? e.message : String(e),
-                      }),
-                  },
-                )
-              }
-            >
-              <RefreshCw
-                className={
-                  sync.isPending ? "size-3.5 animate-spin" : "size-3.5"
-                }
-              />
-              {sync.isPending ? "Reading…" : "Sync new"}
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={sync.isPending}
-              onClick={() =>
-                sync.mutate(
-                  { id, full: true },
-                  {
-                    onSuccess: (r) =>
-                      toast({
-                        kind: r.ok ? "success" : "warning",
-                        title: r.ok
-                          ? `${r.fetched} read over ${r.pages} pages — ${r.created} new`
-                          : (r.error ?? "Sync failed"),
-                        description: r.stopped,
-                      }),
-                  },
-                )
-              }
-            >
-              Full sync
-            </Button>
+            {viaPaymaxis ? null : (
+              <>
+                <Button
+                  size="sm"
+                  disabled={sync.isPending}
+                  onClick={() =>
+                    sync.mutate(
+                      { id },
+                      {
+                        onSuccess: (r) =>
+                          toast({
+                            kind: r.ok ? "success" : "warning",
+                            title: r.ok
+                              ? `${r.created} new, ${r.updated} updated`
+                              : (r.error ?? "Sync failed"),
+                            description: r.stopped,
+                          }),
+                        onError: (e: unknown) =>
+                          toast({
+                            kind: "warning",
+                            title: e instanceof Error ? e.message : String(e),
+                          }),
+                      },
+                    )
+                  }
+                >
+                  <RefreshCw
+                    className={
+                      sync.isPending ? "size-3.5 animate-spin" : "size-3.5"
+                    }
+                  />
+                  {sync.isPending ? "Reading…" : "Sync new"}
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={sync.isPending}
+                  onClick={() =>
+                    sync.mutate(
+                      { id, full: true },
+                      {
+                        onSuccess: (r) =>
+                          toast({
+                            kind: r.ok ? "success" : "warning",
+                            title: r.ok
+                              ? `${r.fetched} read over ${r.pages} pages — ${r.created} new`
+                              : (r.error ?? "Sync failed"),
+                            description: r.stopped,
+                          }),
+                      },
+                    )
+                  }
+                >
+                  Full sync
+                </Button>
+              </>
+            )}
           </div>
         }
       />

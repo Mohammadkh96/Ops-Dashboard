@@ -318,6 +318,7 @@ function PspForm({
   const [baseUrl, setBaseUrl] = useState(psp.baseUrl ?? "");
   const [authMode, setAuthMode] = useState(psp.authMode);
   const [authName, setAuthName] = useState(psp.authName ?? "");
+  const [ledgerSource, setLedgerSource] = useState(psp.ledgerSource);
   const [apiKey, setApiKey] = useState("");
   const [apiSecret, setApiSecret] = useState("");
   const [path, setPath] = useState(balance.path ?? "");
@@ -361,6 +362,7 @@ function PspForm({
     baseUrl: baseUrl.trim(),
     authMode,
     authName: authName.trim(),
+    ledgerSource,
     // Absent, not empty: an empty string CLEARS the stored key, and this form
     // is reopened to change a URL far more often than to change a credential.
     ...(apiKey ? { apiKey } : {}),
@@ -637,113 +639,135 @@ function PspForm({
       </div>
 
       <div className="flex flex-col gap-2">
-        <span className={label}>Transactions endpoint</span>
-        <input
-          value={txnPath}
-          onChange={(e) => setTxnPath(e.target.value)}
-          placeholder="/GetTransactions/"
+        <span className={label}>Where the transactions come from</span>
+        <select
+          value={ledgerSource}
+          onChange={(e) => setLedgerSource(e.target.value)}
           className={field}
-        />
-        {/^https?:\/\//i.test(txnPath.trim()) ? (
-          <span className="text-[11px] text-accent-orange">
-            Only the path here — it is joined onto the base URL above.
-          </span>
-        ) : null}
-        <div className="grid grid-cols-2 gap-2">
-          <input
-            value={txnRecords}
-            onChange={(e) => setTxnRecords(e.target.value)}
-            placeholder="Records path (blank if a bare array)"
-            className={field}
-          />
-          <input
-            value={txnId}
-            onChange={(e) => setTxnId(e.target.value)}
-            placeholder="Id field, e.g. payment_id"
-            className={field}
-          />
-          <input
-            value={txnAmount}
-            onChange={(e) => setTxnAmount(e.target.value)}
-            placeholder="Amount field, e.g. invoice_amount"
-            className={field}
-          />
-          <input
-            value={txnCurrency}
-            onChange={(e) => setTxnCurrency(e.target.value)}
-            placeholder="Currency field, e.g. invoice_currency"
-            className={field}
-          />
-          <input
-            value={txnStatus}
-            onChange={(e) => setTxnStatus(e.target.value)}
-            placeholder="Status field, e.g. state"
-            className={field}
-          />
-          <input
-            value={txnDate}
-            onChange={(e) => setTxnDate(e.target.value)}
-            placeholder="Date field, e.g. inserted"
-            className={field}
-          />
-          <input
-            value={txnReference}
-            onChange={(e) => setTxnReference(e.target.value)}
-            placeholder="Reference, e.g. reference_no|pos_id"
-            className={field}
-          />
-          <input
-            value={txnDirection}
-            onChange={(e) => setTxnDirection(e.target.value)}
-            placeholder="Direction field, e.g. type"
-            className={field}
-          />
-          <input
-            value={txnCustomer}
-            onChange={(e) => setTxnCustomer(e.target.value)}
-            placeholder="Client field, e.g. payer_id"
-            className={field}
-          />
-          <input
-            value={txnQuery}
-            onChange={(e) => setTxnQuery(e.target.value)}
-            placeholder="Query, e.g. limit=50"
-            className={field}
-          />
-        </div>
-        <textarea
-          value={txnExtras}
-          onChange={(e) => setTxnExtras(e.target.value)}
-          rows={4}
-          placeholder={
-            "Extra columns, one per line:\nPos Id = pos_id\nReference No = reference_no"
-          }
-          className="w-full rounded-lg border border-border bg-card px-3 py-2 font-mono text-xs outline-none focus:border-border-strong"
-        />
+        >
+          <option value="provider">This provider&rsquo;s own API</option>
+          <option value="paymaxis">Paymaxis — already imported</option>
+        </select>
         <span className="text-[11px] text-muted">
-          Extra columns are read from the stored record, so adding one shows it
-          on transactions that were synced days ago — no re-sync, and no call to
-          the provider.
-        </span>
-        <FieldsSeen
-          id={psp.id}
-          onPick={(path) => setTxnExtras((t) => appendField(t, path))}
-        />
-        <span className="text-[11px] text-muted">
-          Any field takes alternatives, separated by{" "}
-          <code className="font-mono">|</code> — the first with a value wins.
-          ForumPay needs <code className="font-mono">reference_no|pos_id</code>,
-          because its Sell rows put the reference in one and its Buy rows in the
-          other.
-        </span>
-        <span className="text-[11px] text-muted">
-          Amounts: pick the provider’s <em>fiat</em> field where it has one —
-          ForumPay reports both <code className="font-mono">amount</code> (the
-          crypto paid) and <code className="font-mono">invoice_amount</code>{" "}
-          (what it was worth), and only the second compares to anything in
-          Paymaxis.
+          Several providers publish no way to read a transaction back. Match2Pay
+          has two endpoints and both CREATE money movements; it pushes
+          everything else by callback — to Paymaxis, which imports it here. For
+          those terminals the transactions are already in this database, and
+          choosing Paymaxis reads them instead of calling an API that does not
+          exist. Nothing to sync, and the list is live.
         </span>
       </div>
+
+      {ledgerSource === "provider" ? (
+        <div className="flex flex-col gap-2">
+          <span className={label}>Transactions endpoint</span>
+          <input
+            value={txnPath}
+            onChange={(e) => setTxnPath(e.target.value)}
+            placeholder="/GetTransactions/"
+            className={field}
+          />
+          {/^https?:\/\//i.test(txnPath.trim()) ? (
+            <span className="text-[11px] text-accent-orange">
+              Only the path here — it is joined onto the base URL above.
+            </span>
+          ) : null}
+          <div className="grid grid-cols-2 gap-2">
+            <input
+              value={txnRecords}
+              onChange={(e) => setTxnRecords(e.target.value)}
+              placeholder="Records path (blank if a bare array)"
+              className={field}
+            />
+            <input
+              value={txnId}
+              onChange={(e) => setTxnId(e.target.value)}
+              placeholder="Id field, e.g. payment_id"
+              className={field}
+            />
+            <input
+              value={txnAmount}
+              onChange={(e) => setTxnAmount(e.target.value)}
+              placeholder="Amount field, e.g. invoice_amount"
+              className={field}
+            />
+            <input
+              value={txnCurrency}
+              onChange={(e) => setTxnCurrency(e.target.value)}
+              placeholder="Currency field, e.g. invoice_currency"
+              className={field}
+            />
+            <input
+              value={txnStatus}
+              onChange={(e) => setTxnStatus(e.target.value)}
+              placeholder="Status field, e.g. state"
+              className={field}
+            />
+            <input
+              value={txnDate}
+              onChange={(e) => setTxnDate(e.target.value)}
+              placeholder="Date field, e.g. inserted"
+              className={field}
+            />
+            <input
+              value={txnReference}
+              onChange={(e) => setTxnReference(e.target.value)}
+              placeholder="Reference, e.g. reference_no|pos_id"
+              className={field}
+            />
+            <input
+              value={txnDirection}
+              onChange={(e) => setTxnDirection(e.target.value)}
+              placeholder="Direction field, e.g. type"
+              className={field}
+            />
+            <input
+              value={txnCustomer}
+              onChange={(e) => setTxnCustomer(e.target.value)}
+              placeholder="Client field, e.g. payer_id"
+              className={field}
+            />
+            <input
+              value={txnQuery}
+              onChange={(e) => setTxnQuery(e.target.value)}
+              placeholder="Query, e.g. limit=50"
+              className={field}
+            />
+          </div>
+          <textarea
+            value={txnExtras}
+            onChange={(e) => setTxnExtras(e.target.value)}
+            rows={4}
+            placeholder={
+              "Extra columns, one per line:\nPos Id = pos_id\nReference No = reference_no"
+            }
+            className="w-full rounded-lg border border-border bg-card px-3 py-2 font-mono text-xs outline-none focus:border-border-strong"
+          />
+          <span className="text-[11px] text-muted">
+            Extra columns are read from the stored record, so adding one shows
+            it on transactions that were synced days ago — no re-sync, and no
+            call to the provider.
+          </span>
+          <FieldsSeen
+            id={psp.id}
+            onPick={(path) => setTxnExtras((t) => appendField(t, path))}
+          />
+          <span className="text-[11px] text-muted">
+            Any field takes alternatives, separated by{" "}
+            <code className="font-mono">|</code> — the first with a value wins.
+            ForumPay needs{" "}
+            <code className="font-mono">reference_no|pos_id</code>, because its
+            Sell rows put the reference in one and its Buy rows in the other.
+          </span>
+          <span className="text-[11px] text-muted">
+            Amounts: pick the provider’s <em>fiat</em> field where it has one —
+            ForumPay reports both <code className="font-mono">amount</code> (the
+            crypto paid) and <code className="font-mono">invoice_amount</code>{" "}
+            (what it was worth), and only the second compares to anything in
+            Paymaxis.
+          </span>
+        </div>
+      ) : null}
 
       {error ? (
         <p className="rounded-lg border border-accent-red/25 bg-accent-red-soft px-3 py-2 text-xs text-accent-red">

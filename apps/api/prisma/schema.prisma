@@ -718,6 +718,18 @@ model PspConnection {
   /// history that matters is already in the payments themselves.
   balances Json?
 
+  /// Where this terminal's transactions come from.
+  ///
+  /// "provider" — call the provider's own API, which needs a readable one.
+  /// "paymaxis" — read what Paymaxis already imported for this terminal.
+  ///
+  /// The second exists because several providers have no read API at all.
+  /// Match2Pay publishes exactly two endpoints, both of which CREATE money
+  /// movements, and pushes everything else by callback — to Paymaxis, which
+  /// imports it here. The transactions are already in this database; what was
+  /// missing was a screen that knew to look.
+  ledgerSource String @default("provider")
+
   /// Where the last sync got to, so the next one does not start from zero.
   lastSyncAt      DateTime?
   lastSyncPages   Int?

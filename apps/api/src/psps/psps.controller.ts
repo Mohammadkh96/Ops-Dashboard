@@ -106,6 +106,7 @@ export class PspsController {
       baseUrl?: string;
       authMode?: string;
       authName?: string;
+      ledgerSource?: string;
       apiKey?: string;
       apiSecret?: string;
       endpoints?: Record<string, EndpointConfig>;
