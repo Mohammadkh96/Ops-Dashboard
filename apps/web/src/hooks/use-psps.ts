@@ -272,15 +272,16 @@ export type SyncResult = {
 /**
  * Pulls the provider's ledger in.
  *
- * Behind the admin lock, because it spends a live payment credential — dozens
- * of times, on a full run.
+ * A plain session. Syncing is fetching data, which is the desk's job — and it
+ * is safe to hand over because of what it structurally cannot do: every
+ * outbound call is a GET, the method is not configurable, and the credential
+ * is decrypted on the server and never reaches this code.
  */
 export function usePspSync() {
-  const { authFetch } = useAdminLock();
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ id, full }: { id: string; full?: boolean }) =>
-      authFetch<SyncResult>(`/psps/${id}/sync${full ? "?full=1" : ""}`, {
+      apiFetch<SyncResult>(`/psps/${id}/sync${full ? "?full=1" : ""}`, {
         method: "POST",
       }),
     onSuccess: () => {

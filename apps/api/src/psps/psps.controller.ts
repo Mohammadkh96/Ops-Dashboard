@@ -20,14 +20,21 @@ import type { EndpointConfig } from './psp-connector';
 /**
  * Provider connections.
  *
- * Everything that touches a credential is behind BOTH guards — a session and
- * the Admin tab unlocked. These are live payment-provider keys; being signed in
- * on a machine somebody walked away from must not be enough to add one, change
- * one, or make the server call a provider with one.
+ * THE LINE IS CONFIGURATION, not data. The admin lock guards the things that
+ * change how a connection works or reveal how it is wired — the base URL, the
+ * key hint, the field mapping, adding and removing a provider. Those are
+ * administration, done once, by one person.
  *
- * The two READ routes are separate and only need a session: the desk needs to
- * see balances at the start of a shift, and making an agent hold the admin
- * passphrase to read a number would mean the admin passphrase gets shared.
+ * Everything that moves DATA needs only a session, syncing included. The
+ * operations team works these screens every shift, and a passphrase several
+ * people need every shift is a passphrase that gets shared — which would be
+ * worse than what it protects, since the same passphrase also changes roles
+ * and reveals the audit trail.
+ *
+ * That is safe because of what a sync structurally cannot do: every outbound
+ * call is a GET, the method is not configurable, and the credential is
+ * decrypted inside this process and never leaves it. An agent pressing Sync
+ * refreshes a table. There is no configuration in which it does anything else.
  */
 @ApiTags('psps')
 @ApiBearerAuth()
@@ -146,12 +153,16 @@ export class PspsController {
   /**
    * Reads the provider's ledger into our own table, page by page.
    *
+   * A SESSION is enough: this is fetching data, which is the desk's job, and
+   * it is a GET-only read whose credential never leaves the server.
+   *
    * Incremental by default: providers return newest first, so a page with
    * nothing new means everything older is already stored, and a routine
    * refresh costs one call rather than fifty. `full=1` reads to the end, which
-   * is what a first run and a repair need.
+   * is what a first run and a repair need — bounded by the page cap and time
+   * budget in the service, so no one press can run away at a provider.
    */
-  @UseGuards(JwtAuthGuard, AdminUnlockGuard)
+  @UseGuards(JwtAuthGuard)
   @Post(':id/sync')
   syncOne(@Param('id') id: string, @Query('full') full?: string) {
     return this.sync.sync(id, { full: full === '1' || full === 'true' });
@@ -200,7 +211,8 @@ export class PspsController {
     return this.sync.fields(id);
   }
 
-  @UseGuards(JwtAuthGuard, AdminUnlockGuard)
+  /** Re-reads every enabled connection's balance. Data, so a session. */
+  @UseGuards(JwtAuthGuard)
   @Post('refresh')
   refresh() {
     return this.psps.refreshAll();

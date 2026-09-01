@@ -9,7 +9,6 @@ import { PageHeader } from "@/components/ui/page-header";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/toast";
-import { useAdminLock } from "@/lib/admin-lock";
 import {
   usePspLedger,
   usePspLedgerSummary,
@@ -76,7 +75,6 @@ export default function PspTransactionsPage() {
 
 function Ledger() {
   const { toast } = useToast();
-  const { unlocked } = useAdminLock();
   const id = useSearchParams().get("id");
 
   const [offset, setOffset] = useState(0);
@@ -146,7 +144,7 @@ function Ledger() {
             </Link>
             <Button
               size="sm"
-              disabled={sync.isPending || !unlocked}
+              disabled={sync.isPending}
               onClick={() =>
                 sync.mutate(
                   { id },
@@ -178,7 +176,7 @@ function Ledger() {
             <Button
               variant="secondary"
               size="sm"
-              disabled={sync.isPending || !unlocked}
+              disabled={sync.isPending}
               onClick={() =>
                 sync.mutate(
                   { id, full: true },
@@ -200,15 +198,6 @@ function Ledger() {
           </div>
         }
       />
-
-      {/* The admin lock gates the SYNC, not the reading. Said here rather than
-          leaving two buttons that do nothing when pressed. */}
-      {!unlocked ? (
-        <p className="rounded-lg border border-border bg-card/40 px-3 py-2 text-xs text-muted">
-          Unlock the Admin tab to pull new transactions from the provider.
-          Everything already stored is readable without it.
-        </p>
-      ) : null}
 
       {summary.data ? (
         <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-muted">
