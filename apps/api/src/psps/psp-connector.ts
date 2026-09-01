@@ -69,9 +69,32 @@ export type EndpointConfig = {
      * would match a payout to a deposit of the same amount and call it agreed.
      */
     direction?: string;
+    /**
+     * Their id for the payer. ForumPay's `payer_id` is the CRM's own client
+     * id, which turns "we disagree about $443.47" into "we disagree about
+     * client CU31923" — the version somebody can act on.
+     */
+    customer?: string;
   };
   /** Fixed query parameters this endpoint needs. */
   query?: Record<string, string>;
+  /**
+   * How to ask for the next page.
+   *
+   * Every provider caps a list — ForumPay silently returns 50 however many you
+   * ask for — so reading a full ledger means asking repeatedly. The names
+   * differ, and getting one wrong is the worst kind of wrong: an ignored
+   * pagination parameter means every page is page one, and a sync that looks
+   * like it is working re-reads the newest fifty records for ever.
+   */
+  pagination?: {
+    /** Parameter carrying the page size, e.g. "limit". */
+    limitParam?: string;
+    /** Parameter carrying the offset, e.g. "offset". */
+    offsetParam?: string;
+    /** Rows per request. Capped by the provider whatever we send. */
+    pageSize?: number;
+  };
 };
 
 export type Credentials = { key?: string; secret?: string };
@@ -427,6 +450,16 @@ export type Txn = {
   reference: string | null;
   /** The provider's own word for the direction: "Buy", "Sell", "payout"… */
   direction: string | null;
+  customer: string | null;
+  /**
+   * The record exactly as it arrived.
+   *
+   * Kept because a field nobody mapped today is the field a dispute turns on
+   * next month, and re-fetching is not always possible — several providers
+   * keep only ninety days. ForumPay's rows carry an original_invoice_amount,
+   * a network fee and an exchange rate that no column here has a place for.
+   */
+  raw: unknown;
 };
 
 /**
@@ -465,6 +498,8 @@ export function readTransactions(
       atISO: toISO(raw),
       reference: toText(at(row, f.reference ?? 'reference')),
       direction: toText(at(row, f.direction ?? 'type')),
+      customer: toText(at(row, f.customer ?? 'customer')),
+      raw: row,
     };
   });
 }

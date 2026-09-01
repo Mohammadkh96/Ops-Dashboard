@@ -718,9 +718,76 @@ model PspConnection {
   /// history that matters is already in the payments themselves.
   balances Json?
 
+  /// Where the last sync got to, so the next one does not start from zero.
+  lastSyncAt      DateTime?
+  lastSyncPages   Int?
+  lastSyncFetched Int?
+
+  transactions PspTransaction[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([provider])
   @@index([enabled])
+}
+
+/// One transaction as a provider reports it.
+///
+/// STORED, unlike the balance, and for the opposite reason. A balance is a
+/// single current reading whose history is already in the payments; a
+/// transaction list is a ledger that must be paged through fifty rows at a
+/// time, and re-fetching two and a half thousand records to look at yesterday
+/// is both slow and a great deal of load on somebody else's API.
+///
+/// THEIR VALUES, NOT OURS. The status and direction are kept as the provider
+/// wrote them, because this table exists to be compared against what Paymaxis
+/// says — and a comparison between two things we have already normalised is a
+/// comparison of our own two guesses.
+model PspTransaction {
+  id           String        @id @default(cuid())
+  connectionId String
+  connection   PspConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  /// Denormalised on purpose: this is what joins to the payment data, and the
+  /// join must survive the connection row being edited or removed.
+  terminal String
+
+  /// The provider's own id. Unique per connection — this is what makes a
+  /// re-sync update a row rather than duplicate it.
+  externalId String
+  /// Our reference on their side: order id, POS id, invoice number.
+  reference  String?
+  /// Which way the money went, in the provider's words: "Buy", "Sell", "payout".
+  direction  String?
+  /// The provider's own word for the state: "confirmed", "DONE", "waiting".
+  status     String?
+
+  /// The FIAT amount, which is the only one that compares to anything.
+  amount   Decimal? @db.Decimal(20, 8)
+  currency String?
+
+  /// Their timestamp read as an instant, and the string they actually sent.
+  /// Both, because these carry no timezone and a wrong reading moves a payment
+  /// across the 04:00 ops-day boundary into the wrong shift.
+  occurredAt DateTime?
+  rawAt      String?
+
+  /// The provider's id for the payer, where they give one. ForumPay sends the
+  /// CRM's own client id here, which turns "we disagree about $443.47" into
+  /// "we disagree about client CU31923".
+  customer String?
+
+  /// The whole record as it arrived. A field we did not map today is a field
+  /// somebody needs in a dispute next month, and re-fetching it is not always
+  /// possible — several providers only keep ninety days.
+  raw Json
+
+  firstSeenAt DateTime @default(now())
+  lastSeenAt  DateTime @updatedAt
+
+  @@unique([connectionId, externalId])
+  @@index([connectionId, occurredAt])
+  @@index([terminal, occurredAt])
+  @@index([status])
 }

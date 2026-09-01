@@ -1,7 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { CheckCircle2, CircleSlash, Plus, TriangleAlert } from "lucide-react";
+import Link from "next/link";
+import {
+  CheckCircle2,
+  CircleSlash,
+  Plus,
+  Receipt,
+  TriangleAlert,
+} from "lucide-react";
 
 import { PageHeader } from "@/components/ui/page-header";
 import { Card, CardContent } from "@/components/ui/card";
@@ -270,6 +277,18 @@ function PspRow({ psp, onOpen }: { psp: Psp; onOpen: () => void }) {
         >
           {state.word}
         </span>
+        {/* The transactions are what a person opens this screen to see, so
+            they get their own destination rather than living inside the
+            configuration drawer. Only offered where an endpoint is set up —
+            a link to an empty table teaches nothing. */}
+        {psp.endpoints?.transactions?.path ? (
+          <Link href={`/admin/psps/transactions/?id=${psp.id}`}>
+            <Button variant="secondary" size="sm">
+              <Receipt className="size-3.5" />
+              Transactions
+            </Button>
+          </Link>
+        ) : null}
         <Button variant="ghost" size="sm" onClick={onOpen}>
           Configure
         </Button>

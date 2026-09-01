@@ -14,6 +14,7 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { AdminUnlockGuard } from '../auth/guards/admin-unlock.guard';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PspsService } from './psps.service';
+import { PspSyncService } from './psp-sync.service';
 import type { EndpointConfig } from './psp-connector';
 
 /**
@@ -32,7 +33,10 @@ import type { EndpointConfig } from './psp-connector';
 @ApiBearerAuth()
 @Controller('psps')
 export class PspsController {
-  constructor(private readonly psps: PspsService) {}
+  constructor(
+    private readonly psps: PspsService,
+    private readonly sync: PspSyncService,
+  ) {}
 
   /** The balances themselves — what the desk reads. Session only. */
   @UseGuards(JwtAuthGuard)
@@ -117,6 +121,54 @@ export class PspsController {
       id,
       Number.isInteger(n) && n > 0 ? Math.min(n, 200) : 50,
     );
+  }
+
+  /**
+   * Reads the provider's ledger into our own table, page by page.
+   *
+   * Incremental by default: providers return newest first, so a page with
+   * nothing new means everything older is already stored, and a routine
+   * refresh costs one call rather than fifty. `full=1` reads to the end, which
+   * is what a first run and a repair need.
+   */
+  @UseGuards(JwtAuthGuard, AdminUnlockGuard)
+  @Post(':id/sync')
+  syncOne(@Param('id') id: string, @Query('full') full?: string) {
+    return this.sync.sync(id, { full: full === '1' || full === 'true' });
+  }
+
+  /**
+   * The stored transactions. A SESSION is enough — this reads our own table
+   * and spends no credential, and the desk needs to see payments without an
+   * administrator standing over it with a passphrase.
+   */
+  @UseGuards(JwtAuthGuard)
+  @Get(':id/ledger')
+  ledger(
+    @Param('id') id: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+    @Query('status') status?: string,
+    @Query('direction') direction?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('search') search?: string,
+  ) {
+    return this.sync.list(id, {
+      limit: Number(limit) || undefined,
+      offset: Number(offset) || undefined,
+      status,
+      direction,
+      from,
+      to,
+      search,
+    });
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get(':id/ledger-summary')
+  ledgerSummary(@Param('id') id: string) {
+    return this.sync.summary(id);
   }
 
   @UseGuards(JwtAuthGuard, AdminUnlockGuard)

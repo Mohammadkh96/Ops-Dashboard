@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useAdminLock } from "@/lib/admin-lock";
+import { apiFetch } from "@/lib/api";
 
 /** One endpoint's request shape, as typed in from the provider's docs. */
 export type EndpointConfig = {
@@ -173,4 +174,110 @@ export function usePspAdmin() {
   });
 
   return { create, update, remove, test };
+}
+
+/** One stored transaction, read from our own table rather than the provider. */
+export type LedgerRow = {
+  id: string;
+  externalId: string;
+  reference: string | null;
+  direction: string | null;
+  status: string | null;
+  amount: number | null;
+  currency: string | null;
+  occurredAt: string | null;
+  rawAt: string | null;
+  customer: string | null;
+};
+
+export type LedgerPage = {
+  total: number;
+  limit: number;
+  offset: number;
+  rows: LedgerRow[];
+};
+
+export type LedgerSummary = {
+  count: number;
+  oldest: string | null;
+  newest: string | null;
+  byStatus: { status: string; count: number }[];
+};
+
+export type LedgerQuery = {
+  limit?: number;
+  offset?: number;
+  status?: string;
+  direction?: string;
+  from?: string;
+  to?: string;
+  search?: string;
+};
+
+function ledgerParams(q: LedgerQuery): string {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(q)) {
+    if (v !== undefined && v !== null && String(v) !== "") p.set(k, String(v));
+  }
+  const s = p.toString();
+  return s ? `?${s}` : "";
+}
+
+/**
+ * The stored ledger for one connection.
+ *
+ * A plain session read, not an admin one: this comes from our own table and
+ * spends no credential, and the desk has to be able to look at payments
+ * without an administrator standing over it with a passphrase.
+ */
+export function usePspLedger(id: string | null, q: LedgerQuery) {
+  return useQuery<LedgerPage>({
+    queryKey: ["psp-ledger", id, q],
+    queryFn: () => apiFetch<LedgerPage>(`/psps/${id}/ledger${ledgerParams(q)}`),
+    enabled: Boolean(id),
+    // Kept briefly so paging back and forth does not re-query, but not so long
+    // that a sync finishes and the table still shows the old count.
+    staleTime: 10_000,
+  });
+}
+
+export function usePspLedgerSummary(id: string | null) {
+  return useQuery<LedgerSummary>({
+    queryKey: ["psp-ledger-summary", id],
+    queryFn: () => apiFetch<LedgerSummary>(`/psps/${id}/ledger-summary`),
+    enabled: Boolean(id),
+    staleTime: 10_000,
+  });
+}
+
+export type SyncResult = {
+  ok: boolean;
+  pages: number;
+  fetched: number;
+  created: number;
+  updated: number;
+  stopped: string;
+  error?: string;
+};
+
+/**
+ * Pulls the provider's ledger in.
+ *
+ * Behind the admin lock, because it spends a live payment credential — dozens
+ * of times, on a full run.
+ */
+export function usePspSync() {
+  const { authFetch } = useAdminLock();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, full }: { id: string; full?: boolean }) =>
+      authFetch<SyncResult>(`/psps/${id}/sync${full ? "?full=1" : ""}`, {
+        method: "POST",
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["psp-ledger"] });
+      void queryClient.invalidateQueries({ queryKey: ["psp-ledger-summary"] });
+      void queryClient.invalidateQueries({ queryKey: ["admin", "psps"] });
+    },
+  });
 }

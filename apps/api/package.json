@@ -12,6 +12,7 @@
     "check:incidents": "tsx scripts/check-incident-detect.ts",
     "check:categories": "tsx scripts/check-incident-categories.ts",
     "check:psp": "tsx scripts/check-psp-connector.ts",
+    "check:sync": "npm run build && node scripts/check-psp-sync.mjs",
     "check:handover": "tsx scripts/check-handover-email.ts",
     "check:funnel": "tsx scripts/check-payment-journey.ts",
     "check:recovery": "tsx scripts/check-retry-recovery.ts",
