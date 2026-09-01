@@ -57,6 +57,8 @@ export type TestResult =
       error: string;
       ms: number;
       body?: unknown;
+      /** A few response headers — www-authenticate names the auth mode. */
+      headers?: Record<string, string>;
     };
 
 export const AUTH_MODES = [

@@ -65,8 +65,37 @@ export type CallResult =
       status: number | null;
       error: string;
       body?: unknown;
+      /** A few response headers, when they say something worth acting on. */
+      headers?: Record<string, string>;
       ms: number;
     };
+
+/**
+ * Response headers worth showing a person configuring a connection.
+ *
+ * An allow-list, not a filter. A provider's headers are its own and mostly
+ * noise, but www-authenticate is the answer to "which auth mode does this
+ * want" written down by the only party that knows — a 401 carrying
+ * `WWW-Authenticate: Basic realm="api"` turns five guesses into one setting.
+ *
+ * Cookies are deliberately absent: a session cookie in a diagnostic panel is a
+ * credential on a screen, and none of these calls use one.
+ */
+const HEADERS_WORTH_SHOWING = [
+  'www-authenticate',
+  'content-type',
+  'x-ratelimit-remaining',
+  'retry-after',
+];
+
+function usefulHeaders(res: Response): Record<string, string> | undefined {
+  const out: Record<string, string> = {};
+  for (const name of HEADERS_WORTH_SHOWING) {
+    const v = res.headers.get(name);
+    if (v) out[name] = v;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
 
 /** How long a provider gets before we give up. */
 const TIMEOUT_MS = 15_000;
@@ -179,6 +208,7 @@ export async function callPsp(
         status: res.status,
         error: describeStatus(res.status),
         body,
+        headers: usefulHeaders(res),
         ms,
       };
     }
@@ -220,6 +250,35 @@ export function describeStatus(status: number): string {
         ? `The provider had an error (${status}). Usually theirs, not ours — try again.`
         : `The provider refused the request (${status}).`;
   }
+}
+
+/**
+ * What a 401's `WWW-Authenticate` header says to set the auth mode to.
+ *
+ * There are five modes and a provider whose documentation nobody here has.
+ * That is five attempts, each needing a save, a call and a reading of the
+ * result — unless the provider already answered the question, which on a 401 it
+ * usually has: `WWW-Authenticate: Basic realm="api"` IS the answer, in the
+ * words of the only party that knows.
+ */
+export function suggestAuthMode(
+  headers?: Record<string, string>,
+): string | null {
+  const challenge = headers?.['www-authenticate'];
+  if (!challenge) return null;
+  const scheme = challenge.trim().split(/[\s,]/)[0].toLowerCase();
+  if (scheme === 'basic') {
+    return 'The provider asked for Basic authentication — set the auth mode to “basic”, with the user in the key box and the password in the secret box.';
+  }
+  if (scheme === 'bearer') {
+    return 'The provider asked for Bearer authentication — set the auth mode to “bearer”.';
+  }
+  if (scheme) {
+    // Digest, Negotiate, AWS4-HMAC-SHA256 and friends. Saying so beats
+    // silence: none of the five modes will do it, and that is the finding.
+    return `The provider asked for "${scheme}" authentication, which none of the auth modes here can produce. This connection needs support from the provider, or a different credential.`;
+  }
+  return null;
 }
 
 /**

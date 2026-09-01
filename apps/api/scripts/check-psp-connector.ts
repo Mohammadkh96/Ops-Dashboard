@@ -21,6 +21,7 @@ import {
   at,
   describeStatus,
   providerError,
+  suggestAuthMode,
   readBalances,
   type EndpointConfig,
 } from '../src/psps/psp-connector';
@@ -314,7 +315,11 @@ section('ForumPay, against its published API manual');
   ok('a bare array needs no records path', rows.length === 2, rows);
   // Amounts arrive as strings, and BTC has eight decimal places — a reading
   // that rounds is a reading that is wrong.
-  ok('the string amount parses exactly', rows[0].amount === 0.21164052, rows[0]);
+  ok(
+    'the string amount parses exactly',
+    rows[0].amount === 0.21164052,
+    rows[0],
+  );
   ok('the currency comes through', rows[0].currency === 'BTC');
   ok('the wallet address is the account', rows[1].account === '0xab12');
 
@@ -325,8 +330,40 @@ section('ForumPay, against its published API manual');
     err_code: 'actionNotAllowed',
   });
   ok('a refusal inside a 200 is found', refused !== null, refused);
-  ok('and carries the provider’s own words', /Permission denied/.test(refused ?? ''));
+  ok(
+    'and carries the provider’s own words',
+    /Permission denied/.test(refused ?? ''),
+  );
   ok('and its code', /actionNotAllowed/.test(refused ?? ''));
+}
+
+section('a 401 that names the scheme it wants');
+{
+  // Five auth modes and no documentation is five saves, five calls and five
+  // readings — unless the provider already answered, which on a 401 it usually
+  // has.
+  ok(
+    'Basic is recognised',
+    /basic/.test(
+      suggestAuthMode({ 'www-authenticate': 'Basic realm="api"' }) ?? '',
+    ),
+  );
+  ok(
+    'Bearer is recognised',
+    /bearer/.test(
+      suggestAuthMode({ 'www-authenticate': 'Bearer realm="x"' }) ?? '',
+    ),
+  );
+  // Saying "none of these can do it" is a finding, not a shrug: it stops
+  // somebody working through the other four modes for nothing.
+  const digest = suggestAuthMode({ 'www-authenticate': 'Digest realm="x"' });
+  ok('an unsupported scheme is named', /digest/i.test(digest ?? ''), digest);
+  ok(
+    'and says none of the modes will do it',
+    /none of the auth modes/i.test(digest ?? ''),
+  );
+  ok('no header, no guess', suggestAuthMode(undefined) === null);
+  ok('an empty header, no guess', suggestAuthMode({}) === null);
 }
 
 section('what is not a provider error');

@@ -746,6 +746,22 @@ function TestPanel({ result }: { result: TestResult }) {
         </div>
       ) : null}
 
+      {/* The raw challenge under our reading of it. A person who knows the
+          provider can act on "WWW-Authenticate: Digest" immediately, where a
+          sentence about it is one more thing to trust. */}
+      {!result.ok && result.headers ? (
+        <div className="flex flex-col gap-0.5">
+          {Object.entries(result.headers).map(([k, v]) => (
+            <span
+              key={k}
+              className="font-mono text-[11px] break-all text-muted"
+            >
+              {k}: {v}
+            </span>
+          ))}
+        </div>
+      ) : null}
+
       {result.ok && result.note ? (
         <span className="text-[11px] text-accent-orange">{result.note}</span>
       ) : null}

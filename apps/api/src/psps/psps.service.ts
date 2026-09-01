@@ -18,6 +18,7 @@ import {
   AUTH_MODES,
   callPsp,
   providerError,
+  suggestAuthMode,
   readBalances,
   type AuthMode,
   type EndpointConfig,
@@ -335,9 +336,15 @@ export class PspsService {
       // of the four it is, where "check the API key, and whether it expects a
       // different auth mode" leaves somebody re-typing a key that was right.
       const said = providerError(result.body);
-      const message = said
-        ? `${result.error} The provider said: ${said}`
-        : result.error;
+      // And when it named the scheme it wants, that beats both.
+      const suggestion = suggestAuthMode(result.headers);
+      const message = [
+        result.error,
+        said ? `The provider said: ${said}` : null,
+        suggestion,
+      ]
+        .filter(Boolean)
+        .join(' ');
       await this.prisma.pspConnection.update({
         where: { id },
         data: { lastTriedAt: now, lastError: message.slice(0, 500) },
@@ -349,6 +356,7 @@ export class PspsService {
         ms: result.ms,
         // What arrived, so a wrong path is diagnosable rather than mysterious.
         body: preview(result.body),
+        headers: result.headers,
       };
     }
 
