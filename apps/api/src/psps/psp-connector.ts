@@ -282,6 +282,44 @@ export function suggestAuthMode(
 }
 
 /**
+ * Whether what came back is a web page rather than API data.
+ *
+ * The commonest configuration mistake there is: a provider's portal and its API
+ * live on different hosts, and the address a person knows is the portal — it is
+ * the one they log into. That returns `200 OK` and an HTML shell, so the call
+ * "succeeded" and simply contained no balances, and the screen sent them to
+ * check field paths against a page of font declarations.
+ */
+export function looksLikeWebPage(body: unknown): boolean {
+  if (typeof body !== 'string') return false;
+  return /^\s*(<!doctype\s+html|<html[\s>])/i.test(body);
+}
+
+/** The <title> of a returned page, which usually names what was reached. */
+function pageTitle(body: unknown): string | null {
+  if (typeof body !== 'string') return null;
+  const m = /<title[^>]*>([^<]{1,120})<\/title>/i.exec(body);
+  return m ? m[1].trim() : null;
+}
+
+/**
+ * What to tell somebody who got a web page back.
+ *
+ * Names the likely cause rather than the symptom, because "no balances found"
+ * and "you are pointed at the wrong server" want completely different actions.
+ */
+export function describeWebPage(body: unknown): string {
+  const title = pageTitle(body);
+  return (
+    'That address returned a web page, not API data' +
+    (title ? ` (“${title}”)` : '') +
+    '. This is almost always the provider’s PORTAL rather than its API — they ' +
+    'are usually different hosts. Ask the provider for the API base URL, and ' +
+    'check the endpoint path.'
+  );
+}
+
+/**
  * An error a provider reported inside a 200.
  *
  * Not every provider uses HTTP status codes to say no. ForumPay answers a

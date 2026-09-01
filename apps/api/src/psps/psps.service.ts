@@ -17,6 +17,8 @@ import {
 import {
   AUTH_MODES,
   callPsp,
+  describeWebPage,
+  looksLikeWebPage,
   providerError,
   suggestAuthMode,
   readBalances,
@@ -313,6 +315,25 @@ export class PspsService {
     const result = await callPsp(conn, endpoint, creds);
     const now = new Date();
 
+    // A 200 carrying an HTML page is not a successful call with no balances in
+    // it — it is the wrong server. Checked before anything tries to read
+    // records out of it, because "check your field paths" against a page of
+    // font declarations is an hour nobody gets back.
+    if (looksLikeWebPage(result.body)) {
+      const message = describeWebPage(result.body);
+      await this.prisma.pspConnection.update({
+        where: { id },
+        data: { lastTriedAt: now, lastError: message.slice(0, 500) },
+      });
+      return {
+        ok: false as const,
+        status: result.status,
+        error: message,
+        ms: result.ms,
+        body: preview(result.body),
+      };
+    }
+
     // A provider that says no inside a 200 is still saying no, and its own
     // words beat anything we would infer from an empty result.
     const stated = result.ok ? providerError(result.body) : null;
@@ -456,6 +477,13 @@ export class PspsService {
  */
 function preview(body: unknown): unknown {
   if (body === undefined) return undefined;
+  // An HTML page's first 4000 characters are `@font-face` rules. They are not
+  // a shape anybody can map field paths onto, and the one useful thing about
+  // the page — which page it is — has already been said in the error above.
+  if (looksLikeWebPage(body)) {
+    const text = body as string;
+    return `An HTML page of ${text.length} characters. Not shown: it is a web page, not API data.`;
+  }
   const text = typeof body === 'string' ? body : JSON.stringify(body);
   if (text.length <= 4000) return body;
   return `${text.slice(0, 4000)}\n… (${text.length - 4000} more characters)`;

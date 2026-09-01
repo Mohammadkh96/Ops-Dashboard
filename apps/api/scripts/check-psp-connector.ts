@@ -20,6 +20,8 @@ import {
 import {
   at,
   describeStatus,
+  describeWebPage,
+  looksLikeWebPage,
   providerError,
   suggestAuthMode,
   readBalances,
@@ -364,6 +366,34 @@ section('a 401 that names the scheme it wants');
   );
   ok('no header, no guess', suggestAuthMode(undefined) === null);
   ok('an empty header, no guess', suggestAuthMode({}) === null);
+}
+
+section('a web page where an API should be');
+{
+  // The commonest configuration mistake: a provider's portal and its API are
+  // different hosts, and the address a person knows is the one they log into.
+  const page =
+    '<!DOCTYPE html><html lang="en"><head><title>Match2Pay Wallet</title>' +
+    '<style>@font-face{font-family:Roboto}</style></head><body></body></html>';
+
+  ok('is recognised', looksLikeWebPage(page));
+  ok('even with leading whitespace', looksLikeWebPage('\n  <html><body>'));
+  ok(
+    'and says it is the portal, not the API',
+    /portal/i.test(describeWebPage(page)),
+  );
+  // The title is the one useful thing on the page — it names what was reached.
+  ok(
+    'naming the page',
+    /Match2Pay Wallet/.test(describeWebPage(page)),
+    describeWebPage(page),
+  );
+
+  // JSON that merely CONTAINS markup is not a web page.
+  ok('a JSON body is not one', !looksLikeWebPage({ html: '<html>' }));
+  ok('a JSON string is not one', !looksLikeWebPage('{"balance":1}'));
+  ok('an XML body is not one', !looksLikeWebPage('<?xml version="1.0"?><a/>'));
+  ok('nothing is not one', !looksLikeWebPage(undefined));
 }
 
 section('what is not a provider error');
