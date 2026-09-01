@@ -473,171 +473,6 @@ function PspForm({
         </div>
       ) : null}
 
-      <label className="flex flex-col gap-1.5">
-        <span className={label}>Base URL</span>
-        <input
-          value={baseUrl}
-          onChange={(e) => setBaseUrl(e.target.value)}
-          placeholder="https://api.provider.com"
-          className={field}
-        />
-        <span className="text-[11px] text-muted">
-          Must be https — plain http would send the API key unencrypted.
-        </span>
-      </label>
-
-      <div className="grid grid-cols-2 gap-3">
-        <label className="flex flex-col gap-1.5">
-          <span className={label}>Auth mode</span>
-          <select
-            value={authMode}
-            onChange={(e) => setAuthMode(e.target.value)}
-            className={`${field} cursor-pointer`}
-          >
-            {AUTH_MODES.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="flex flex-col gap-1.5">
-          <span className={label}>Header / parameter name</span>
-          <input
-            value={authName}
-            onChange={(e) => setAuthName(e.target.value)}
-            placeholder="X-API-KEY"
-            disabled={authMode === "bearer" || authMode === "basic"}
-            className={`${field} disabled:opacity-40`}
-          />
-        </label>
-      </div>
-
-      <div className="flex flex-col gap-2 rounded-lg border border-border bg-card/40 px-3 py-2.5">
-        <span className={label}>Credentials</span>
-        <span className="text-[11px] text-muted">
-          {psp.hasKey
-            ? `A key ending ${psp.keyHint} is stored. Leave blank to keep it.`
-            : "No key stored yet."}{" "}
-          Encrypted before it touches the database, and never sent back here.
-        </span>
-        <input
-          type="password"
-          value={apiKey}
-          onChange={(e) => setApiKey(e.target.value)}
-          placeholder={psp.hasKey ? "Replace the API key" : "API key"}
-          className={field}
-        />
-        {/* The length, because providers reject on it — "should be 60
-            characters, but is 30" is a provider saying the wrong one of these
-            two boxes was pasted, and the only other way to act on that is to
-            count the characters of a live secret somewhere it must not go. */}
-        <Stored what="key" length={psp.keyLength} typed={apiKey} />
-        <input
-          type="password"
-          value={apiSecret}
-          onChange={(e) => setApiSecret(e.target.value)}
-          placeholder={
-            psp.hasSecret
-              ? "Replace the secret"
-              : "API secret (if the provider uses one)"
-          }
-          className={field}
-        />
-        <Stored what="secret" length={psp.secretLength} typed={apiSecret} />
-
-        {/* An empty box KEEPS the stored value — which is right, this form is
-            reopened to change a URL far more often than a credential. But it
-            left no way at all to take one back out, and "the wrong key is in
-            here" is not a rare event: it is what happens the first time
-            somebody pastes a credential belonging to another system. Deleting
-            the whole provider to remove a key is not an answer. */}
-        {psp.hasKey || psp.hasSecret ? (
-          <button
-            type="button"
-            disabled={update.isPending}
-            onClick={() => {
-              setApiKey("");
-              setApiSecret("");
-              // Empty strings, explicitly: this is the one case that means
-              // "clear it" rather than "leave it alone". Switched off with
-              // them — a connection left on with no credentials would be
-              // polled on a schedule and fail every time, which is a provider
-              // watching us retry a bad login forever.
-              save(
-                { apiKey: "", apiSecret: "", enabled: false },
-                "Credentials removed",
-              );
-            }}
-            className="self-start text-[11px] text-accent-red underline underline-offset-2"
-          >
-            Remove the stored credentials
-          </button>
-        ) : null}
-      </div>
-
-      <div className="flex flex-col gap-2">
-        <span className={label}>Balance endpoint</span>
-        <input
-          value={path}
-          onChange={(e) => setPath(e.target.value)}
-          placeholder="/v1/balances"
-          className={field}
-        />
-        {/* Pasting the base URL again here is the obvious mistake — the field
-            above wanted a URL, so this one looks like it does too. It gets
-            joined onto the base, and the resulting nonsense fails as an
-            unparseable URL rather than as the plain error it is. */}
-        {/^https?:\/\//i.test(path.trim()) ? (
-          <span className="text-[11px] text-accent-orange">
-            This is joined onto the base URL, so it wants only the path —{" "}
-            <code className="font-mono">/v1/balances</code>, not the whole
-            address again.
-          </span>
-        ) : null}
-        <div className="grid grid-cols-2 gap-2">
-          <input
-            value={recordsPath}
-            onChange={(e) => setRecordsPath(e.target.value)}
-            placeholder="Records path, e.g. data.balances"
-            className={field}
-          />
-          <input
-            value={amountField}
-            onChange={(e) => setAmountField(e.target.value)}
-            placeholder="Amount field, e.g. available"
-            className={field}
-          />
-          <input
-            value={currencyField}
-            onChange={(e) => setCurrencyField(e.target.value)}
-            placeholder="Currency field"
-            className={field}
-          />
-          <input
-            value={accountField}
-            onChange={(e) => setAccountField(e.target.value)}
-            placeholder="Account field"
-            className={field}
-          />
-        </div>
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Query parameters, e.g. user=f854cc1d-4715-4380"
-          className={field}
-        />
-        <span className="text-[11px] text-muted">
-          Query parameters go in the last box, written as they appear in a URL —{" "}
-          <code className="font-mono">a=1&amp;b=2</code>. Several providers use
-          one to pick which account or brand to report on.
-        </span>
-        <span className="text-[11px] text-muted">
-          Not sure of the paths? Press “Save and test” and read the response
-          below — it shows exactly what the provider sent.
-        </span>
-      </div>
-
       <div className="flex flex-col gap-2">
         <span className={label}>Where the transactions come from</span>
         <select
@@ -657,6 +492,185 @@ function PspForm({
           exist. Nothing to sync, and the list is live.
         </span>
       </div>
+
+      {ledgerSource === "paymaxis" ? (
+        <p className="rounded-lg border border-border bg-card/40 px-3 py-2.5 text-[11px] leading-relaxed text-muted">
+          Nothing else to configure. This terminal needs no base URL, no
+          credentials and no endpoints — its transactions arrive through
+          Paymaxis and are already stored. Add the columns you want below and
+          press Save.
+        </p>
+      ) : null}
+
+      {ledgerSource === "provider" ? (
+        <>
+          <label className="flex flex-col gap-1.5">
+            <span className={label}>Base URL</span>
+            <input
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder="https://api.provider.com"
+              className={field}
+            />
+            <span className="text-[11px] text-muted">
+              Must be https — plain http would send the API key unencrypted.
+            </span>
+          </label>
+
+          <div className="grid grid-cols-2 gap-3">
+            <label className="flex flex-col gap-1.5">
+              <span className={label}>Auth mode</span>
+              <select
+                value={authMode}
+                onChange={(e) => setAuthMode(e.target.value)}
+                className={`${field} cursor-pointer`}
+              >
+                {AUTH_MODES.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1.5">
+              <span className={label}>Header / parameter name</span>
+              <input
+                value={authName}
+                onChange={(e) => setAuthName(e.target.value)}
+                placeholder="X-API-KEY"
+                disabled={authMode === "bearer" || authMode === "basic"}
+                className={`${field} disabled:opacity-40`}
+              />
+            </label>
+          </div>
+
+          <div className="flex flex-col gap-2 rounded-lg border border-border bg-card/40 px-3 py-2.5">
+            <span className={label}>Credentials</span>
+            <span className="text-[11px] text-muted">
+              {psp.hasKey
+                ? `A key ending ${psp.keyHint} is stored. Leave blank to keep it.`
+                : "No key stored yet."}{" "}
+              Encrypted before it touches the database, and never sent back
+              here.
+            </span>
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder={psp.hasKey ? "Replace the API key" : "API key"}
+              className={field}
+            />
+            {/* The length, because providers reject on it — "should be 60
+            characters, but is 30" is a provider saying the wrong one of these
+            two boxes was pasted, and the only other way to act on that is to
+            count the characters of a live secret somewhere it must not go. */}
+            <Stored what="key" length={psp.keyLength} typed={apiKey} />
+            <input
+              type="password"
+              value={apiSecret}
+              onChange={(e) => setApiSecret(e.target.value)}
+              placeholder={
+                psp.hasSecret
+                  ? "Replace the secret"
+                  : "API secret (if the provider uses one)"
+              }
+              className={field}
+            />
+            <Stored what="secret" length={psp.secretLength} typed={apiSecret} />
+
+            {/* An empty box KEEPS the stored value — which is right, this form is
+            reopened to change a URL far more often than a credential. But it
+            left no way at all to take one back out, and "the wrong key is in
+            here" is not a rare event: it is what happens the first time
+            somebody pastes a credential belonging to another system. Deleting
+            the whole provider to remove a key is not an answer. */}
+            {psp.hasKey || psp.hasSecret ? (
+              <button
+                type="button"
+                disabled={update.isPending}
+                onClick={() => {
+                  setApiKey("");
+                  setApiSecret("");
+                  // Empty strings, explicitly: this is the one case that means
+                  // "clear it" rather than "leave it alone". Switched off with
+                  // them — a connection left on with no credentials would be
+                  // polled on a schedule and fail every time, which is a provider
+                  // watching us retry a bad login forever.
+                  save(
+                    { apiKey: "", apiSecret: "", enabled: false },
+                    "Credentials removed",
+                  );
+                }}
+                className="self-start text-[11px] text-accent-red underline underline-offset-2"
+              >
+                Remove the stored credentials
+              </button>
+            ) : null}
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <span className={label}>Balance endpoint</span>
+            <input
+              value={path}
+              onChange={(e) => setPath(e.target.value)}
+              placeholder="/v1/balances"
+              className={field}
+            />
+            {/* Pasting the base URL again here is the obvious mistake — the field
+            above wanted a URL, so this one looks like it does too. It gets
+            joined onto the base, and the resulting nonsense fails as an
+            unparseable URL rather than as the plain error it is. */}
+            {/^https?:\/\//i.test(path.trim()) ? (
+              <span className="text-[11px] text-accent-orange">
+                This is joined onto the base URL, so it wants only the path —{" "}
+                <code className="font-mono">/v1/balances</code>, not the whole
+                address again.
+              </span>
+            ) : null}
+            <div className="grid grid-cols-2 gap-2">
+              <input
+                value={recordsPath}
+                onChange={(e) => setRecordsPath(e.target.value)}
+                placeholder="Records path, e.g. data.balances"
+                className={field}
+              />
+              <input
+                value={amountField}
+                onChange={(e) => setAmountField(e.target.value)}
+                placeholder="Amount field, e.g. available"
+                className={field}
+              />
+              <input
+                value={currencyField}
+                onChange={(e) => setCurrencyField(e.target.value)}
+                placeholder="Currency field"
+                className={field}
+              />
+              <input
+                value={accountField}
+                onChange={(e) => setAccountField(e.target.value)}
+                placeholder="Account field"
+                className={field}
+              />
+            </div>
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Query parameters, e.g. user=f854cc1d-4715-4380"
+              className={field}
+            />
+            <span className="text-[11px] text-muted">
+              Query parameters go in the last box, written as they appear in a
+              URL — <code className="font-mono">a=1&amp;b=2</code>. Several
+              providers use one to pick which account or brand to report on.
+            </span>
+            <span className="text-[11px] text-muted">
+              Not sure of the paths? Press “Save and test” and read the response
+              below — it shows exactly what the provider sent.
+            </span>
+          </div>
+        </>
+      ) : null}
 
       {ledgerSource === "provider" ? (
         <div className="flex flex-col gap-2">
@@ -734,40 +748,49 @@ function PspForm({
               className={field}
             />
           </div>
-          <textarea
-            value={txnExtras}
-            onChange={(e) => setTxnExtras(e.target.value)}
-            rows={4}
-            placeholder={
-              "Extra columns, one per line:\nPos Id = pos_id\nReference No = reference_no"
-            }
-            className="w-full rounded-lg border border-border bg-card px-3 py-2 font-mono text-xs outline-none focus:border-border-strong"
-          />
-          <span className="text-[11px] text-muted">
-            Extra columns are read from the stored record, so adding one shows
-            it on transactions that were synced days ago — no re-sync, and no
-            call to the provider.
-          </span>
-          <FieldsSeen
-            id={psp.id}
-            onPick={(path) => setTxnExtras((t) => appendField(t, path))}
-          />
-          <span className="text-[11px] text-muted">
-            Any field takes alternatives, separated by{" "}
-            <code className="font-mono">|</code> — the first with a value wins.
-            ForumPay needs{" "}
-            <code className="font-mono">reference_no|pos_id</code>, because its
-            Sell rows put the reference in one and its Buy rows in the other.
-          </span>
-          <span className="text-[11px] text-muted">
-            Amounts: pick the provider’s <em>fiat</em> field where it has one —
-            ForumPay reports both <code className="font-mono">amount</code> (the
-            crypto paid) and <code className="font-mono">invoice_amount</code>{" "}
-            (what it was worth), and only the second compares to anything in
-            Paymaxis.
-          </span>
         </div>
       ) : null}
+
+      {/* Outside the endpoint block on purpose: the columns belong to the
+          LEDGER, not to the API that fills it. A terminal reading from
+          Paymaxis has no endpoint and still needs its columns chosen — and
+          nesting them here once meant the note saying "add the columns below"
+          pointed at nothing. */}
+      <div className="flex flex-col gap-2">
+        <span className={label}>Extra columns</span>
+        <textarea
+          value={txnExtras}
+          onChange={(e) => setTxnExtras(e.target.value)}
+          rows={4}
+          placeholder={
+            "Extra columns, one per line:\nPos Id = pos_id\nReference No = reference_no"
+          }
+          className="w-full rounded-lg border border-border bg-card px-3 py-2 font-mono text-xs outline-none focus:border-border-strong"
+        />
+        <span className="text-[11px] text-muted">
+          Extra columns are read from the stored record, so adding one shows it
+          on transactions that were synced days ago — no re-sync, and no call to
+          the provider.
+        </span>
+        <FieldsSeen
+          id={psp.id}
+          onPick={(path) => setTxnExtras((t) => appendField(t, path))}
+        />
+        <span className="text-[11px] text-muted">
+          Any field takes alternatives, separated by{" "}
+          <code className="font-mono">|</code> — the first with a value wins.
+          ForumPay needs <code className="font-mono">reference_no|pos_id</code>,
+          because its Sell rows put the reference in one and its Buy rows in the
+          other.
+        </span>
+        <span className="text-[11px] text-muted">
+          Amounts: pick the provider’s <em>fiat</em> field where it has one —
+          ForumPay reports both <code className="font-mono">amount</code> (the
+          crypto paid) and <code className="font-mono">invoice_amount</code>{" "}
+          (what it was worth), and only the second compares to anything in
+          Paymaxis.
+        </span>
+      </div>
 
       {error ? (
         <p className="rounded-lg border border-accent-red/25 bg-accent-red-soft px-3 py-2 text-xs text-accent-red">
@@ -779,31 +802,43 @@ function PspForm({
         <Button disabled={update.isPending || !canStore} onClick={() => save()}>
           {update.isPending ? "Saving…" : canStore ? "Save" : "Cannot save yet"}
         </Button>
-        {/* Saves first, always. The call is made by the SERVER from the stored
+        {/* Only where there is something to call. A terminal reading from
+            Paymaxis has no API of its own — Match2Pay publishes none — and a
+            Test button on it produces "No base URL configured", which reads as
+            a mistake the person made rather than a thing that does not exist.
+
+            Saves first, always. The call is made by the SERVER from the stored
             row — it has to be, the credential never leaves it — so testing
             without saving silently tries the previous settings. Changing the
             auth mode, pressing Test, and getting the identical error back is
             the exact shape of that bug, and it reads as "my key is wrong". */}
-        <Button
-          variant="secondary"
-          disabled={update.isPending || test.isPending || !canStore}
-          onClick={() => saveThenTest("balance")}
-        >
-          {update.isPending
-            ? "Saving…"
-            : test.isPending
-              ? "Calling…"
-              : "Save and test balance"}
-        </Button>
-        <Button
-          variant="secondary"
-          disabled={
-            update.isPending || test.isPending || !canStore || !txnPath.trim()
-          }
-          onClick={() => saveThenTest("transactions")}
-        >
-          Save and test transactions
-        </Button>
+        {ledgerSource === "provider" && baseUrl.trim() ? (
+          <>
+            <Button
+              variant="secondary"
+              disabled={update.isPending || test.isPending || !canStore}
+              onClick={() => saveThenTest("balance")}
+            >
+              {update.isPending
+                ? "Saving…"
+                : test.isPending
+                  ? "Calling…"
+                  : "Save and test balance"}
+            </Button>
+            <Button
+              variant="secondary"
+              disabled={
+                update.isPending ||
+                test.isPending ||
+                !canStore ||
+                !txnPath.trim()
+              }
+              onClick={() => saveThenTest("transactions")}
+            >
+              Save and test transactions
+            </Button>
+          </>
+        ) : null}
         {psp.enabled ? (
           <Button
             variant="ghost"
