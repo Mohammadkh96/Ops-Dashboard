@@ -6,7 +6,6 @@ import type { ReactNode } from "react";
 import { Users, ScrollText, Plug, CreditCard } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { AdminLockProvider } from "@/lib/admin-lock";
 import { AdminGate } from "@/components/admin/admin-gate";
 
 const ADMIN_TABS = [
@@ -23,7 +22,8 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
     <div className="flex flex-col gap-6">
       <nav className="flex items-center gap-1 overflow-x-auto border-b border-border">
         {ADMIN_TABS.map((t) => {
-          const active = pathname === t.href || pathname.startsWith(`${t.href}/`);
+          const active =
+            pathname === t.href || pathname.startsWith(`${t.href}/`);
           const Icon = t.icon;
           return (
             <Link
@@ -31,7 +31,9 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
               href={t.href}
               className={cn(
                 "relative flex items-center gap-2 px-3 py-2.5 text-sm font-medium transition-colors",
-                active ? "text-foreground" : "text-muted hover:text-muted-foreground",
+                active
+                  ? "text-foreground"
+                  : "text-muted hover:text-muted-foreground",
               )}
             >
               <Icon className="size-4" />
@@ -49,9 +51,11 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
           decides which of the three screens to show. Neither is the control:
           the API refuses every admin route without the unlock header, whatever
           the browser renders. */}
-      <AdminLockProvider>
-        <AdminGate>{children}</AdminGate>
-      </AdminLockProvider>
+      {/* The provider itself now lives in the app shell, so the unlock
+          survives navigating out of this tab and is reachable from the
+          Providers tab, which needs it to sync. The GATE stays here: this is
+          the tab whose screens are behind the second password. */}
+      <AdminGate>{children}</AdminGate>
     </div>
   );
 }

@@ -7,6 +7,7 @@ import { Sidebar } from "@/components/shell/sidebar";
 import { TopBar } from "@/components/shell/top-bar";
 import { CommandPalette } from "@/components/command-palette";
 import { AuthGate } from "@/components/auth-gate";
+import { AdminLockProvider } from "@/lib/admin-lock";
 
 /**
  * Screens that render without the operations chrome — and, more importantly,
@@ -49,7 +50,24 @@ export function AppShell({ children }: { children: ReactNode }) {
       <div className="lg:pl-64">
         <TopBar />
         <main className="mx-auto max-w-[1600px] px-5 py-6 lg:px-8">
-          <AuthGate>{children}</AuthGate>
+          {/* The admin unlock is held HERE rather than in the Admin layout,
+              for two reasons.
+
+              It stopped being an Admin-only thing: syncing a provider's ledger
+              from the Providers tab spends a live credential and needs the
+              unlock, and the reading beside it does not. A hook that threw
+              outside /admin took the whole page down with it.
+
+              And the unlock used to be lost by navigating away — the provider
+              unmounted with the layout — so an administrator who stepped into
+              Payments had to type the passphrase again on returning.
+
+              Nothing is loosened. The token is still memory-only, still
+              nowhere near localStorage, and the API still refuses every
+              guarded route without the header, whatever the browser renders. */}
+          <AdminLockProvider>
+            <AuthGate>{children}</AuthGate>
+          </AdminLockProvider>
         </main>
       </div>
     </div>
