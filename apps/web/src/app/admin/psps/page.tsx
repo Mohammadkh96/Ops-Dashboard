@@ -682,7 +682,7 @@ function PspForm({
           <input
             value={txnReference}
             onChange={(e) => setTxnReference(e.target.value)}
-            placeholder="Reference field, e.g. pos_id"
+            placeholder="Reference, e.g. reference_no|pos_id"
             className={field}
           />
           <input
@@ -698,6 +698,13 @@ function PspForm({
             className={field}
           />
         </div>
+        <span className="text-[11px] text-muted">
+          Any field takes alternatives, separated by{" "}
+          <code className="font-mono">|</code> — the first with a value wins.
+          ForumPay needs <code className="font-mono">reference_no|pos_id</code>,
+          because its Sell rows put the reference in one and its Buy rows in the
+          other.
+        </span>
         <span className="text-[11px] text-muted">
           Amounts: pick the provider’s <em>fiat</em> field where it has one —
           ForumPay reports both <code className="font-mono">amount</code> (the

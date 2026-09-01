@@ -452,6 +452,54 @@ section('timestamps in the shapes providers actually send');
   ok('and nothing at all is null', one(undefined).at === null);
 }
 
+section('a field that lives in different places on different rows');
+{
+  // ForumPay, exactly: a Sell carries the reference in reference_no and leaves
+  // pos_id as the literal "widget"; a Buy has no reference_no at all and puts
+  // the reference in pos_id. Either name alone blanks out half the ledger.
+  const endpoint: EndpointConfig = {
+    path: '/x',
+    fields: { id: 'payment_id', reference: 'reference_no|pos_id' },
+  };
+  const rows = readTransactions(
+    [
+      { payment_id: 'sell-1', pos_id: 'widget', reference_no: 'fe13fd54' },
+      { payment_id: 'buy-1', pos_id: '33968e29' },
+      // Present but empty is the same fact as absent, and providers send "".
+      { payment_id: 'sell-2', pos_id: 'POS9', reference_no: '' },
+      { payment_id: 'none-1' },
+    ],
+    endpoint,
+  );
+  ok(
+    'the first choice wins where it has a value',
+    rows[0].reference === 'fe13fd54',
+  );
+  ok(
+    'the fallback covers the other kind of row',
+    rows[1].reference === '33968e29',
+  );
+  ok('an empty string falls through', rows[2].reference === 'POS9', rows[2]);
+  ok('and neither is null, not a guess', rows[3].reference === null);
+
+  // A single name keeps working exactly as before.
+  const plain = readTransactions([{ pos_id: 'A' }], {
+    path: '/x',
+    fields: { reference: 'pos_id' },
+  });
+  ok('one name still behaves', plain[0].reference === 'A');
+  // Dotted paths must survive being split on the pipe.
+  const nested = readTransactions([{ meta: { ref: 'deep' } }], {
+    path: '/x',
+    fields: { reference: 'missing.ref|meta.ref' },
+  });
+  ok(
+    'and a dotted alternative resolves',
+    nested[0].reference === 'deep',
+    nested[0],
+  );
+}
+
 section('a web page where an API should be');
 {
   // The commonest configuration mistake: a provider's portal and its API are

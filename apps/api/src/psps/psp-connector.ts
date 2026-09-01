@@ -426,9 +426,11 @@ export function readBalances(
   return (
     rows
       .map((row) => ({
-        amount: toNumber(at(row, f.amount ?? 'amount')),
-        account: toText(at(row, f.account ?? 'account')),
-        currency: toText(at(row, f.currency ?? 'currency')),
+        // Alternatives allowed here too, written "available|balance". Same
+        // reason: a provider can name the same fact differently per row.
+        amount: toNumber(pick(row, f.amount ?? 'amount')),
+        account: toText(pick(row, f.account ?? 'account')),
+        currency: toText(pick(row, f.currency ?? 'currency')),
       }))
       // A row whose amount could not be read is a mapping that does not fit, not
       // a balance of zero. Dropping it is right: a zero here would reach the desk
@@ -488,20 +490,47 @@ export function readTransactions(
   const f = endpoint.fields ?? {};
 
   return rows.map((row) => {
-    const raw = toText(at(row, f.date ?? 'date'));
+    const raw = toText(pick(row, f.date ?? 'date'));
     return {
-      id: toText(at(row, f.id ?? 'id')),
-      amount: toNumber(at(row, f.amount ?? 'amount')),
-      currency: toText(at(row, f.currency ?? 'currency')),
-      status: toText(at(row, f.status ?? 'status')),
+      id: toText(pick(row, f.id ?? 'id')),
+      amount: toNumber(pick(row, f.amount ?? 'amount')),
+      currency: toText(pick(row, f.currency ?? 'currency')),
+      status: toText(pick(row, f.status ?? 'status')),
       at: raw,
       atISO: toISO(raw),
-      reference: toText(at(row, f.reference ?? 'reference')),
-      direction: toText(at(row, f.direction ?? 'type')),
-      customer: toText(at(row, f.customer ?? 'customer')),
+      reference: toText(pick(row, f.reference ?? 'reference')),
+      direction: toText(pick(row, f.direction ?? 'type')),
+      customer: toText(pick(row, f.customer ?? 'customer')),
       raw: row,
     };
   });
+}
+
+/**
+ * The first of several paths that actually holds something.
+ *
+ * Written `reference_no|pos_id`. One field name is not always enough, because a
+ * provider can put the same fact in different places depending on the KIND of
+ * row: ForumPay's Sell rows carry the reference in `reference_no` and leave
+ * `pos_id` as the literal string "widget", while its Buy rows have no
+ * `reference_no` at all and put the reference in `pos_id`. Either name alone
+ * blanks out half the ledger.
+ *
+ * First NON-EMPTY wins, not first present — a provider that sends `""` for the
+ * field it is not using is the common case, and "present but empty" is the same
+ * fact as absent.
+ */
+export function pick(row: unknown, spec?: string): unknown {
+  if (!spec) return undefined;
+  for (const path of spec.split('|')) {
+    const p = path.trim();
+    if (!p) continue;
+    const v = at(row, p);
+    if (v === null || v === undefined) continue;
+    if (typeof v === 'string' && v.trim() === '') continue;
+    return v;
+  }
+  return undefined;
 }
 
 /**
