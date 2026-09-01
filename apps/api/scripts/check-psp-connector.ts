@@ -382,26 +382,41 @@ section('reading a transaction list');
       status: 'state',
       date: 'inserted',
       reference: 'pos_id',
+      direction: 'type',
     },
   };
-  const body = [
-    {
-      payment_id: '123e4567-e89b-12d3',
-      invoice_amount: '48.25',
-      invoice_currency: 'EUR',
-      state: 'confirmed',
-      inserted: '2021-08-06 08:23:24',
-      pos_id: 'WEB1',
-    },
-    // A row we cannot price. Kept, not dropped — see readTransactions.
-    { payment_id: 'x-2', state: 'cancelled', inserted: '2021-08-06 09:00:00' },
-  ];
-  const rows = readTransactions(body, endpoint);
+  const body = {
+    // ForumPay's live API wraps the list, though its manual shows a bare
+    // array. The wrapper is why an empty records path read the whole object as
+    // one record and produced a single row of dashes.
+    invoices: [
+      {
+        payment_id: '123e4567-e89b-12d3',
+        type: 'Sell',
+        invoice_amount: '48.25',
+        invoice_currency: 'EUR',
+        state: 'confirmed',
+        inserted: '2021-08-06 08:23:24',
+        pos_id: 'WEB1',
+      },
+      // A row we cannot price. Kept, not dropped — see readTransactions.
+      {
+        payment_id: 'x-2',
+        state: 'cancelled',
+        inserted: '2021-08-06 09:00:00',
+      },
+    ],
+  };
+  const rows = readTransactions(body, { ...endpoint, recordsPath: 'invoices' });
   ok('every row is read', rows.length === 2, rows);
   ok('the fiat amount comes through', rows[0].amount === 48.25);
   ok('and its currency', rows[0].currency === 'EUR');
   ok('and the provider id', rows[0].id === '123e4567-e89b-12d3');
   ok('and our reference on their side', rows[0].reference === 'WEB1');
+  // Which way the money went. Without it a list is a pile of numbers: a total
+  // means nothing, and a payout reconciles against a deposit of equal size.
+  ok('and the direction', rows[0].direction === 'Sell', rows[0]);
+  ok('absent where the provider sends none', rows[1].direction === null);
 
   // Untranslated. "confirmed" is ForumPay's word and Match2Pay says "DONE";
   // mapping them here would put a guess between the desk and the provider on

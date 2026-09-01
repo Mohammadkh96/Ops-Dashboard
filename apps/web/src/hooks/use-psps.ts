@@ -17,6 +17,7 @@ export type EndpointConfig = {
     status?: string;
     date?: string;
     reference?: string;
+    direction?: string;
   };
   query?: Record<string, string>;
 };
@@ -66,6 +67,8 @@ export type Txn = {
   at: string | null;
   atISO: string | null;
   reference: string | null;
+  /** The provider's own word for the direction: "Buy", "Sell", "payout"… */
+  direction: string | null;
 };
 
 export type TestResult =

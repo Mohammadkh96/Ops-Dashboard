@@ -60,6 +60,15 @@ export type EndpointConfig = {
     date?: string;
     /** Our reference on their side: order id, POS id, invoice number. */
     reference?: string;
+    /**
+     * Which way the money went — ForumPay's `type` is "Buy" or "Sell".
+     *
+     * Not cosmetic. A list that mixes deposits and withdrawals with no way to
+     * tell them apart is not a ledger, it is a pile of numbers: totalling it
+     * gives a figure that means nothing, and reconciling it against Paymaxis
+     * would match a payout to a deposit of the same amount and call it agreed.
+     */
+    direction?: string;
   };
   /** Fixed query parameters this endpoint needs. */
   query?: Record<string, string>;
@@ -416,6 +425,8 @@ export type Txn = {
   at: string | null;
   atISO: string | null;
   reference: string | null;
+  /** The provider's own word for the direction: "Buy", "Sell", "payout"… */
+  direction: string | null;
 };
 
 /**
@@ -453,6 +464,7 @@ export function readTransactions(
       at: raw,
       atISO: toISO(raw),
       reference: toText(at(row, f.reference ?? 'reference')),
+      direction: toText(at(row, f.direction ?? 'type')),
     };
   });
 }

@@ -329,6 +329,7 @@ function PspForm({
   const [txnStatus, setTxnStatus] = useState(txn.fields?.status ?? "");
   const [txnDate, setTxnDate] = useState(txn.fields?.date ?? "");
   const [txnReference, setTxnReference] = useState(txn.fields?.reference ?? "");
+  const [txnDirection, setTxnDirection] = useState(txn.fields?.direction ?? "");
   const [txnQuery, setTxnQuery] = useState(queryToText(txn.query));
 
   const body = () => ({
@@ -362,6 +363,7 @@ function PspForm({
           status: txnStatus.trim() || undefined,
           date: txnDate.trim() || undefined,
           reference: txnReference.trim() || undefined,
+          direction: txnDirection.trim() || undefined,
         },
         query: textToQuery(txnQuery),
       },
@@ -665,6 +667,12 @@ function PspForm({
             className={field}
           />
           <input
+            value={txnDirection}
+            onChange={(e) => setTxnDirection(e.target.value)}
+            placeholder="Direction field, e.g. type"
+            className={field}
+          />
+          <input
             value={txnQuery}
             onChange={(e) => setTxnQuery(e.target.value)}
             placeholder="Query, e.g. limit=50"
@@ -882,6 +890,7 @@ function TestPanel({ result }: { result: TestResult }) {
                 <tr className="text-left">
                   <th className="py-1 pr-3 font-medium">When</th>
                   <th className="py-1 pr-3 font-medium">Reference</th>
+                  <th className="py-1 pr-3 font-medium">Direction</th>
                   <th className="py-1 pr-3 text-right font-medium">Amount</th>
                   <th className="py-1 font-medium">Status</th>
                 </tr>
@@ -898,6 +907,11 @@ function TestPanel({ result }: { result: TestResult }) {
                     <td className="py-1 pr-3 font-mono break-all">
                       {t.reference ?? t.id ?? "—"}
                     </td>
+                    {/* Their word, not ours. Which way the money went decides
+                        whether a row adds to a total or subtracts from it, and
+                        guessing that from an amount's sign is how a payout
+                        gets reconciled against a deposit. */}
+                    <td className="py-1 pr-3">{t.direction ?? "—"}</td>
                     <td className="tnum py-1 pr-3 text-right">
                       {/* An unreadable amount says so. A dash is a question;
                           0.00 would be an answer, and a wrong one. */}
