@@ -9,7 +9,6 @@ import { PageHeader } from "@/components/ui/page-header";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/toast";
-import { AdminGate } from "@/components/admin/admin-gate";
 import { useAdminLock } from "@/lib/admin-lock";
 import {
   usePspLedger,
@@ -57,17 +56,6 @@ const PAGE = 100;
  * has no address bar to read.
  */
 export default function PspTransactionsPage() {
-  // Behind the second password, by decision: these rows carry wallet
-  // addresses and client ids. The gate is the same component the Admin tab
-  // uses, so there is one lock screen rather than two that drift apart.
-  return (
-    <AdminGate>
-      <PspTransactionsPageInner />
-    </AdminGate>
-  );
-}
-
-function PspTransactionsPageInner() {
   return (
     <Suspense
       fallback={

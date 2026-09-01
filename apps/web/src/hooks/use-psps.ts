@@ -233,16 +233,17 @@ function ledgerParams(q: LedgerQuery): string {
 /**
  * The stored ledger for one connection.
  *
- * Behind the admin lock, with the rest of the provider data — these rows carry
- * wallet addresses and client ids, not just amounts.
+ * A plain session read. The operations team reads this every shift, and
+ * requiring the admin passphrase would mean the admin passphrase gets shared —
+ * which is worse than what it would be protecting, because that same
+ * passphrase also changes roles, reveals the audit trail and stores payment
+ * credentials. Reading is what a session buys; spending a credential is not.
  */
 export function usePspLedger(id: string | null, q: LedgerQuery) {
-  const { authFetch, unlocked } = useAdminLock();
   return useQuery<LedgerPage>({
-    queryKey: ["psp-ledger", id, q, unlocked],
-    queryFn: () =>
-      authFetch<LedgerPage>(`/psps/${id}/ledger${ledgerParams(q)}`),
-    enabled: Boolean(id) && unlocked,
+    queryKey: ["psp-ledger", id, q],
+    queryFn: () => apiFetch<LedgerPage>(`/psps/${id}/ledger${ledgerParams(q)}`),
+    enabled: Boolean(id),
     // Kept briefly so paging back and forth does not re-query, but not so long
     // that a sync finishes and the table still shows the old count.
     staleTime: 10_000,
@@ -250,11 +251,10 @@ export function usePspLedger(id: string | null, q: LedgerQuery) {
 }
 
 export function usePspLedgerSummary(id: string | null) {
-  const { authFetch, unlocked } = useAdminLock();
   return useQuery<LedgerSummary>({
-    queryKey: ["psp-ledger-summary", id, unlocked],
-    queryFn: () => authFetch<LedgerSummary>(`/psps/${id}/ledger-summary`),
-    enabled: Boolean(id) && unlocked,
+    queryKey: ["psp-ledger-summary", id],
+    queryFn: () => apiFetch<LedgerSummary>(`/psps/${id}/ledger-summary`),
+    enabled: Boolean(id),
     staleTime: 10_000,
   });
 }
@@ -306,13 +306,16 @@ export type PspCard = {
   balances: { at: string; rows: Balance[] } | null;
 };
 
-/** The provider list for the Providers tab. Behind the admin lock. */
+/**
+ * The provider list for the Providers tab.
+ *
+ * A plain session read, unlike usePsps() which is behind the admin lock and
+ * carries base URLs and key hints. This one carries neither.
+ */
 export function usePspDirectory() {
-  const { authFetch, unlocked } = useAdminLock();
   return useQuery<PspCard[]>({
-    queryKey: ["psp-directory", unlocked],
-    queryFn: () => authFetch<PspCard[]>("/psps/directory"),
-    enabled: unlocked,
+    queryKey: ["psp-directory"],
+    queryFn: () => apiFetch<PspCard[]>("/psps/directory"),
     staleTime: 30_000,
   });
 }

@@ -39,20 +39,20 @@ export class PspsController {
   ) {}
 
   /**
-   * Every provider, and the ledgers behind them.
+   * Every provider, for the desk. A SESSION is enough.
    *
-   * BEHIND THE ADMIN LOCK, by decision. These rows carry a payer's wallet
-   * address, the CRM's client id and whatever else the provider sends — which
-   * is a good deal more than the terminal names this started out as. The cost
-   * is real and worth stating: every shift that needs to read a ledger needs
-   * the passphrase, and a passphrase that several people need is a passphrase
-   * that gets shared. If that starts happening, the answer is a role rather
-   * than a second password, not a quiet reversal of this.
+   * The operations team reads these every shift, and gating them on the admin
+   * passphrase would mean the admin passphrase gets shared — which is worse
+   * than what it would be protecting, because that same passphrase also
+   * changes roles, reveals the audit trail and stores payment credentials.
+   *
+   * READING is what a session buys. Everything that spends a credential or
+   * changes a connection still needs the unlock.
    *
    * Declared before the :id routes: Nest matches in order, and "directory"
    * would otherwise be read as a connection id.
    */
-  @UseGuards(JwtAuthGuard, AdminUnlockGuard)
+  @UseGuards(JwtAuthGuard)
   @Get('directory')
   directory() {
     return this.sync.directory();
@@ -157,8 +157,8 @@ export class PspsController {
     return this.sync.sync(id, { full: full === '1' || full === 'true' });
   }
 
-  /** The stored transactions. Behind the lock with the rest — see `directory`. */
-  @UseGuards(JwtAuthGuard, AdminUnlockGuard)
+  /** The stored transactions. Session only — see `directory`. */
+  @UseGuards(JwtAuthGuard)
   @Get(':id/ledger')
   ledger(
     @Param('id') id: string,
@@ -181,7 +181,7 @@ export class PspsController {
     });
   }
 
-  @UseGuards(JwtAuthGuard, AdminUnlockGuard)
+  @UseGuards(JwtAuthGuard)
   @Get(':id/ledger-summary')
   ledgerSummary(@Param('id') id: string) {
     return this.sync.summary(id);

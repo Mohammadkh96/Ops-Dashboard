@@ -9,7 +9,6 @@ import {
   Settings2,
 } from "lucide-react";
 
-import { AdminGate } from "@/components/admin/admin-gate";
 import { PageHeader } from "@/components/ui/page-header";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -24,25 +23,17 @@ import { usePspDirectory, type PspCard } from "@/hooks/use-psps";
  * once — and a screen buried three levels into an administration area is a
  * screen nobody opens.
  *
- * BEHIND THE SECOND PASSWORD all the same. These rows carry a payer's wallet
- * address and the CRM's client id, which is a good deal more than the terminal
- * names and counts this started out as. The cost is real: a shift that needs a
- * ledger needs the passphrase, and a passphrase several people need is a
- * passphrase that gets shared. If that starts happening the answer is a role,
- * not a quiet reversal of this.
+ * A SESSION IS ENOUGH to read it. The operations team opens this every shift,
+ * and gating it on the admin passphrase would mean the admin passphrase gets
+ * shared around the desk — which is worse than what it would be protecting,
+ * because that same passphrase also changes roles, reveals the audit trail and
+ * stores payment credentials.
+ *
+ * The line is between reading and doing: syncing from a provider spends a live
+ * credential and still needs the unlock, as does anything that changes a
+ * connection. Base URLs, key hints and the field mapping stay in Admin.
  */
 export default function ProvidersPage() {
-  // Behind the second password, by decision: these rows carry wallet
-  // addresses and client ids. The gate is the same component the Admin tab
-  // uses, so there is one lock screen rather than two that drift apart.
-  return (
-    <AdminGate>
-      <ProvidersPageInner />
-    </AdminGate>
-  );
-}
-
-function ProvidersPageInner() {
   const { data, isLoading, isError, error } = usePspDirectory();
   const psps = data ?? [];
 
