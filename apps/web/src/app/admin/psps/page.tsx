@@ -315,6 +315,22 @@ function PspForm({
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<TestResult | null>(null);
 
+  // The transactions endpoint, kept entirely separate from the balance one.
+  // They are different paths with different field names on nearly every
+  // provider — ForumPay's balance is /GetBalance/ with `balance`, its
+  // transactions are /GetTransactions/ with `invoice_amount` — and one shared
+  // set of boxes would mean retyping all of it to switch between them.
+  const txn = psp.endpoints?.transactions ?? { path: "" };
+  const [txnPath, setTxnPath] = useState(txn.path ?? "");
+  const [txnRecords, setTxnRecords] = useState(txn.recordsPath ?? "");
+  const [txnId, setTxnId] = useState(txn.fields?.id ?? "");
+  const [txnAmount, setTxnAmount] = useState(txn.fields?.amount ?? "");
+  const [txnCurrency, setTxnCurrency] = useState(txn.fields?.currency ?? "");
+  const [txnStatus, setTxnStatus] = useState(txn.fields?.status ?? "");
+  const [txnDate, setTxnDate] = useState(txn.fields?.date ?? "");
+  const [txnReference, setTxnReference] = useState(txn.fields?.reference ?? "");
+  const [txnQuery, setTxnQuery] = useState(queryToText(txn.query));
+
   const body = () => ({
     id: psp.id,
     baseUrl: baseUrl.trim(),
@@ -336,8 +352,51 @@ function PspForm({
         },
         query: textToQuery(query),
       },
+      transactions: {
+        path: txnPath.trim(),
+        recordsPath: txnRecords.trim() || undefined,
+        fields: {
+          id: txnId.trim() || undefined,
+          amount: txnAmount.trim() || undefined,
+          currency: txnCurrency.trim() || undefined,
+          status: txnStatus.trim() || undefined,
+          date: txnDate.trim() || undefined,
+          reference: txnReference.trim() || undefined,
+        },
+        query: textToQuery(txnQuery),
+      },
     },
   });
+
+  /**
+   * Saves what is on screen, then calls the provider with it.
+   *
+   * The order is the whole point. The call is made by the SERVER from the
+   * stored row — it has to be, the credential never leaves it — so testing
+   * without saving silently tries the previous settings. Changing the auth
+   * mode, pressing Test and getting the identical error back is the exact
+   * shape of that bug, and it reads as "my key is wrong".
+   */
+  const saveThenTest = (capability: "balance" | "transactions") => {
+    setError(null);
+    setResult(null);
+    update.mutate(body(), {
+      onSuccess: () => {
+        setApiKey("");
+        setApiSecret("");
+        test.mutate(
+          { id: psp.id, capability },
+          {
+            onSuccess: setResult,
+            onError: (e: unknown) =>
+              setError(e instanceof Error ? e.message : String(e)),
+          },
+        );
+      },
+      onError: (e: unknown) =>
+        setError(e instanceof Error ? e.message : String(e)),
+    });
+  };
 
   const save = (extra: Record<string, unknown> = {}, message = "Saved") => {
     setError(null);
@@ -549,6 +608,78 @@ function PspForm({
         </span>
       </div>
 
+      <div className="flex flex-col gap-2">
+        <span className={label}>Transactions endpoint</span>
+        <input
+          value={txnPath}
+          onChange={(e) => setTxnPath(e.target.value)}
+          placeholder="/GetTransactions/"
+          className={field}
+        />
+        {/^https?:\/\//i.test(txnPath.trim()) ? (
+          <span className="text-[11px] text-accent-orange">
+            Only the path here — it is joined onto the base URL above.
+          </span>
+        ) : null}
+        <div className="grid grid-cols-2 gap-2">
+          <input
+            value={txnRecords}
+            onChange={(e) => setTxnRecords(e.target.value)}
+            placeholder="Records path (blank if a bare array)"
+            className={field}
+          />
+          <input
+            value={txnId}
+            onChange={(e) => setTxnId(e.target.value)}
+            placeholder="Id field, e.g. payment_id"
+            className={field}
+          />
+          <input
+            value={txnAmount}
+            onChange={(e) => setTxnAmount(e.target.value)}
+            placeholder="Amount field, e.g. invoice_amount"
+            className={field}
+          />
+          <input
+            value={txnCurrency}
+            onChange={(e) => setTxnCurrency(e.target.value)}
+            placeholder="Currency field, e.g. invoice_currency"
+            className={field}
+          />
+          <input
+            value={txnStatus}
+            onChange={(e) => setTxnStatus(e.target.value)}
+            placeholder="Status field, e.g. state"
+            className={field}
+          />
+          <input
+            value={txnDate}
+            onChange={(e) => setTxnDate(e.target.value)}
+            placeholder="Date field, e.g. inserted"
+            className={field}
+          />
+          <input
+            value={txnReference}
+            onChange={(e) => setTxnReference(e.target.value)}
+            placeholder="Reference field, e.g. pos_id"
+            className={field}
+          />
+          <input
+            value={txnQuery}
+            onChange={(e) => setTxnQuery(e.target.value)}
+            placeholder="Query, e.g. limit=50"
+            className={field}
+          />
+        </div>
+        <span className="text-[11px] text-muted">
+          Amounts: pick the provider’s <em>fiat</em> field where it has one —
+          ForumPay reports both <code className="font-mono">amount</code> (the
+          crypto paid) and <code className="font-mono">invoice_amount</code>{" "}
+          (what it was worth), and only the second compares to anything in
+          Paymaxis.
+        </span>
+      </div>
+
       {error ? (
         <p className="rounded-lg border border-accent-red/25 bg-accent-red-soft px-3 py-2 text-xs text-accent-red">
           {error}
@@ -567,29 +698,22 @@ function PspForm({
         <Button
           variant="secondary"
           disabled={update.isPending || test.isPending || !canStore}
-          onClick={() => {
-            setError(null);
-            setResult(null);
-            update.mutate(body(), {
-              onSuccess: () => {
-                setApiKey("");
-                setApiSecret("");
-                test.mutate(psp.id, {
-                  onSuccess: setResult,
-                  onError: (e: unknown) =>
-                    setError(e instanceof Error ? e.message : String(e)),
-                });
-              },
-              onError: (e: unknown) =>
-                setError(e instanceof Error ? e.message : String(e)),
-            });
-          }}
+          onClick={() => saveThenTest("balance")}
         >
           {update.isPending
             ? "Saving…"
             : test.isPending
               ? "Calling…"
-              : "Save and test"}
+              : "Save and test balance"}
+        </Button>
+        <Button
+          variant="secondary"
+          disabled={
+            update.isPending || test.isPending || !canStore || !txnPath.trim()
+          }
+          onClick={() => saveThenTest("transactions")}
+        >
+          Save and test transactions
         </Button>
         {psp.enabled ? (
           <Button
@@ -743,6 +867,55 @@ function TestPanel({ result }: { result: TestResult }) {
               {money(b.amount)} {b.currency ?? ""}
             </span>
           ))}
+        </div>
+      ) : null}
+
+      {result.ok && result.transactions?.length ? (
+        <div className="flex flex-col gap-1">
+          <span className="text-[11px] text-muted">
+            {result.transactions.length} transaction
+            {result.transactions.length === 1 ? "" : "s"}
+          </span>
+          <div className="overflow-x-auto">
+            <table className="w-full text-[11px]">
+              <thead className="text-muted">
+                <tr className="text-left">
+                  <th className="py-1 pr-3 font-medium">When</th>
+                  <th className="py-1 pr-3 font-medium">Reference</th>
+                  <th className="py-1 pr-3 text-right font-medium">Amount</th>
+                  <th className="py-1 font-medium">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {result.transactions.slice(0, 25).map((t, i) => (
+                  <tr key={t.id ?? i} className="border-t border-border/60">
+                    {/* Their timestamp, verbatim. Ours is a reading of an often
+                        timezone-less string, and showing a converted time as
+                        fact is how a payment ends up in the wrong shift. */}
+                    <td className="py-1 pr-3 whitespace-nowrap">
+                      {t.at ?? "—"}
+                    </td>
+                    <td className="py-1 pr-3 font-mono break-all">
+                      {t.reference ?? t.id ?? "—"}
+                    </td>
+                    <td className="tnum py-1 pr-3 text-right">
+                      {/* An unreadable amount says so. A dash is a question;
+                          0.00 would be an answer, and a wrong one. */}
+                      {t.amount === null ? "—" : money(t.amount)}{" "}
+                      <span className="text-muted">{t.currency ?? ""}</span>
+                    </td>
+                    {/* The provider's own word, untranslated. */}
+                    <td className="py-1">{t.status ?? "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {result.transactions.length > 25 ? (
+            <span className="text-[11px] text-muted">
+              Showing the first 25 of {result.transactions.length}.
+            </span>
+          ) : null}
         </div>
       ) : null}
 

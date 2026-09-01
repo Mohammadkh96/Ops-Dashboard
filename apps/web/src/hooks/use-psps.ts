@@ -8,7 +8,16 @@ import { useAdminLock } from "@/lib/admin-lock";
 export type EndpointConfig = {
   path: string;
   recordsPath?: string;
-  fields?: { amount?: string; currency?: string; account?: string };
+  fields?: {
+    amount?: string;
+    currency?: string;
+    account?: string;
+    // Transactions only.
+    id?: string;
+    status?: string;
+    date?: string;
+    reference?: string;
+  };
   query?: Record<string, string>;
 };
 
@@ -42,12 +51,30 @@ export type Balance = {
   amount: number;
 };
 
+/**
+ * One transaction as the provider reports it.
+ *
+ * `status` is their word, untranslated; `at` is their timestamp verbatim and
+ * `atISO` our reading of it, which can be null when their format is one we
+ * cannot parse.
+ */
+export type Txn = {
+  id: string | null;
+  amount: number | null;
+  currency: string | null;
+  status: string | null;
+  at: string | null;
+  atISO: string | null;
+  reference: string | null;
+};
+
 export type TestResult =
   | {
       ok: true;
       status: number;
       ms: number;
       balances: Balance[];
+      transactions: Txn[];
       note?: string;
       body: unknown;
     }
@@ -129,8 +156,16 @@ export function usePspAdmin() {
   });
 
   const test = useMutation({
-    mutationFn: (id: string) =>
-      authFetch<TestResult>(`/psps/${id}/test`, { method: "POST" }),
+    mutationFn: ({
+      id,
+      capability = "balance",
+    }: {
+      id: string;
+      capability?: "balance" | "transactions";
+    }) =>
+      authFetch<TestResult>(`/psps/${id}/test?capability=${capability}`, {
+        method: "POST",
+      }),
     onSuccess: refresh,
   });
 

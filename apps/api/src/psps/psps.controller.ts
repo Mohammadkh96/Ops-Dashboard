@@ -102,6 +102,23 @@ export class PspsController {
     return this.psps.test(id, capability || 'balance');
   }
 
+  /**
+   * The provider's own transaction list, read live.
+   *
+   * A POST for the same reason the test is: it spends a real credential on an
+   * outbound call, which is not the safe cacheable read it resembles. Behind
+   * the admin lock with everything else that touches a credential.
+   */
+  @UseGuards(JwtAuthGuard, AdminUnlockGuard)
+  @Post(':id/transactions')
+  transactions(@Param('id') id: string, @Query('limit') limit?: string) {
+    const n = Number(limit);
+    return this.psps.transactions(
+      id,
+      Number.isInteger(n) && n > 0 ? Math.min(n, 200) : 50,
+    );
+  }
+
   @UseGuards(JwtAuthGuard, AdminUnlockGuard)
   @Post('refresh')
   refresh() {

@@ -25,6 +25,7 @@ import {
   providerError,
   suggestAuthMode,
   readBalances,
+  readTransactions,
   type EndpointConfig,
 } from '../src/psps/psp-connector';
 
@@ -366,6 +367,74 @@ section('a 401 that names the scheme it wants');
   );
   ok('no header, no guess', suggestAuthMode(undefined) === null);
   ok('an empty header, no guess', suggestAuthMode({}) === null);
+}
+
+section('reading a transaction list');
+{
+  // ForumPay's GetTransactions, from its API manual: a bare array, fiat amount
+  // in invoice_amount, their own state vocabulary, a space-separated date.
+  const endpoint: EndpointConfig = {
+    path: '/GetTransactions/',
+    fields: {
+      id: 'payment_id',
+      amount: 'invoice_amount',
+      currency: 'invoice_currency',
+      status: 'state',
+      date: 'inserted',
+      reference: 'pos_id',
+    },
+  };
+  const body = [
+    {
+      payment_id: '123e4567-e89b-12d3',
+      invoice_amount: '48.25',
+      invoice_currency: 'EUR',
+      state: 'confirmed',
+      inserted: '2021-08-06 08:23:24',
+      pos_id: 'WEB1',
+    },
+    // A row we cannot price. Kept, not dropped — see readTransactions.
+    { payment_id: 'x-2', state: 'cancelled', inserted: '2021-08-06 09:00:00' },
+  ];
+  const rows = readTransactions(body, endpoint);
+  ok('every row is read', rows.length === 2, rows);
+  ok('the fiat amount comes through', rows[0].amount === 48.25);
+  ok('and its currency', rows[0].currency === 'EUR');
+  ok('and the provider id', rows[0].id === '123e4567-e89b-12d3');
+  ok('and our reference on their side', rows[0].reference === 'WEB1');
+
+  // Untranslated. "confirmed" is ForumPay's word and Match2Pay says "DONE";
+  // mapping them here would put a guess between the desk and the provider on
+  // the one question a dispute turns on.
+  ok('the status is theirs, verbatim', rows[0].status === 'confirmed');
+
+  // A row with no readable amount is evidence, not noise: a list that silently
+  // shortens itself hides the discrepancy somebody came to find.
+  ok('an unpriceable row survives', rows[1].id === 'x-2');
+  ok('with no amount invented', rows[1].amount === null, rows[1]);
+
+  // Both forms of the date. Theirs is ambiguous — no timezone — so ours is a
+  // reading, and theirs stays on screen to check it against.
+  ok('their timestamp is kept verbatim', rows[0].at === '2021-08-06 08:23:24');
+  ok(
+    'and parsed where it can be',
+    rows[0].atISO?.startsWith('2021-08-06T08:23:24') === true,
+    rows[0].atISO,
+  );
+}
+
+section('timestamps in the shapes providers actually send');
+{
+  const one = (date: unknown) =>
+    readTransactions([{ date, amount: 1 }], { path: '/x' })[0];
+
+  ok('a seconds epoch', one('1628238204').atISO !== null);
+  ok('a milliseconds epoch', one('1628238204000').atISO !== null);
+  ok('an ISO instant', one('2021-08-06T08:23:24Z').atISO !== null);
+  // Nonsense must not become an invented date on a reconciliation screen.
+  ok('unreadable stays unreadable', one('last Tuesday').atISO === null);
+  ok('but is still shown as sent', one('last Tuesday').at === 'last Tuesday');
+  ok('and nothing at all is null', one(undefined).at === null);
 }
 
 section('a web page where an API should be');

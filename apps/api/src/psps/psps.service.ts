@@ -22,6 +22,7 @@ import {
   providerError,
   suggestAuthMode,
   readBalances,
+  readTransactions,
   type AuthMode,
   type EndpointConfig,
 } from './psp-connector';
@@ -381,31 +382,56 @@ export class PspsService {
       };
     }
 
-    const balances =
-      capability === 'balance' ? readBalances(result.body, endpoint) : [];
+    const wantsBalance = capability === 'balance';
+    const balances = wantsBalance ? readBalances(result.body, endpoint) : [];
+    const transactions = wantsBalance
+      ? []
+      : readTransactions(result.body, endpoint);
+
     await this.prisma.pspConnection.update({
       where: { id },
       data: {
         lastTriedAt: now,
         lastOkAt: now,
         lastError: null,
-        ...(capability === 'balance' && balances.length
+        // The transaction list is NOT stored on the connection. It is a page of
+        // a provider's ledger, it can be megabytes, and it goes stale the
+        // moment it is written — the balance is a single current reading and is
+        // a different kind of thing. Transactions are read live.
+        ...(wantsBalance && balances.length
           ? { balances: { at: now.toISOString(), rows: balances } }
           : {}),
       },
     });
 
+    const found = wantsBalance ? balances.length : transactions.length;
     return {
       ok: true as const,
       status: result.status,
       ms: result.ms,
       balances,
+      transactions,
       /** Said plainly: reaching the provider and reading it are two things. */
-      note: balances.length
+      note: found
         ? undefined
-        : 'The provider answered, but no balances could be read from it. Check the records path and the field paths against the response below.',
+        : `The provider answered, but no ${wantsBalance ? 'balances' : 'transactions'} could be read from it. Check the records path and the field paths against the response below.`,
       body: preview(result.body),
     };
+  }
+
+  /**
+   * A provider's own transaction list, read live.
+   *
+   * Worth having beside the payments already imported from Paymaxis, because
+   * they come from different places: Paymaxis reports what it was told, the
+   * provider reports what it did. Where the two disagree — a payment one has
+   * and the other does not — is the thing nobody currently finds until a client
+   * complains.
+   */
+  async transactions(id: string, limit = 50) {
+    const r = await this.test(id, 'transactions');
+    if (!r.ok) return r;
+    return { ...r, transactions: r.transactions.slice(0, limit) };
   }
 
   /** Reads every enabled connection — what the desk sees as "balances now". */

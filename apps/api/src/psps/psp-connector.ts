@@ -51,6 +51,15 @@ export type EndpointConfig = {
     currency?: string;
     /** Which account or wallet this balance belongs to, when there are several. */
     account?: string;
+    // Transactions only. Same mapping idea, different columns.
+    /** The provider's own id, which is what a dispute is argued with. */
+    id?: string;
+    /** Their word for the state, kept verbatim — see readTransactions. */
+    status?: string;
+    /** When it happened, as the provider writes it. */
+    date?: string;
+    /** Our reference on their side: order id, POS id, invoice number. */
+    reference?: string;
   };
   /** Fixed query parameters this endpoint needs. */
   query?: Record<string, string>;
@@ -395,6 +404,76 @@ export function readBalances(
       // where "0.00" sends them to ask the provider where their money went.
       .filter((b): b is Balance & { amount: number } => b.amount !== null)
   );
+}
+
+export type Txn = {
+  id: string | null;
+  amount: number | null;
+  currency: string | null;
+  /** The provider's own word for the state, verbatim. */
+  status: string | null;
+  /** As the provider wrote it, plus our reading of it when we could. */
+  at: string | null;
+  atISO: string | null;
+  reference: string | null;
+};
+
+/**
+ * Pulls a transaction list out of whatever the provider sent.
+ *
+ * Two things are deliberately different from readBalances.
+ *
+ * A row with no readable amount is KEPT, not dropped. For a balance an
+ * unreadable number means the mapping is wrong and a zero would be a lie; for a
+ * transaction list the row itself is evidence — "there is a payment here we
+ * cannot read" is a finding worth seeing, and silently shortening a list that
+ * gets compared against Paymaxis would hide exactly the discrepancy somebody
+ * came to find.
+ *
+ * And the status is passed through untranslated. Every provider has its own
+ * vocabulary — ForumPay says `confirmed`, Match2Pay says `DONE` — and mapping
+ * them onto our own words here would put a guess between the desk and the
+ * provider on the one question a dispute turns on.
+ */
+export function readTransactions(
+  body: unknown,
+  endpoint: EndpointConfig,
+): Txn[] {
+  const found = at(body, endpoint.recordsPath);
+  const rows = Array.isArray(found) ? found : found ? [found] : [];
+  const f = endpoint.fields ?? {};
+
+  return rows.map((row) => {
+    const raw = toText(at(row, f.date ?? 'date'));
+    return {
+      id: toText(at(row, f.id ?? 'id')),
+      amount: toNumber(at(row, f.amount ?? 'amount')),
+      currency: toText(at(row, f.currency ?? 'currency')),
+      status: toText(at(row, f.status ?? 'status')),
+      at: raw,
+      atISO: toISO(raw),
+      reference: toText(at(row, f.reference ?? 'reference')),
+    };
+  });
+}
+
+/**
+ * A provider's timestamp as an instant, when it can be read as one.
+ *
+ * BOTH are kept — theirs verbatim and ours parsed — because these are written
+ * in every format there is, and several are ambiguous. "2021-08-06 08:23:24"
+ * carries no timezone at all, and reading it as UTC when the provider meant
+ * local moves a payment across the 04:00 ops-day boundary and into the wrong
+ * shift. When ours is wrong, theirs is still on screen to check against.
+ */
+function toISO(v: string | null): string | null {
+  if (!v) return null;
+  // A bare seconds epoch, which several providers send as a number-in-a-string.
+  if (/^\d{10}$/.test(v)) return new Date(Number(v) * 1000).toISOString();
+  if (/^\d{13}$/.test(v)) return new Date(Number(v)).toISOString();
+  // "2021-08-06 08:23:24" is not what Date accepts everywhere; the T makes it so.
+  const t = Date.parse(/^\d{4}-\d{2}-\d{2} /.test(v) ? v.replace(' ', 'T') : v);
+  return Number.isFinite(t) ? new Date(t).toISOString() : null;
 }
 
 function toNumber(v: unknown): number | null {
