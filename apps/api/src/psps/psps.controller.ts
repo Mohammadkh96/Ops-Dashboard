@@ -38,6 +38,18 @@ export class PspsController {
     private readonly sync: PspSyncService,
   ) {}
 
+  /**
+   * Every provider, for the desk. Session only — see the service.
+   *
+   * Declared before the :id routes: Nest matches in order, and "directory"
+   * would otherwise be read as a connection id.
+   */
+  @UseGuards(JwtAuthGuard)
+  @Get('directory')
+  directory() {
+    return this.sync.directory();
+  }
+
   /** The balances themselves — what the desk reads. Session only. */
   @UseGuards(JwtAuthGuard)
   @Get('balances')

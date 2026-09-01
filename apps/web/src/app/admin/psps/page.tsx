@@ -282,7 +282,7 @@ function PspRow({ psp, onOpen }: { psp: Psp; onOpen: () => void }) {
             configuration drawer. Only offered where an endpoint is set up —
             a link to an empty table teaches nothing. */}
         {psp.endpoints?.transactions?.path ? (
-          <Link href={`/admin/psps/transactions/?id=${psp.id}`}>
+          <Link href={`/providers/transactions/?id=${psp.id}`}>
             <Button variant="secondary" size="sm">
               <Receipt className="size-3.5" />
               Transactions

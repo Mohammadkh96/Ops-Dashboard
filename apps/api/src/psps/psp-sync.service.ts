@@ -356,6 +356,66 @@ export class PspSyncService {
     };
   }
 
+  /**
+   * Every provider, for the desk rather than for an administrator.
+   *
+   * A SESSION is enough. Nothing here is a secret — no base URL, no key hint,
+   * no endpoint configuration; just the terminal names the desk already reads
+   * on every payment, and how much of each ledger we hold. Requiring the admin
+   * passphrase to see that would mean the admin passphrase gets shared, which
+   * is the failure the second password exists to prevent.
+   */
+  async directory() {
+    const [conns, counts, latest] = await Promise.all([
+      this.prisma.pspConnection.findMany({
+        orderBy: [{ provider: 'asc' }, { terminal: 'asc' }],
+        select: {
+          id: true,
+          terminal: true,
+          label: true,
+          provider: true,
+          enabled: true,
+          endpoints: true,
+          balances: true,
+          lastSyncAt: true,
+          lastError: true,
+        },
+      }),
+      this.prisma.pspTransaction.groupBy({
+        by: ['connectionId'],
+        _count: { _all: true },
+      }),
+      this.prisma.pspTransaction.groupBy({
+        by: ['connectionId'],
+        _max: { occurredAt: true },
+      }),
+    ]);
+
+    const stored = new Map(counts.map((c) => [c.connectionId, c._count._all]));
+    const newest = new Map(
+      latest.map((c) => [c.connectionId, c._max.occurredAt]),
+    );
+
+    return conns.map((c) => {
+      const endpoints = (c.endpoints ?? {}) as Record<string, EndpointConfig>;
+      return {
+        id: c.id,
+        terminal: c.terminal,
+        label: c.label,
+        provider: c.provider,
+        enabled: c.enabled,
+        /** Whether there is a ledger to open — a card that leads nowhere is worse than no card. */
+        hasTransactions: Boolean(endpoints.transactions?.path),
+        stored: stored.get(c.id) ?? 0,
+        newest: newest.get(c.id)?.toISOString() ?? null,
+        lastSyncAt: c.lastSyncAt?.toISOString() ?? null,
+        /** Said plainly on the card: a provider that is failing should say so. */
+        lastError: c.lastError,
+        balances: c.balances ?? null,
+      };
+    });
+  }
+
   /** What the stored set looks like as a whole — the header of the page. */
   async summary(connectionId: string) {
     const [count, oldest, newest, statuses] = await Promise.all([

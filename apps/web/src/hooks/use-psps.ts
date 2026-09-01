@@ -281,3 +281,32 @@ export function usePspSync() {
     },
   });
 }
+
+/** One provider as the desk sees it — no credentials, no configuration. */
+export type PspCard = {
+  id: string;
+  terminal: string;
+  label: string;
+  provider: string;
+  enabled: boolean;
+  hasTransactions: boolean;
+  stored: number;
+  newest: string | null;
+  lastSyncAt: string | null;
+  lastError: string | null;
+  balances: { at: string; rows: Balance[] } | null;
+};
+
+/**
+ * The provider list for the Providers tab.
+ *
+ * A plain session read, unlike usePsps() which is behind the admin lock and
+ * carries base URLs and key hints. This one carries neither.
+ */
+export function usePspDirectory() {
+  return useQuery<PspCard[]>({
+    queryKey: ["psp-directory"],
+    queryFn: () => apiFetch<PspCard[]>("/psps/directory"),
+    staleTime: 30_000,
+  });
+}

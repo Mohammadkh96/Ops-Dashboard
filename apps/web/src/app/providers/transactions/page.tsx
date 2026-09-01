@@ -98,8 +98,8 @@ export default function PspTransactionsPage() {
         <Card className="glass card-seam">
           <CardContent className="py-10 text-center text-sm text-muted">
             No provider chosen. Open this from{" "}
-            <Link href="/admin/psps" className="underline">
-              Payment providers
+            <Link href="/providers" className="underline">
+              Providers
             </Link>
             .
           </CardContent>
@@ -115,7 +115,7 @@ export default function PspTransactionsPage() {
         description="As the provider reported them — their status words, their timestamps."
         actions={
           <div className="flex items-center gap-2">
-            <Link href="/admin/psps">
+            <Link href="/providers">
               <Button variant="ghost" size="sm">
                 <ArrowLeft className="size-3.5" />
                 Providers
