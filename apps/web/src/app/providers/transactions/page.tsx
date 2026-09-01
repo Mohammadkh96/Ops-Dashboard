@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useSyncExternalStore } from "react";
+import { Suspense, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { ArrowLeft, Download, RefreshCw } from "lucide-react";
 
 import { PageHeader } from "@/components/ui/page-header";
@@ -33,32 +34,50 @@ import {
 const field =
   "h-9 rounded-lg border border-border bg-card px-3 text-sm outline-none focus:border-border-strong";
 
+const PAGE = 100;
+
 /**
  * Which connection to show, from the address bar.
  *
  * A query parameter rather than a path segment because this app is a static
- * export: a dynamic route would need every connection's id known at build
- * time, and they are created by a person at runtime.
+ * export: a dynamic route needs every id known at build time, and connections
+ * are created by a person at runtime.
  *
- * Read through useSyncExternalStore rather than an effect — the value only
- * exists in the browser, and setting state from an effect renders the page
- * twice, which React now refuses to compile.
+ * useSearchParams, and NOT a module-level cache of window.location. The cache
+ * is the right shape for a value that is read once on a full page load — the
+ * login page reads its error that way — and exactly the wrong shape here. This
+ * is an SPA route reached by CLIENT-SIDE navigation, so the module stays loaded
+ * between visits: landing here once without an id cached `null`, and every
+ * later click on a provider then showed "No provider chosen" until the page was
+ * reloaded by hand. It would equally have shown the first provider's ledger
+ * under the second provider's name.
+ *
+ * Suspense because useSearchParams suspends during the static prerender, which
+ * has no address bar to read.
  */
-let connectionId: string | null | undefined;
-function readConnectionId(): string | null {
-  if (connectionId === undefined) {
-    connectionId = new URLSearchParams(window.location.search).get("id");
-  }
-  return connectionId;
-}
-const neverChanges = () => () => {};
-
-const PAGE = 100;
-
 export default function PspTransactionsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex flex-col gap-4">
+          <PageHeader title="Transactions" />
+          <Card className="glass card-seam">
+            <CardContent className="py-10 text-center text-sm text-muted">
+              Reading…
+            </CardContent>
+          </Card>
+        </div>
+      }
+    >
+      <Ledger />
+    </Suspense>
+  );
+}
+
+function Ledger() {
   const { toast } = useToast();
   const { unlocked } = useAdminLock();
-  const id = useSyncExternalStore(neverChanges, readConnectionId, () => null);
+  const id = useSearchParams().get("id");
 
   const [offset, setOffset] = useState(0);
   const [status, setStatus] = useState("");
