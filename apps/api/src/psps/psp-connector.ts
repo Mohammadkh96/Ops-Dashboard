@@ -75,6 +75,20 @@ export type EndpointConfig = {
      * client CU31923" — the version somebody can act on.
      */
     customer?: string;
+    /**
+     * Extra columns, as `Label` → path.
+     *
+     * The seven named fields above are the ones every provider has in some
+     * form and the ones the desk compares across providers. Everything else is
+     * particular: ForumPay reports the crypto side of a fiat payment, the
+     * network fee, the originally invoiced amount before a partial was
+     * accepted. Naming a column for each of those would be a schema change per
+     * provider, which is the thing the "Add PSP" button exists to avoid.
+     *
+     * Projected from the stored record at READ time, not at sync time, so
+     * adding a column shows it on rows that were synced last week.
+     */
+    extras?: Record<string, string>;
   };
   /** Fixed query parameters this endpoint needs. */
   query?: Record<string, string>;
@@ -453,6 +467,8 @@ export type Txn = {
   /** The provider's own word for the direction: "Buy", "Sell", "payout"… */
   direction: string | null;
   customer: string | null;
+  /** The configured extra columns, as `Label` → value. */
+  extras: Record<string, string | null>;
   /**
    * The record exactly as it arrived.
    *
@@ -501,9 +517,28 @@ export function readTransactions(
       reference: toText(pick(row, f.reference ?? 'reference')),
       direction: toText(pick(row, f.direction ?? 'type')),
       customer: toText(pick(row, f.customer ?? 'customer')),
+      extras: readExtras(row, f.extras),
       raw: row,
     };
   });
+}
+
+/**
+ * The configured extra columns for one record.
+ *
+ * Exported because the ledger projects these from the stored JSON when a page
+ * is read, rather than at sync time — so a column added today appears on rows
+ * that arrived last week, with no re-sync and no call to the provider.
+ */
+export function readExtras(
+  row: unknown,
+  spec?: Record<string, string>,
+): Record<string, string | null> {
+  const out: Record<string, string | null> = {};
+  for (const [labelText, path] of Object.entries(spec ?? {})) {
+    out[labelText] = toText(pick(row, path));
+  }
+  return out;
 }
 
 /**

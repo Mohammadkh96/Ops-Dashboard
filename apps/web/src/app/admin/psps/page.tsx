@@ -349,6 +349,10 @@ function PspForm({
   const [txnDate, setTxnDate] = useState(txn.fields?.date ?? "");
   const [txnReference, setTxnReference] = useState(txn.fields?.reference ?? "");
   const [txnDirection, setTxnDirection] = useState(txn.fields?.direction ?? "");
+  const [txnCustomer, setTxnCustomer] = useState(txn.fields?.customer ?? "");
+  // Written one per line as `Label = path`, because that is a list of columns
+  // and a list reads better down the page than along it.
+  const [txnExtras, setTxnExtras] = useState(extrasToText(txn.fields?.extras));
   const [txnQuery, setTxnQuery] = useState(queryToText(txn.query));
 
   const body = () => ({
@@ -383,6 +387,8 @@ function PspForm({
           date: txnDate.trim() || undefined,
           reference: txnReference.trim() || undefined,
           direction: txnDirection.trim() || undefined,
+          customer: txnCustomer.trim() || undefined,
+          extras: textToExtras(txnExtras),
         },
         query: textToQuery(txnQuery),
       },
@@ -692,12 +698,32 @@ function PspForm({
             className={field}
           />
           <input
+            value={txnCustomer}
+            onChange={(e) => setTxnCustomer(e.target.value)}
+            placeholder="Client field, e.g. payer_id"
+            className={field}
+          />
+          <input
             value={txnQuery}
             onChange={(e) => setTxnQuery(e.target.value)}
             placeholder="Query, e.g. limit=50"
             className={field}
           />
         </div>
+        <textarea
+          value={txnExtras}
+          onChange={(e) => setTxnExtras(e.target.value)}
+          rows={4}
+          placeholder={
+            "Extra columns, one per line:\nPos Id = pos_id\nReference No = reference_no"
+          }
+          className="w-full rounded-lg border border-border bg-card px-3 py-2 font-mono text-xs outline-none focus:border-border-strong"
+        />
+        <span className="text-[11px] text-muted">
+          Extra columns are read from the stored record, so adding one shows it
+          on transactions that were synced days ago — no re-sync, and no call to
+          the provider.
+        </span>
         <span className="text-[11px] text-muted">
           Any field takes alternatives, separated by{" "}
           <code className="font-mono">|</code> — the first with a value wins.
@@ -809,6 +835,31 @@ function money(n: number): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: digits,
   });
+}
+
+/**
+ * Extra columns, written `Label = path`, one per line.
+ *
+ * A list of columns reads better down the page than along it, and the label is
+ * on the left because that is the part somebody is choosing — the path is
+ * copied from the provider's response.
+ */
+function textToExtras(text: string): Record<string, string> | undefined {
+  const out: Record<string, string> = {};
+  for (const line of text.split("\n")) {
+    const i = line.indexOf("=");
+    if (i <= 0) continue;
+    const labelText = line.slice(0, i).trim();
+    const path = line.slice(i + 1).trim();
+    if (labelText && path) out[labelText] = path;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+function extrasToText(extras?: Record<string, string>): string {
+  return Object.entries(extras ?? {})
+    .map(([k, v]) => `${k} = ${v}`)
+    .join("\n");
 }
 
 /**

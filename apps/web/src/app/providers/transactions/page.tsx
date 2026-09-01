@@ -102,6 +102,10 @@ function Ledger() {
 
   const rows = ledger.data?.rows ?? [];
   const total = ledger.data?.total ?? 0;
+  // Configured in Admin, headed here. The table does not know what they mean —
+  // which is the point: a new provider gets its own columns without a change
+  // to this file.
+  const extraColumns = ledger.data?.extraColumns ?? [];
 
   // A filter change with a page-3 offset shows an empty table and reads as
   // "there is nothing", when what happened is that the result is shorter.
@@ -274,7 +278,11 @@ function Ledger() {
         >
           Clear
         </Button>
-        <Button variant="secondary" size="sm" onClick={() => downloadCsv(rows)}>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => downloadCsv(rows, extraColumns)}
+        >
           <Download className="size-3.5" />
           CSV
         </Button>
@@ -304,6 +312,11 @@ function Ledger() {
                     <th className="px-3 py-2 font-medium">When</th>
                     <th className="px-3 py-2 font-medium">Payment id</th>
                     <th className="px-3 py-2 font-medium">Reference</th>
+                    {extraColumns.map((c) => (
+                      <th key={c} className="px-3 py-2 font-medium">
+                        {c}
+                      </th>
+                    ))}
                     <th className="px-3 py-2 font-medium">Client</th>
                     <th className="px-3 py-2 font-medium">Type</th>
                     <th className="px-3 py-2 text-right font-medium">Amount</th>
@@ -330,6 +343,11 @@ function Ledger() {
                       <td className="px-3 py-2 font-mono break-all">
                         {r.reference ?? "—"}
                       </td>
+                      {extraColumns.map((c) => (
+                        <td key={c} className="px-3 py-2 font-mono break-all">
+                          {r.extras?.[c] ?? "—"}
+                        </td>
+                      ))}
                       <td className="px-3 py-2 font-mono">
                         {r.customer ?? "—"}
                       </td>
@@ -394,11 +412,12 @@ function money(n: number): string {
  * The page you are looking at, not the whole table: exporting more than is
  * displayed makes the button a different action from the one it appears to be.
  */
-function downloadCsv(rows: LedgerRow[]) {
+function downloadCsv(rows: LedgerRow[], extraColumns: string[]) {
   const head = [
     "when",
     "payment_id",
     "reference",
+    ...extraColumns,
     "client",
     "type",
     "amount",
@@ -418,6 +437,7 @@ function downloadCsv(rows: LedgerRow[]) {
         r.rawAt ?? r.occurredAt ?? "",
         r.externalId,
         r.reference,
+        ...extraColumns.map((c) => r.extras?.[c] ?? ""),
         r.customer,
         r.direction,
         r.amount,

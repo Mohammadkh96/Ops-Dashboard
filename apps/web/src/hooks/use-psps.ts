@@ -19,6 +19,9 @@ export type EndpointConfig = {
     date?: string;
     reference?: string;
     direction?: string;
+    customer?: string;
+    /** Extra columns, as `Label` → path. */
+    extras?: Record<string, string>;
   };
   query?: Record<string, string>;
 };
@@ -188,12 +191,16 @@ export type LedgerRow = {
   occurredAt: string | null;
   rawAt: string | null;
   customer: string | null;
+  /** The configured extra columns, as `Label` → value. */
+  extras: Record<string, string | null>;
 };
 
 export type LedgerPage = {
   total: number;
   limit: number;
   offset: number;
+  /** Labels in the order they were configured, so the table can head them. */
+  extraColumns: string[];
   rows: LedgerRow[];
 };
 

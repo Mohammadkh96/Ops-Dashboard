@@ -8,6 +8,7 @@ import {
   describeWebPage,
   looksLikeWebPage,
   providerError,
+  readExtras,
   readTransactions,
   type EndpointConfig,
   type Txn,
@@ -320,6 +321,18 @@ export class PspSyncService {
       ];
     }
 
+    // The extra columns are projected from the stored record HERE, at read
+    // time, rather than being written into columns at sync time. Adding a
+    // column then shows it on rows that arrived last week, with no re-sync and
+    // no call to the provider — which matters when a provider keeps ninety
+    // days and the rows we hold are the only copy left.
+    const conn = await this.prisma.pspConnection.findUnique({
+      where: { id: connectionId },
+      select: { endpoints: true },
+    });
+    const endpoints = (conn?.endpoints ?? {}) as Record<string, EndpointConfig>;
+    const extraSpec = endpoints.transactions?.fields?.extras;
+
     const [rows, total] = await Promise.all([
       this.prisma.pspTransaction.findMany({
         where,
@@ -339,6 +352,10 @@ export class PspSyncService {
           occurredAt: true,
           rawAt: true,
           customer: true,
+          // Only when there is something to project from it. A page of a
+          // hundred whole provider records is a couple of hundred kilobytes
+          // that nothing on the screen would use.
+          raw: Boolean(extraSpec && Object.keys(extraSpec).length),
         },
       }),
       this.prisma.pspTransaction.count({ where }),
@@ -348,10 +365,13 @@ export class PspSyncService {
       total,
       limit: take,
       offset: skip,
-      rows: rows.map((r) => ({
+      /** The column labels, in the order they were configured. */
+      extraColumns: Object.keys(extraSpec ?? {}),
+      rows: rows.map(({ raw, ...r }) => ({
         ...r,
         amount: r.amount === null ? null : Number(r.amount),
         occurredAt: r.occurredAt?.toISOString() ?? null,
+        extras: extraSpec ? readExtras(raw, extraSpec) : {},
       })),
     };
   }
