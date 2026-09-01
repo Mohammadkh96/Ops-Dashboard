@@ -3,13 +3,15 @@
 import { Suspense, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { ArrowLeft, Download, RefreshCw } from "lucide-react";
+import { ArrowLeft, Download, RefreshCw, Upload } from "lucide-react";
 
 import { PageHeader } from "@/components/ui/page-header";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/toast";
+import { parseCsv } from "@/lib/csv";
 import {
+  usePspImport,
   usePspLedger,
   usePspLedgerSummary,
   usePspSync,
@@ -97,6 +99,7 @@ function Ledger() {
   const ledger = usePspLedger(id, query);
   const summary = usePspLedgerSummary(id);
   const sync = usePspSync();
+  const importRows = usePspImport();
 
   const rows = ledger.data?.rows ?? [];
   const total = ledger.data?.total ?? 0;
@@ -151,6 +154,61 @@ function Ledger() {
                 Providers
               </Button>
             </Link>
+            {/* For providers with a portal but no readable API — which is most
+                of them. Match2Pay publishes two endpoints and both create
+                money movements; its portal has an Export to CSV button. */}
+            {viaPaymaxis ? null : (
+              <label className="inline-flex">
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  className="hidden"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    // Cleared immediately so the SAME file can be chosen
+                    // again after a failed import — otherwise the input holds
+                    // it and the second attempt fires no event at all.
+                    e.target.value = "";
+                    if (!file || !id) return;
+                    const rows = parseCsv(await file.text());
+                    if (!rows.length) {
+                      toast({
+                        kind: "warning",
+                        title: "That file had no rows",
+                        description:
+                          "A CSV needs a heading row and at least one record.",
+                      });
+                      return;
+                    }
+                    importRows.mutate(
+                      { id, rows },
+                      {
+                        onSuccess: (r) =>
+                          toast({
+                            kind: "success",
+                            title: `${r.created} new, ${r.updated} updated`,
+                            description: r.skipped
+                              ? `${r.skipped} row${r.skipped === 1 ? "" : "s"} had no id and were left out.`
+                              : `${r.total} rows read.`,
+                          }),
+                        onError: (err: unknown) =>
+                          toast({
+                            kind: "warning",
+                            title:
+                              err instanceof Error ? err.message : String(err),
+                          }),
+                      },
+                    );
+                  }}
+                />
+                <Button variant="secondary" size="sm" asChild>
+                  <span>
+                    <Upload className="size-3.5" />
+                    {importRows.isPending ? "Importing…" : "Import CSV"}
+                  </span>
+                </Button>
+              </label>
+            )}
             {viaPaymaxis ? null : (
               <>
                 <Button

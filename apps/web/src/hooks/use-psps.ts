@@ -345,3 +345,39 @@ export function usePspFields(id: string | null) {
     staleTime: 60_000,
   });
 }
+
+export type ImportResult = {
+  created: number;
+  updated: number;
+  skipped: number;
+  total: number;
+};
+
+/**
+ * A ledger from a file the provider let somebody download.
+ *
+ * The third way in, and for several providers the only one — Match2Pay
+ * publishes no readable endpoint but its portal has an Export to CSV button.
+ * A session, like the sync: it spends no credential at all.
+ */
+export function usePspImport() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      rows,
+    }: {
+      id: string;
+      rows: Record<string, string>[];
+    }) =>
+      apiFetch<ImportResult>(`/psps/${id}/import`, {
+        method: "POST",
+        body: JSON.stringify({ rows }),
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["psp-ledger"] });
+      void queryClient.invalidateQueries({ queryKey: ["psp-ledger-summary"] });
+      void queryClient.invalidateQueries({ queryKey: ["psp-directory"] });
+    },
+  });
+}

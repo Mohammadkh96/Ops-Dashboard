@@ -169,6 +169,21 @@ export class PspsController {
     return this.sync.sync(id, { full: full === '1' || full === 'true' });
   }
 
+  /**
+   * A ledger from a file exported out of the provider's portal.
+   *
+   * A session, like the sync: it is fetching data, and it spends no
+   * credential at all — the person doing it already had the file.
+   */
+  @UseGuards(JwtAuthGuard)
+  @Post(':id/import')
+  importRows(
+    @Param('id') id: string,
+    @Body() body: { rows?: Record<string, unknown>[] },
+  ) {
+    return this.sync.importRows(id, body?.rows ?? []);
+  }
+
   /** The stored transactions. Session only — see `directory`. */
   @UseGuards(JwtAuthGuard)
   @Get(':id/ledger')

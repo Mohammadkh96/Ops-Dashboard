@@ -9,7 +9,8 @@
     "build:static": "STATIC_EXPORT=1 next build",
     "start": "next start",
     "lint": "eslint",
-    "check:recon": "tsx scripts/check-recon-rules.ts && tsx scripts/check-recon-pipeline.ts && tsx scripts/check-recon-v15.ts"
+    "check:recon": "tsx scripts/check-recon-rules.ts && tsx scripts/check-recon-pipeline.ts && tsx scripts/check-recon-v15.ts",
+    "check:csv": "node scripts/check-csv.mjs"
   },
   "dependencies": {
     "@radix-ui/react-avatar": "^1.2.3",

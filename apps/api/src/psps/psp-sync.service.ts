@@ -323,6 +323,72 @@ export class PspSyncService {
    * payment API.
    */
   /**
+   * A ledger filled from a file the provider let somebody download.
+   *
+   * The third way in, and for several providers the only one. Match2Pay
+   * publishes no readable endpoint, but its portal has an Export to CSV button
+   * — and so do most of the others. A screen a person can export from is a
+   * ledger this dashboard can hold.
+   *
+   * Mapped through the SAME field configuration as an API response, with
+   * column headings where the JSON paths would be. That is not a coincidence
+   * worth being pleased about; it is why an imported row and a fetched row are
+   * the same row, dedupe on the same id, and appear in one table.
+   */
+  async importRows(
+    id: string,
+    rows: Record<string, unknown>[],
+  ): Promise<{
+    created: number;
+    updated: number;
+    skipped: number;
+    total: number;
+  }> {
+    const conn = await this.prisma.pspConnection.findUnique({ where: { id } });
+    if (!conn) throw new BadRequestException('No such PSP connection.');
+    if (conn.ledgerSource === 'paymaxis') {
+      throw new BadRequestException(
+        `${conn.label} reads its transactions from Paymaxis, so an imported file would not be shown. Switch it to the stored ledger first.`,
+      );
+    }
+    if (!rows.length) throw new BadRequestException('That file had no rows.');
+
+    const endpoints = (conn.endpoints ?? {}) as Record<string, EndpointConfig>;
+    const endpoint = endpoints.transactions ?? { path: '' };
+    if (!endpoint.fields?.id) {
+      throw new BadRequestException(
+        'Set the Id field first — it has to name the column holding the provider’s own payment id. Without it a second import would duplicate every row instead of updating it.',
+      );
+    }
+
+    // The rows ARE the records: a CSV has no envelope to walk into.
+    const parsed = readTransactions(rows, { ...endpoint, recordsPath: '' });
+
+    let created = 0;
+    let updated = 0;
+    let skipped = 0;
+    for (const row of parsed) {
+      // No id, no identity. Storing it would add a duplicate on every import,
+      // and a ledger that grows by a file's worth of phantoms each time is
+      // worse than one missing a few rows.
+      if (!row.id) {
+        skipped++;
+        continue;
+      }
+      const wrote = await this.store(conn.id, conn.terminal, row);
+      if (wrote === 'created') created++;
+      else updated++;
+    }
+
+    await this.prisma.pspConnection.update({
+      where: { id },
+      data: { lastSyncAt: new Date(), lastOkAt: new Date(), lastError: null },
+    });
+
+    return { created, updated, skipped, total: parsed.length };
+  }
+
+  /**
    * The same ledger, from what Paymaxis already imported.
    *
    * Several providers have no read API. Match2Pay publishes two endpoints,
