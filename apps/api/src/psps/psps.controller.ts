@@ -39,12 +39,20 @@ export class PspsController {
   ) {}
 
   /**
-   * Every provider, for the desk. Session only — see the service.
+   * Every provider, and the ledgers behind them.
+   *
+   * BEHIND THE ADMIN LOCK, by decision. These rows carry a payer's wallet
+   * address, the CRM's client id and whatever else the provider sends — which
+   * is a good deal more than the terminal names this started out as. The cost
+   * is real and worth stating: every shift that needs to read a ledger needs
+   * the passphrase, and a passphrase that several people need is a passphrase
+   * that gets shared. If that starts happening, the answer is a role rather
+   * than a second password, not a quiet reversal of this.
    *
    * Declared before the :id routes: Nest matches in order, and "directory"
    * would otherwise be read as a connection id.
    */
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminUnlockGuard)
   @Get('directory')
   directory() {
     return this.sync.directory();
@@ -149,12 +157,8 @@ export class PspsController {
     return this.sync.sync(id, { full: full === '1' || full === 'true' });
   }
 
-  /**
-   * The stored transactions. A SESSION is enough — this reads our own table
-   * and spends no credential, and the desk needs to see payments without an
-   * administrator standing over it with a passphrase.
-   */
-  @UseGuards(JwtAuthGuard)
+  /** The stored transactions. Behind the lock with the rest — see `directory`. */
+  @UseGuards(JwtAuthGuard, AdminUnlockGuard)
   @Get(':id/ledger')
   ledger(
     @Param('id') id: string,
@@ -177,10 +181,23 @@ export class PspsController {
     });
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, AdminUnlockGuard)
   @Get(':id/ledger-summary')
   ledgerSummary(@Param('id') id: string) {
     return this.sync.summary(id);
+  }
+
+  /**
+   * The fields this provider actually sends, with how often each is filled.
+   *
+   * Behind the admin lock because it is configuration work and it shows
+   * example VALUES — a payer's email is in there, and that is not something to
+   * put in front of every signed-in agent.
+   */
+  @UseGuards(JwtAuthGuard, AdminUnlockGuard)
+  @Get(':id/fields')
+  fields(@Param('id') id: string) {
+    return this.sync.fields(id);
   }
 
   @UseGuards(JwtAuthGuard, AdminUnlockGuard)

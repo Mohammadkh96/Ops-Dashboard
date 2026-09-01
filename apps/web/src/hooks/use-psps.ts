@@ -233,15 +233,16 @@ function ledgerParams(q: LedgerQuery): string {
 /**
  * The stored ledger for one connection.
  *
- * A plain session read, not an admin one: this comes from our own table and
- * spends no credential, and the desk has to be able to look at payments
- * without an administrator standing over it with a passphrase.
+ * Behind the admin lock, with the rest of the provider data — these rows carry
+ * wallet addresses and client ids, not just amounts.
  */
 export function usePspLedger(id: string | null, q: LedgerQuery) {
+  const { authFetch, unlocked } = useAdminLock();
   return useQuery<LedgerPage>({
-    queryKey: ["psp-ledger", id, q],
-    queryFn: () => apiFetch<LedgerPage>(`/psps/${id}/ledger${ledgerParams(q)}`),
-    enabled: Boolean(id),
+    queryKey: ["psp-ledger", id, q, unlocked],
+    queryFn: () =>
+      authFetch<LedgerPage>(`/psps/${id}/ledger${ledgerParams(q)}`),
+    enabled: Boolean(id) && unlocked,
     // Kept briefly so paging back and forth does not re-query, but not so long
     // that a sync finishes and the table still shows the old count.
     staleTime: 10_000,
@@ -249,10 +250,11 @@ export function usePspLedger(id: string | null, q: LedgerQuery) {
 }
 
 export function usePspLedgerSummary(id: string | null) {
+  const { authFetch, unlocked } = useAdminLock();
   return useQuery<LedgerSummary>({
-    queryKey: ["psp-ledger-summary", id],
-    queryFn: () => apiFetch<LedgerSummary>(`/psps/${id}/ledger-summary`),
-    enabled: Boolean(id),
+    queryKey: ["psp-ledger-summary", id, unlocked],
+    queryFn: () => authFetch<LedgerSummary>(`/psps/${id}/ledger-summary`),
+    enabled: Boolean(id) && unlocked,
     staleTime: 10_000,
   });
 }
@@ -304,16 +306,33 @@ export type PspCard = {
   balances: { at: string; rows: Balance[] } | null;
 };
 
-/**
- * The provider list for the Providers tab.
- *
- * A plain session read, unlike usePsps() which is behind the admin lock and
- * carries base URLs and key hints. This one carries neither.
- */
+/** The provider list for the Providers tab. Behind the admin lock. */
 export function usePspDirectory() {
+  const { authFetch, unlocked } = useAdminLock();
   return useQuery<PspCard[]>({
-    queryKey: ["psp-directory"],
-    queryFn: () => apiFetch<PspCard[]>("/psps/directory"),
+    queryKey: ["psp-directory", unlocked],
+    queryFn: () => authFetch<PspCard[]>("/psps/directory"),
+    enabled: unlocked,
     staleTime: 30_000,
+  });
+}
+
+/**
+ * Every field this provider actually sends, read off the stored records.
+ *
+ * The answer to "what do I put in the extras box". A provider's documentation
+ * is wrong as often as not and its portal shows columns the API does not
+ * return, so the reliable source is what arrived.
+ */
+export function usePspFields(id: string | null) {
+  const { authFetch, unlocked } = useAdminLock();
+  return useQuery<{
+    sampled: number;
+    fields: { path: string; filled: number; example: string | null }[];
+  }>({
+    queryKey: ["psp-fields", id, unlocked],
+    queryFn: () => authFetch(`/psps/${id}/fields`),
+    enabled: Boolean(id) && unlocked,
+    staleTime: 60_000,
   });
 }

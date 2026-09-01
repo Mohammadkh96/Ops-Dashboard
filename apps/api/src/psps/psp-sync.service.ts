@@ -49,6 +49,30 @@ const MAX_PAGES = 200;
 /** How long one sync may run. Serverless functions are killed at 60s. */
 const BUDGET_MS = 45_000;
 const DEFAULT_PAGE_SIZE = 50;
+/** How many stored records to read when listing the fields a provider sends. */
+const SAMPLE = 200;
+
+/**
+ * Every leaf in a record, as a dotted path.
+ *
+ * Depth-limited and array-summarised: a provider's record can nest, but a
+ * column mapped twelve levels into the third element of an array is not a
+ * column anybody is going to configure, and listing them all would bury the
+ * dozen that matter.
+ */
+function flatten(value: unknown, prefix = '', depth = 0): [string, unknown][] {
+  if (depth > 2 || value === null || typeof value !== 'object') {
+    return prefix ? [[prefix, value]] : [];
+  }
+  if (Array.isArray(value)) {
+    // The first element stands for the array: the shape repeats, and the path
+    // that is useful is the one into element zero.
+    return value.length ? flatten(value[0], `${prefix}.0`, depth + 1) : [];
+  }
+  return Object.entries(value as Record<string, unknown>).flatMap(([k, v]) =>
+    flatten(v, prefix ? `${prefix}.${k}` : k, depth + 1),
+  );
+}
 
 @Injectable()
 export class PspSyncService {
@@ -434,6 +458,56 @@ export class PspSyncService {
         balances: c.balances ?? null,
       };
     });
+  }
+
+  /**
+   * Every field the provider actually sends, read off the stored records.
+   *
+   * Configuring a column meant knowing a field name, and the only places to
+   * learn one were the provider's documentation — which is wrong as often as
+   * not; ForumPay's says GetTransactions returns a bare array and it does not —
+   * or their portal, which shows columns the API does not return. Guessing
+   * `payer_email` because the portal has a Payer Email column produces a column
+   * of dashes and no explanation.
+   *
+   * So: look at what arrived. The whole record is kept, so this is a question
+   * the data can answer, and it answers it with how OFTEN each field is filled
+   * — which is the difference between a field that does not exist and one that
+   * only Sell rows carry.
+   */
+  async fields(connectionId: string) {
+    const rows = await this.prisma.pspTransaction.findMany({
+      where: { connectionId },
+      orderBy: { firstSeenAt: 'desc' },
+      take: SAMPLE,
+      select: { raw: true },
+    });
+
+    const seen = new Map<string, { filled: number; example: string | null }>();
+    for (const { raw } of rows) {
+      for (const [path, value] of flatten(raw)) {
+        const at = seen.get(path) ?? { filled: 0, example: null };
+        const empty =
+          value === null || value === undefined || String(value).trim() === '';
+        if (!empty) {
+          at.filled++;
+          // The first real value, trimmed. An example is what makes a field
+          // name recognisable — "payer_id" means nothing, "CU43365" is obvious.
+          at.example ??= String(value).slice(0, 60);
+        }
+        seen.set(path, at);
+      }
+    }
+
+    return {
+      sampled: rows.length,
+      fields: [...seen.entries()]
+        .map(([path, v]) => ({ path, ...v }))
+        // Most-filled first: the fields worth a column are the ones with
+        // values in them, and a field that is empty in every record sampled is
+        // the answer to "why is my column all dashes".
+        .sort((a, b) => b.filled - a.filled || a.path.localeCompare(b.path)),
+    };
   }
 
   /** What the stored set looks like as a whole — the header of the page. */

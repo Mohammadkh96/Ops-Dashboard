@@ -9,6 +9,7 @@ import {
   Settings2,
 } from "lucide-react";
 
+import { AdminGate } from "@/components/admin/admin-gate";
 import { PageHeader } from "@/components/ui/page-header";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -16,19 +17,32 @@ import { cn } from "@/lib/utils";
 import { usePspDirectory, type PspCard } from "@/hooks/use-psps";
 
 /**
- * The payment providers, as the desk sees them.
+ * The payment providers and their ledgers.
  *
- * ITS OWN TAB, not a page inside Admin. Reading a provider's ledger is
- * something that happens every shift; configuring the connection happens once.
- * Putting the first behind the second meant the admin passphrase had to be
- * shared to look at payments — which is the exact failure the second password
- * exists to prevent.
+ * ITS OWN TAB rather than a page inside Admin, because reading a ledger is
+ * something that happens every shift while configuring a connection happens
+ * once — and a screen buried three levels into an administration area is a
+ * screen nobody opens.
  *
- * So this carries no secrets and needs no unlock: terminal names the desk
- * already reads on every payment, how much of each ledger we hold, and a way
- * in. The base URL, the key hint and the field mapping stay in Admin.
+ * BEHIND THE SECOND PASSWORD all the same. These rows carry a payer's wallet
+ * address and the CRM's client id, which is a good deal more than the terminal
+ * names and counts this started out as. The cost is real: a shift that needs a
+ * ledger needs the passphrase, and a passphrase several people need is a
+ * passphrase that gets shared. If that starts happening the answer is a role,
+ * not a quiet reversal of this.
  */
 export default function ProvidersPage() {
+  // Behind the second password, by decision: these rows carry wallet
+  // addresses and client ids. The gate is the same component the Admin tab
+  // uses, so there is one lock screen rather than two that drift apart.
+  return (
+    <AdminGate>
+      <ProvidersPageInner />
+    </AdminGate>
+  );
+}
+
+function ProvidersPageInner() {
   const { data, isLoading, isError, error } = usePspDirectory();
   const psps = data ?? [];
 

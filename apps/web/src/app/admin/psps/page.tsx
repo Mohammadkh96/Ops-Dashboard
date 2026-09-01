@@ -20,6 +20,7 @@ import {
   AUTH_MODES,
   useCredentialsKey,
   usePspAdmin,
+  usePspFields,
   usePsps,
   type Psp,
   type TestResult,
@@ -724,6 +725,10 @@ function PspForm({
           on transactions that were synced days ago — no re-sync, and no call to
           the provider.
         </span>
+        <FieldsSeen
+          id={psp.id}
+          onPick={(path) => setTxnExtras((t) => appendField(t, path))}
+        />
         <span className="text-[11px] text-muted">
           Any field takes alternatives, separated by{" "}
           <code className="font-mono">|</code> — the first with a value wins.
@@ -835,6 +840,106 @@ function money(n: number): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: digits,
   });
+}
+
+/**
+ * What this provider actually sends, read off the records already stored.
+ *
+ * The alternative was guessing, and guessing has a specific failure: a column
+ * of dashes with nothing to say why. ForumPay's portal has a Payer Email
+ * column and its API does not return one, so `payer_email` looked like a
+ * reasonable guess and produced an empty column and no explanation.
+ *
+ * How OFTEN each field is filled is the useful part — it separates a field
+ * that does not exist from one only Sell rows carry.
+ */
+function FieldsSeen({
+  id,
+  onPick,
+}: {
+  id: string;
+  onPick: (path: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const { data, isLoading } = usePspFields(open ? id : null);
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="self-start text-[11px] text-accent-blue underline underline-offset-2"
+      >
+        Show the fields this provider sends
+      </button>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-card/40 p-2.5">
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] text-muted">
+          {isLoading
+            ? "Reading the stored transactions…"
+            : data
+              ? `From ${data.sampled} stored transaction${data.sampled === 1 ? "" : "s"} — click to add`
+              : ""}
+        </span>
+        <button
+          type="button"
+          onClick={() => setOpen(false)}
+          className="text-[11px] text-muted underline underline-offset-2"
+        >
+          Hide
+        </button>
+      </div>
+      {data && data.sampled === 0 ? (
+        <span className="text-[11px] text-accent-orange">
+          Nothing stored yet — run a sync first, then the fields will be listed
+          here.
+        </span>
+      ) : null}
+      <div className="flex max-h-56 flex-col gap-0.5 overflow-y-auto">
+        {(data?.fields ?? []).map((f) => (
+          <button
+            key={f.path}
+            type="button"
+            onClick={() => onPick(f.path)}
+            className="flex items-baseline gap-2 rounded px-1 py-0.5 text-left hover:bg-elevated"
+          >
+            <code className="font-mono text-[11px]">{f.path}</code>
+            {/* Never filled in any record sampled: the answer to "why is my
+                column all dashes", said before the column is added. */}
+            <span
+              className={
+                f.filled === 0
+                  ? "text-[10px] text-accent-orange"
+                  : "text-[10px] text-muted"
+              }
+            >
+              {f.filled === 0 ? "always empty" : `${f.filled} filled`}
+            </span>
+            {f.example ? (
+              <span className="truncate text-[10px] text-muted-foreground">
+                {f.example}
+              </span>
+            ) : null}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Adds a field as a new `Label = path` line, guessing a readable label. */
+function appendField(text: string, path: string): string {
+  const leaf = path.split(".").pop() ?? path;
+  const labelText = leaf
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+  const line = `${labelText} = ${path}`;
+  if (text.includes(`= ${path}`)) return text;
+  return text.trim() ? `${text.replace(/\n+$/, "")}\n${line}` : line;
 }
 
 /**
