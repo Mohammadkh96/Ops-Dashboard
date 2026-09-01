@@ -13,6 +13,7 @@ import { PageHeader } from "@/components/ui/page-header";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { BalanceLine } from "@/components/providers/balance";
 import { usePspDirectory, type PspCard } from "@/hooks/use-psps";
 
 /**
@@ -159,6 +160,12 @@ function ProviderCard({ psp }: { psp: PspCard }) {
               transaction{psp.stored === 1 ? "" : "s"} stored
             </span>
           </div>
+
+          {/* The balance, when somebody has anchored one. Below the count and
+              in smaller type on purpose: the transaction count is a fact and
+              the balance is an estimate, and the card should not present them
+              as equals. */}
+          <BalanceLine balance={psp.balance} />
 
           {/* The age of the newest row, always. A ledger last synced on Tuesday
               looks exactly like a current one unless it says so. */}

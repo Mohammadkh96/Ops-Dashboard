@@ -5,7 +5,10 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 
+import { Prisma } from '../../generated/prisma/client';
+
 import { PrismaService } from '../prisma/prisma.service';
+import { readRules } from './psp-balance.service';
 import {
   credentialsKeyConfigured,
   hint,
@@ -99,6 +102,8 @@ export class PspsService {
       keyLength: p.apiKeyEnc ? sealedLength(p.apiKeyEnc) : null,
       secretLength: p.apiSecretEnc ? sealedLength(p.apiSecretEnc) : null,
       endpoints: p.endpoints ?? {},
+      /** Which of the provider's words add to the balance and which subtract. */
+      movementRules: readRules(p.movementRules),
       enabled: p.enabled,
       lastOkAt: p.lastOkAt?.toISOString() ?? null,
       lastTriedAt: p.lastTriedAt?.toISOString() ?? null,
@@ -191,6 +196,7 @@ export class PspsService {
       apiKey?: string;
       apiSecret?: string;
       endpoints?: Record<string, EndpointConfig>;
+      movementRules?: unknown;
       enabled?: boolean;
     },
   ) {
@@ -240,6 +246,24 @@ export class PspsService {
         }
       }
       data.endpoints = input.endpoints;
+    }
+    if (input.movementRules !== undefined) {
+      // Normalised on the way in rather than trusted: these words decide which
+      // way money moves on a screen the desk reads, and a stray object shape
+      // stored here would come back out as a balance nobody could explain.
+      // `null` clears them, which is how a balance stops estimating.
+      const rules = readRules(input.movementRules);
+      if (rules && rules.add?.length && rules.subtract?.length) {
+        const both = rules.add.filter((a) =>
+          rules.subtract!.some((s) => s.toLowerCase() === a.toLowerCase()),
+        );
+        if (both.length) {
+          throw new BadRequestException(
+            `"${both[0]}" cannot both add to and subtract from the balance.`,
+          );
+        }
+      }
+      data.movementRules = rules ?? Prisma.DbNull;
     }
     if (input.enabled !== undefined) data.enabled = input.enabled;
 

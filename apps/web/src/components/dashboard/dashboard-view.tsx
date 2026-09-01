@@ -8,6 +8,7 @@ import { SystemStatusCard } from "@/components/dashboard/system-status";
 import { VolumeChartCard } from "@/components/dashboard/volume-chart";
 import { LiveQueueCard } from "@/components/dashboard/live-queue";
 import { TeamPanelCard } from "@/components/dashboard/team-panel";
+import { PspBalancesCard } from "@/components/dashboard/psp-balances";
 import { Reveal } from "@/components/ui/reveal";
 import { LiveDot } from "@/components/ui/live-dot";
 import { useDashboardSummary } from "@/hooks/use-dashboard";
@@ -125,6 +126,11 @@ export function DashboardView() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Reveal>
           <TeamPanelCard team={data.team} />
+        </Reveal>
+        {/* Renders nothing until somebody has anchored a balance, so the
+            dashboard does not grow an empty panel on day one. */}
+        <Reveal>
+          <PspBalancesCard />
         </Reveal>
       </div>
     </div>

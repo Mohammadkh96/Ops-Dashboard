@@ -735,7 +735,16 @@ model PspConnection {
   lastSyncPages   Int?
   lastSyncFetched Int?
 
+  /// Which of the provider's own words move the balance which way, and which
+  /// states count at all: { currency, add[], subtract[], statuses[] }.
+  ///
+  /// JSON because the vocabulary belongs to the provider — ForumPay says
+  /// "Sell" and "Buy", Paymaxis says "DEPOSIT" and "WITHDRAWAL" — and a column
+  /// per provider would be a migration every time one is added.
+  movementRules Json?
+
   transactions PspTransaction[]
+  anchors      PspBalanceAnchor[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -802,4 +811,40 @@ model PspTransaction {
   @@index([connectionId, occurredAt])
   @@index([terminal, occurredAt])
   @@index([status])
+}
+
+/// A balance somebody read off the provider's own portal.
+///
+/// Exists because several providers will not tell us one: ForumPay's portal
+/// shows a USD figure no documented endpoint returns, and Match2Pay publishes
+/// no read API at all. So the figure is entered once and then MOVED by the
+/// transactions we already store.
+///
+/// A table rather than a column on the connection, because an estimate
+/// corrected in place hides how wrong it was. Every anchor keeps the estimate
+/// it replaced and the gap between them, which is the only honest way to show
+/// a number built this way — fees, conversion spread, settlements and anything
+/// done by hand inside the portal are all invisible to us and all compound.
+model PspBalanceAnchor {
+  id           String        @id @default(cuid())
+  connectionId String
+  connection   PspConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  /// The figure as the portal showed it, and the moment it was true — which is
+  /// not when it was typed in. Somebody reads the portal at 14:20 and enters it
+  /// at 14:35, and the transactions in between must not be counted twice.
+  amount   Decimal  @db.Decimal(20, 8)
+  currency String
+  takenAt  DateTime
+
+  enteredAt DateTime @default(now())
+  enteredBy String?
+  note      String?
+
+  /// What we were estimating the instant before this replaced it, and the gap.
+  /// Null on the first anchor, which had nothing to be wrong about.
+  estimateWas Decimal? @db.Decimal(20, 8)
+  drift       Decimal? @db.Decimal(20, 8)
+
+  @@index([connectionId, takenAt])
 }

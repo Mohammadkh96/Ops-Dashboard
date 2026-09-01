@@ -7,6 +7,7 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
@@ -15,6 +16,7 @@ import { AdminUnlockGuard } from '../auth/guards/admin-unlock.guard';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PspsService } from './psps.service';
 import { PspSyncService } from './psp-sync.service';
+import { PspBalanceService } from './psp-balance.service';
 import type { EndpointConfig } from './psp-connector';
 
 /**
@@ -43,6 +45,7 @@ export class PspsController {
   constructor(
     private readonly psps: PspsService,
     private readonly sync: PspSyncService,
+    private readonly balanceService: PspBalanceService,
   ) {}
 
   /**
@@ -70,6 +73,17 @@ export class PspsController {
   @Get('balances')
   balances() {
     return this.psps.balances();
+  }
+
+  /**
+   * The estimated balance for every connection: anchor plus movement.
+   *
+   * Before the :id routes for the same reason `directory` is.
+   */
+  @UseGuards(JwtAuthGuard)
+  @Get('balance-estimates')
+  balanceEstimates() {
+    return this.balanceService.balances();
   }
 
   // ── everything below is behind the admin lock ─────────────────────────
@@ -110,6 +124,7 @@ export class PspsController {
       apiKey?: string;
       apiSecret?: string;
       endpoints?: Record<string, EndpointConfig>;
+      movementRules?: unknown;
       enabled?: boolean;
     },
   ) {
@@ -212,6 +227,62 @@ export class PspsController {
   @Get(':id/ledger-summary')
   ledgerSummary(@Param('id') id: string) {
     return this.sync.summary(id);
+  }
+
+  /** One connection's estimated balance, with the anchor it is built on. */
+  @UseGuards(JwtAuthGuard)
+  @Get(':id/balance')
+  balance(@Param('id') id: string) {
+    return this.balanceService.balance(id);
+  }
+
+  /**
+   * Records what the provider's portal actually says.
+   *
+   * A SESSION, deliberately. Typing in what the portal shows is the same act as
+   * reading a ledger — the desk does it whenever somebody has the portal open,
+   * and putting it behind the admin passphrase would mean either the passphrase
+   * gets shared or the balance never gets corrected. The second is worse: an
+   * estimate nobody re-anchors is an estimate that drifts for ever.
+   *
+   * It cannot destroy anything. Anchors accumulate; a wrong one is superseded
+   * by the next, and every one of them stays in the history with who entered
+   * it.
+   */
+  @UseGuards(JwtAuthGuard)
+  @Post(':id/anchor')
+  setAnchor(
+    @Param('id') id: string,
+    @Body()
+    body: {
+      amount?: number;
+      currency?: string;
+      takenAt?: string;
+      note?: string;
+    },
+    @Req() req: { user?: { email?: string } },
+  ) {
+    return this.balanceService.setAnchor(id, body ?? {}, req?.user?.email);
+  }
+
+  /** Every balance entered, with the drift each one revealed. Session. */
+  @UseGuards(JwtAuthGuard)
+  @Get(':id/anchors')
+  anchors(@Param('id') id: string) {
+    return this.balanceService.history(id);
+  }
+
+  /**
+   * The direction and status words this terminal actually uses.
+   *
+   * Behind the admin lock because it exists to fill in the movement rules,
+   * which are configuration. Unlike `fields` it carries no example values, only
+   * the provider's vocabulary and how often each word appears.
+   */
+  @UseGuards(JwtAuthGuard, AdminUnlockGuard)
+  @Get(':id/vocabulary')
+  vocabulary(@Param('id') id: string) {
+    return this.balanceService.vocabulary(id);
   }
 
   /**

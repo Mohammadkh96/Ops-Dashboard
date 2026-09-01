@@ -3,6 +3,7 @@ import { Prisma } from '../../generated/prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { open, SecretBoxError } from '../common/secret-box';
+import { PspBalanceService } from './psp-balance.service';
 import {
   callPsp,
   describeWebPage,
@@ -78,7 +79,10 @@ function flatten(value: unknown, prefix = '', depth = 0): [string, unknown][] {
 export class PspSyncService {
   private readonly log = new Logger(PspSyncService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly balance: PspBalanceService,
+  ) {}
 
   async sync(id: string, opts: { full?: boolean } = {}): Promise<SyncResult> {
     const conn = await this.prisma.pspConnection.findUnique({ where: { id } });
@@ -578,7 +582,7 @@ export class PspSyncService {
    * is the failure the second password exists to prevent.
    */
   async directory() {
-    const [conns, counts, latest, viaPaymaxis] = await Promise.all([
+    const [conns, counts, latest, viaPaymaxis, balances] = await Promise.all([
       this.prisma.pspConnection.findMany({
         orderBy: [{ provider: 'asc' }, { terminal: 'asc' }],
         select: {
@@ -609,6 +613,11 @@ export class PspSyncService {
         _count: { _all: true },
         _max: { occurredAt: true },
       }),
+      // The estimated balances, for every connection at once. Here rather than
+      // in a second request because the dashboard shows the card and the
+      // balance together, and two calls means a card that renders and then
+      // grows a number a moment later.
+      this.balance.balances(),
     ]);
 
     const stored = new Map(counts.map((c) => [c.connectionId, c._count._all]));
@@ -621,6 +630,7 @@ export class PspSyncService {
     const pmNewest = new Map(
       viaPaymaxis.map((c) => [c.terminal, c._max.occurredAt]),
     );
+    const balance = new Map(balances.map((b) => [b.connectionId, b]));
 
     return conns.map((c) => {
       const endpoints = (c.endpoints ?? {}) as Record<string, EndpointConfig>;
@@ -646,6 +656,12 @@ export class PspSyncService {
         /** Said plainly on the card: a provider that is failing should say so. */
         lastError: c.lastError,
         balances: c.balances ?? null,
+        /**
+         * The ESTIMATED balance — an anchor somebody entered plus the movement
+         * since. Null until somebody enters one. Never to be shown without the
+         * anchor's age beside it; see PspBalanceService for why.
+         */
+        balance: balance.get(c.id) ?? null,
       };
     });
   }

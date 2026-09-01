@@ -26,6 +26,21 @@ export type EndpointConfig = {
   query?: Record<string, string>;
 };
 
+/**
+ * Which of the provider's own words move the balance, and which way.
+ *
+ * The provider's vocabulary, not ours: ForumPay says "Sell" and "Buy",
+ * Paymaxis says "DEPOSIT" and "WITHDRAWAL". Matching is case-insensitive but
+ * otherwise exact, which is why the configuration screen offers the words the
+ * data actually contains rather than a text box.
+ */
+export type MovementRules = {
+  currency?: string;
+  add?: string[];
+  subtract?: string[];
+  statuses?: string[];
+};
+
 /** A provider connection. Never carries the credential — only whether one is stored. */
 export type Psp = {
   id: string;
@@ -44,6 +59,7 @@ export type Psp = {
   keyLength: number | null;
   secretLength: number | null;
   endpoints: Record<string, EndpointConfig>;
+  movementRules: MovementRules | null;
   enabled: boolean;
   lastOkAt: string | null;
   lastTriedAt: string | null;
@@ -310,7 +326,128 @@ export type PspCard = {
   lastSyncAt: string | null;
   lastError: string | null;
   balances: { at: string; rows: Balance[] } | null;
+  /** The estimated balance — see BalanceView. Null until somebody anchors one. */
+  balance: BalanceView | null;
 };
+
+/** One anchor: a figure somebody read off the provider's own portal. */
+export type Anchor = {
+  id: string;
+  amount: number;
+  currency: string;
+  takenAt: string;
+  enteredAt: string;
+  enteredBy: string | null;
+  note: string | null;
+  /** What was on screen the instant before this replaced it, and the gap. */
+  estimateWas: number | null;
+  drift: number | null;
+};
+
+/**
+ * An ESTIMATED balance: an anchor plus the movement since.
+ *
+ * Never to be rendered as a plain figure. It is a number nobody read anywhere —
+ * it is arithmetic on top of one that somebody did, and it misses the
+ * provider's fees, conversion spread, settlements out, and anything done by
+ * hand in the portal. Every place it appears carries the word "estimated" and
+ * the age of the anchor it sits on.
+ */
+export type BalanceView = {
+  connectionId: string;
+  anchor: Anchor | null;
+  rules: MovementRules | null;
+  estimate: number | null;
+  currency: string | null;
+  movement: {
+    net: number;
+    added: number;
+    subtracted: number;
+    counted: number;
+    ignoredDirection: number;
+    ignoredStatus: number;
+    ignoredCurrency: number;
+    undated: number;
+  };
+  /** False when no rule can classify anything — see the note on the card. */
+  configured: boolean;
+  ageHours: number | null;
+};
+
+/** One connection's estimated balance. A plain session read. */
+export function usePspBalance(id: string | null) {
+  return useQuery<BalanceView>({
+    queryKey: ["psp-balance", id],
+    queryFn: () => apiFetch<BalanceView>(`/psps/${id}/balance`),
+    enabled: Boolean(id),
+    staleTime: 10_000,
+  });
+}
+
+/** Every balance ever entered, with the drift each one revealed. */
+export function usePspAnchors(id: string | null) {
+  return useQuery<Anchor[]>({
+    queryKey: ["psp-anchors", id],
+    queryFn: () => apiFetch<Anchor[]>(`/psps/${id}/anchors`),
+    enabled: Boolean(id),
+    staleTime: 30_000,
+  });
+}
+
+/**
+ * Records what the portal actually says.
+ *
+ * A plain session, like the sync. Typing in a figure somebody is looking at is
+ * desk work; putting it behind the admin passphrase would mean either that
+ * passphrase gets shared or the estimate never gets corrected, and an estimate
+ * nobody re-anchors drifts for ever.
+ */
+export function useSetAnchor() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      ...body
+    }: {
+      id: string;
+      amount: number;
+      currency: string;
+      takenAt?: string;
+      note?: string;
+    }) =>
+      apiFetch<{ anchor: Anchor; balance: BalanceView }>(`/psps/${id}/anchor`, {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["psp-balance"] });
+      void queryClient.invalidateQueries({ queryKey: ["psp-anchors"] });
+      void queryClient.invalidateQueries({ queryKey: ["psp-directory"] });
+    },
+  });
+}
+
+/**
+ * The direction and status words this terminal actually uses.
+ *
+ * Behind the admin lock, because it exists to fill in the movement rules and
+ * those are configuration. It is what makes the rules configurable at all:
+ * matching is exact, so typing "WITHDRAWAL" at a provider that says "payout"
+ * gives a rule that matches nothing and a balance that silently stops moving.
+ */
+export function usePspVocabulary(id: string | null) {
+  const { authFetch, unlocked } = useAdminLock();
+  return useQuery<{
+    directions: { value: string; count: number }[];
+    statuses: { value: string; count: number }[];
+    currencies: { value: string; count: number }[];
+  }>({
+    queryKey: ["psp-vocabulary", id, unlocked],
+    queryFn: () => authFetch(`/psps/${id}/vocabulary`),
+    enabled: Boolean(id) && unlocked,
+    staleTime: 60_000,
+  });
+}
 
 /**
  * The provider list for the Providers tab.

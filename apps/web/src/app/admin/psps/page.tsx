@@ -22,6 +22,8 @@ import {
   usePspAdmin,
   usePspFields,
   usePsps,
+  usePspVocabulary,
+  type MovementRules,
   type Psp,
   type TestResult,
 } from "@/hooks/use-psps";
@@ -357,6 +359,9 @@ function PspForm({
   const [txnExtras, setTxnExtras] = useState(extrasToText(txn.fields?.extras));
   const [txnQuery, setTxnQuery] = useState(queryToText(txn.query));
 
+  // Which of the provider's own words move the balance, and which way.
+  const [rules, setRules] = useState<MovementRules>(psp.movementRules ?? {});
+
   const body = () => ({
     id: psp.id,
     baseUrl: baseUrl.trim(),
@@ -396,6 +401,7 @@ function PspForm({
         query: textToQuery(txnQuery),
       },
     },
+    movementRules: rules,
   });
 
   /**
@@ -792,6 +798,16 @@ function PspForm({
         </span>
       </div>
 
+      {/* Also outside the endpoint block, and for the same reason: the balance
+          belongs to the LEDGER. A terminal reading from Paymaxis has no API of
+          its own and still has a balance somebody wants to track. */}
+      <MovementRulesEditor
+        id={psp.id}
+        rules={rules}
+        onChange={setRules}
+        currencyHint={txnCurrency}
+      />
+
       {error ? (
         <p className="rounded-lg border border-accent-red/25 bg-accent-red-soft px-3 py-2 text-xs text-accent-red">
           {error}
@@ -986,6 +1002,241 @@ function FieldsSeen({
           </button>
         ))}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Which of the provider's own words move the balance, and which way.
+ *
+ * PICKED, NOT TYPED. Matching is exact (bar case), so a typed rule is a rule
+ * that can silently match nothing: somebody who writes "WITHDRAWAL" at a
+ * provider that says "payout" gets a balance that quietly stops subtracting and
+ * climbs for ever. The words this terminal actually uses are a question the
+ * stored transactions can answer, so they answer it, with counts — a word on
+ * four rows out of nine thousand is probably not the one that matters.
+ *
+ * Three lists rather than a rule language: everything else in this screen maps
+ * a name to a name, and a balance is not the place to introduce an expression
+ * anybody has to learn.
+ */
+function MovementRulesEditor({
+  id,
+  rules,
+  onChange,
+  currencyHint,
+}: {
+  id: string;
+  rules: MovementRules;
+  onChange: (r: MovementRules) => void;
+  currencyHint?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const vocab = usePspVocabulary(open ? id : null);
+
+  const set = (patch: Partial<MovementRules>) => onChange({ ...rules, ...patch });
+  const toggle = (key: "add" | "subtract" | "statuses", word: string) => {
+    const list = rules[key] ?? [];
+    const has = list.some((w) => w.toLowerCase() === word.toLowerCase());
+    const next = has
+      ? list.filter((w) => w.toLowerCase() !== word.toLowerCase())
+      : [...list, word];
+    // A word cannot both add and subtract; picking it on one side takes it off
+    // the other rather than saving something the API will reject.
+    if (key === "add") {
+      set({
+        add: next,
+        subtract: (rules.subtract ?? []).filter(
+          (w) => w.toLowerCase() !== word.toLowerCase(),
+        ),
+      });
+    } else if (key === "subtract") {
+      set({
+        subtract: next,
+        add: (rules.add ?? []).filter(
+          (w) => w.toLowerCase() !== word.toLowerCase(),
+        ),
+      });
+    } else {
+      set({ statuses: next });
+    }
+  };
+
+  const summary = [
+    rules.add?.length ? `+${rules.add.join(", ")}` : null,
+    rules.subtract?.length ? `−${rules.subtract.join(", ")}` : null,
+  ]
+    .filter(Boolean)
+    .join("  ");
+
+  return (
+    <div className="flex flex-col gap-2">
+      <span className={label}>Balance</span>
+      <p className="text-[11px] text-muted">
+        Providers like ForumPay and Match2Pay do not publish a balance we can
+        read, so somebody enters the figure from their portal and it moves from
+        there. These rules decide which transactions move it. The result is
+        always shown as an estimate.
+      </p>
+
+      {!open ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[11px] text-muted">
+            {summary ? (
+              <code className="font-mono">{summary}</code>
+            ) : (
+              "Nothing set — the balance will not move"
+            )}
+          </span>
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            className="text-[11px] text-accent-blue underline underline-offset-2"
+          >
+            {summary ? "Change" : "Set them up"}
+          </button>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3 rounded-lg border border-border bg-card/40 p-2.5">
+          {vocab.isLoading ? (
+            <span className="text-[11px] text-muted">
+              Reading the words this provider uses…
+            </span>
+          ) : null}
+          {vocab.data && !vocab.data.directions.length ? (
+            <span className="text-[11px] text-accent-orange">
+              Nothing stored yet — run a sync first, and the words this provider
+              uses will be listed here to pick from.
+            </span>
+          ) : null}
+
+          <WordPicker
+            title="These add to the balance"
+            hint="Deposits, sells — money arriving at the provider."
+            words={vocab.data?.directions ?? []}
+            chosen={rules.add ?? []}
+            tone="green"
+            onToggle={(w) => toggle("add", w)}
+          />
+          <WordPicker
+            title="These subtract from it"
+            hint="Withdrawals, buys, refunds — money leaving."
+            words={vocab.data?.directions ?? []}
+            chosen={rules.subtract ?? []}
+            tone="orange"
+            onToggle={(w) => toggle("subtract", w)}
+          />
+          <WordPicker
+            title="Only these statuses count"
+            hint="A pending deposit is not money yet. Leave empty and every status counts, which is almost never right."
+            words={vocab.data?.statuses ?? []}
+            chosen={rules.statuses ?? []}
+            tone="blue"
+            onToggle={(w) => toggle("statuses", w)}
+          />
+
+          <label className="flex flex-col gap-1">
+            <span className="text-[11px] font-medium">Currency</span>
+            <input
+              value={rules.currency ?? ""}
+              onChange={(e) => set({ currency: e.target.value.toUpperCase() })}
+              placeholder={currencyHint ? "USD" : "USD"}
+              className="w-28 rounded-lg border border-border bg-card px-2 py-1.5 text-xs uppercase outline-none focus:border-border-strong"
+            />
+            <span className="text-[11px] text-muted">
+              Rows in any other currency are left out and counted, not converted
+              — an invented FX rate is a worse answer than a visible gap.
+              {vocab.data?.currencies.length
+                ? ` Seen here: ${vocab.data.currencies.map((c) => c.value).join(", ")}.`
+                : ""}
+            </span>
+          </label>
+
+          <div className="flex items-center justify-between">
+            <button
+              type="button"
+              onClick={() => onChange({})}
+              className="text-[11px] text-muted underline underline-offset-2"
+            >
+              Clear
+            </button>
+            <button
+              type="button"
+              onClick={() => setOpen(false)}
+              className="text-[11px] text-muted underline underline-offset-2"
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WordPicker({
+  title,
+  hint,
+  words,
+  chosen,
+  tone,
+  onToggle,
+}: {
+  title: string;
+  hint: string;
+  words: { value: string; count: number }[];
+  chosen: string[];
+  tone: "green" | "orange" | "blue";
+  onToggle: (word: string) => void;
+}) {
+  const on = {
+    green: "border-accent-green/40 bg-accent-green-soft text-accent-green",
+    orange: "border-accent-orange/40 bg-accent-orange-soft text-accent-orange",
+    blue: "border-accent-blue/40 bg-accent-blue-soft text-accent-blue",
+  }[tone];
+
+  // A word that was configured before but no longer appears in the data is
+  // still shown, struck through — silently dropping it would hide a rule that
+  // stopped working when the provider renamed something.
+  const missing = chosen.filter(
+    (c) => !words.some((w) => w.value.toLowerCase() === c.toLowerCase()),
+  );
+
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-[11px] font-medium">{title}</span>
+      <div className="flex flex-wrap gap-1.5">
+        {words.map((w) => {
+          const picked = chosen.some(
+            (c) => c.toLowerCase() === w.value.toLowerCase(),
+          );
+          return (
+            <button
+              key={w.value}
+              type="button"
+              onClick={() => onToggle(w.value)}
+              className={`rounded-full border px-2 py-0.5 text-[11px] transition-colors ${
+                picked ? on : "border-border text-muted hover:border-border-strong"
+              }`}
+            >
+              {w.value}
+              <span className="ml-1 opacity-60">{w.count.toLocaleString()}</span>
+            </button>
+          );
+        })}
+        {missing.map((w) => (
+          <button
+            key={w}
+            type="button"
+            onClick={() => onToggle(w)}
+            title="Configured, but this provider is not sending it any more"
+            className="rounded-full border border-accent-orange/40 px-2 py-0.5 text-[11px] text-accent-orange line-through"
+          >
+            {w}
+          </button>
+        ))}
+      </div>
+      <span className="text-[11px] text-muted">{hint}</span>
     </div>
   );
 }

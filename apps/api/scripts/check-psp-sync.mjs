@@ -109,6 +109,7 @@ const ENDPOINT = (extra = {}) => ({
 process.env.CREDENTIALS_KEY = 'a-test-credentials-key-at-least-32-characters';
 
 const { PspSyncService } = require('../dist/src/psps/psp-sync.service');
+const { PspBalanceService } = require('../dist/src/psps/psp-balance.service');
 const { seal } = require('../dist/src/common/secret-box');
 
 /**
@@ -156,7 +157,7 @@ function makeStore() {
 
 {
   const store = makeStore();
-  const sync = new PspSyncService(store);
+  const sync = new PspSyncService(store, new PspBalanceService(store));
   let seq = 0;
 
   function connectionFor(port) {

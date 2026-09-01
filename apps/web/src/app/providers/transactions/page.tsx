@@ -10,7 +10,9 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/toast";
 import { parseCsv } from "@/lib/csv";
+import { BalancePanel } from "@/components/providers/balance";
 import {
+  usePspBalance,
   usePspImport,
   usePspLedger,
   usePspLedgerSummary,
@@ -98,6 +100,7 @@ function Ledger() {
 
   const ledger = usePspLedger(id, query);
   const summary = usePspLedgerSummary(id);
+  const balance = usePspBalance(id);
   const sync = usePspSync();
   const importRows = usePspImport();
 
@@ -292,6 +295,11 @@ function Ledger() {
           ))}
         </div>
       ) : null}
+
+      {/* Above the filters, because the balance is about the whole ledger and
+          not about whatever is currently filtered — putting it under them
+          would read as "the balance of these 40 rows". */}
+      <BalancePanel connectionId={id} balance={balance.data} />
 
       <div className="flex flex-wrap gap-2">
         <input
