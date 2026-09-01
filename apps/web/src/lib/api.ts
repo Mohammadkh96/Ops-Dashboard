@@ -4,7 +4,8 @@
 // are made and callers fall back to bundled demo data. This lets the frontend
 // be deployed standalone (e.g. to get a live preview URL) with zero backend.
 
-export const API_URL = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ?? "";
+export const API_URL =
+  process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ?? "";
 export const isDemoMode = API_URL === "";
 
 const TOKEN_KEY = "opsos.token";
@@ -15,11 +16,36 @@ export function getToken(): string | null {
 }
 
 export function setToken(token: string) {
-  if (typeof window !== "undefined") window.localStorage.setItem(TOKEN_KEY, token);
+  if (typeof window !== "undefined")
+    window.localStorage.setItem(TOKEN_KEY, token);
 }
 
 export function clearToken() {
   if (typeof window !== "undefined") window.localStorage.removeItem(TOKEN_KEY);
+}
+
+/**
+ * The session token is checked once, when the app mounts. It also EXPIRES —
+ * eight hours by default, which is one shift — and nothing was watching for
+ * that in a tab that stays open. Every request after the moment of expiry came
+ * back 401, and the screen showed "Unauthorized" on every panel with no way
+ * forward: the sign-in redirect only runs on mount, so the fix was to reload
+ * the page, which nothing on screen said.
+ *
+ * A 401 from our own API means one thing — this session is over. Say so once,
+ * and go to the sign-in page.
+ *
+ * Sign-in itself is excluded: a wrong password is also a 401, and treating it
+ * as an expiry would bounce somebody off the page they are trying to use.
+ */
+function sessionEnded(path: string) {
+  if (typeof window === "undefined") return;
+  if (path.startsWith("/auth/login") || path.startsWith("/auth/google")) return;
+  clearToken();
+  // replace(), not assign(): the expired page must not come back on Back.
+  if (!window.location.pathname.startsWith("/login")) {
+    window.location.replace("/login?expired=1");
+  }
 }
 
 export class ApiError extends Error {
@@ -91,10 +117,14 @@ async function attempt<T>(path: string, init?: RequestInit): Promise<T> {
     let message = res.statusText;
     try {
       const body = (await res.json()) as { message?: string | string[] };
-      if (body?.message) message = Array.isArray(body.message) ? body.message.join(", ") : body.message;
+      if (body?.message)
+        message = Array.isArray(body.message)
+          ? body.message.join(", ")
+          : body.message;
     } catch {
       /* non-JSON error body */
     }
+    if (res.status === 401) sessionEnded(path);
     throw new ApiError(res.status, message, TRANSIENT_STATUS.has(res.status));
   }
 

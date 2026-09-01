@@ -14,9 +14,21 @@ import { useAuth } from "@/lib/auth";
 import { API_URL, apiFetch, isDemoMode } from "@/lib/api";
 
 const highlights = [
-  { icon: Activity, title: "Live operational telemetry", copy: "Payments, KYC, incidents and MT5 health in one command center." },
-  { icon: ShieldCheck, title: "Risk-aware by default", copy: "Every transaction scored, every alert routed to the right desk." },
-  { icon: Zap, title: "Built for the shift floor", copy: "Sub-second search, keyboard-first, tuned for high-tempo ops." },
+  {
+    icon: Activity,
+    title: "Live operational telemetry",
+    copy: "Payments, KYC, incidents and MT5 health in one command center.",
+  },
+  {
+    icon: ShieldCheck,
+    title: "Risk-aware by default",
+    copy: "Every transaction scored, every alert routed to the right desk.",
+  },
+  {
+    icon: Zap,
+    title: "Built for the shift floor",
+    copy: "Sub-second search, keyboard-first, tuned for high-tempo ops.",
+  },
 ];
 
 /**
@@ -56,7 +68,16 @@ let redirectReason: string | null | undefined;
 
 function readRedirectReason(): string | null {
   if (redirectReason === undefined) {
-    redirectReason = new URLSearchParams(window.location.search).get("error");
+    const q = new URLSearchParams(window.location.search);
+    redirectReason =
+      q.get("error") ??
+      // Arriving here mid-shift because the session ran out. Said plainly:
+      // being dropped onto a sign-in page with no explanation reads as the
+      // dashboard having broken, and the first instinct is to report a fault
+      // rather than to sign in again.
+      (q.get("expired")
+        ? "Your session expired, which happens once a shift. Sign in again — nothing was lost."
+        : null);
   }
   return redirectReason;
 }
@@ -160,8 +181,8 @@ export default function LoginPage() {
               The operational command center for modern brokerage.
             </h2>
             <p className="mt-3 max-w-md text-sm leading-relaxed text-muted-foreground">
-              One surface for payments, compliance, incidents and trading health — so
-              your desk sees everything and reacts in seconds.
+              One surface for payments, compliance, incidents and trading health
+              — so your desk sees everything and reacts in seconds.
             </p>
           </motion.div>
 
@@ -173,7 +194,11 @@ export default function LoginPage() {
                   key={h.title}
                   initial={{ opacity: 0, x: -12 }}
                   animate={{ opacity: 1, x: 0 }}
-                  transition={{ duration: 0.5, delay: 0.2 + i * 0.1, ease: [0.22, 1, 0.36, 1] }}
+                  transition={{
+                    duration: 0.5,
+                    delay: 0.2 + i * 0.1,
+                    ease: [0.22, 1, 0.36, 1],
+                  }}
                   className="flex items-start gap-3.5"
                 >
                   <div className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-card">
@@ -181,7 +206,9 @@ export default function LoginPage() {
                   </div>
                   <div className="flex flex-col gap-0.5">
                     <span className="text-sm font-medium">{h.title}</span>
-                    <span className="text-xs leading-relaxed text-muted">{h.copy}</span>
+                    <span className="text-xs leading-relaxed text-muted">
+                      {h.copy}
+                    </span>
                   </div>
                 </motion.div>
               );
@@ -210,7 +237,9 @@ export default function LoginPage() {
           </div>
           <div className="ml-auto flex items-center gap-2">
             <LiveDot tone="green" />
-            <span className="text-[11px] text-muted">All systems operational</span>
+            <span className="text-[11px] text-muted">
+              All systems operational
+            </span>
           </div>
         </motion.div>
       </div>
@@ -230,8 +259,12 @@ export default function LoginPage() {
           </div>
 
           <div className="mb-6">
-            <h1 className="text-xl font-semibold tracking-tight">Welcome back</h1>
-            <p className="mt-1 text-xs text-muted">Sign in to your operations command center.</p>
+            <h1 className="text-xl font-semibold tracking-tight">
+              Welcome back
+            </h1>
+            <p className="mt-1 text-xs text-muted">
+              Sign in to your operations command center.
+            </p>
           </div>
 
           {hasGoogle ? (
@@ -244,16 +277,30 @@ export default function LoginPage() {
                     page is a request to a third party before anybody has
                     agreed to anything. */}
                 <svg viewBox="0 0 24 24" className="size-4" aria-hidden>
-                  <path fill="#4285F4" d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5a5.6 5.6 0 0 1-2.4 3.6v3h3.9c2.3-2.1 3.5-5.2 3.5-8.8z" />
-                  <path fill="#34A853" d="M12 24c3.2 0 5.9-1.1 7.9-2.9l-3.9-3c-1 .7-2.3 1.1-4 1.1-3.1 0-5.7-2.1-6.6-4.9H1.4v3.1A12 12 0 0 0 12 24z" />
-                  <path fill="#FBBC05" d="M5.4 14.3a7.2 7.2 0 0 1 0-4.6V6.6H1.4a12 12 0 0 0 0 10.8l4-3.1z" />
-                  <path fill="#EA4335" d="M12 4.8c1.8 0 3.3.6 4.6 1.8l3.4-3.4A12 12 0 0 0 1.4 6.6l4 3.1C6.3 6.9 8.9 4.8 12 4.8z" />
+                  <path
+                    fill="#4285F4"
+                    d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5a5.6 5.6 0 0 1-2.4 3.6v3h3.9c2.3-2.1 3.5-5.2 3.5-8.8z"
+                  />
+                  <path
+                    fill="#34A853"
+                    d="M12 24c3.2 0 5.9-1.1 7.9-2.9l-3.9-3c-1 .7-2.3 1.1-4 1.1-3.1 0-5.7-2.1-6.6-4.9H1.4v3.1A12 12 0 0 0 12 24z"
+                  />
+                  <path
+                    fill="#FBBC05"
+                    d="M5.4 14.3a7.2 7.2 0 0 1 0-4.6V6.6H1.4a12 12 0 0 0 0 10.8l4-3.1z"
+                  />
+                  <path
+                    fill="#EA4335"
+                    d="M12 4.8c1.8 0 3.3.6 4.6 1.8l3.4-3.4A12 12 0 0 0 1.4 6.6l4 3.1C6.3 6.9 8.9 4.8 12 4.8z"
+                  />
                 </svg>
                 Continue with Google
               </a>
               <div className="flex items-center gap-3">
                 <span className="h-px flex-1 bg-border" />
-                <span className="text-[10px] uppercase tracking-wider text-muted">or</span>
+                <span className="text-[10px] uppercase tracking-wider text-muted">
+                  or
+                </span>
                 <span className="h-px flex-1 bg-border" />
               </div>
             </div>
@@ -261,7 +308,9 @@ export default function LoginPage() {
 
           <form onSubmit={onSubmit} className="flex flex-col gap-4">
             <label className="flex flex-col gap-1.5">
-              <span className="text-xs font-medium text-muted-foreground">Email</span>
+              <span className="text-xs font-medium text-muted-foreground">
+                Email
+              </span>
               <input
                 type="email"
                 required
@@ -271,7 +320,9 @@ export default function LoginPage() {
               />
             </label>
             <label className="flex flex-col gap-1.5">
-              <span className="text-xs font-medium text-muted-foreground">Password</span>
+              <span className="text-xs font-medium text-muted-foreground">
+                Password
+              </span>
               <input
                 type="password"
                 required
@@ -288,7 +339,12 @@ export default function LoginPage() {
               </p>
             ) : null}
 
-            <Button type="submit" size="lg" disabled={submitting} className="mt-1">
+            <Button
+              type="submit"
+              size="lg"
+              disabled={submitting}
+              className="mt-1"
+            >
               {submitting ? <Loader2 className="size-4 animate-spin" /> : null}
               {submitting ? "Signing in…" : "Sign in"}
             </Button>
@@ -308,8 +364,9 @@ export default function LoginPage() {
 
           {isDemoMode ? (
             <p className="mt-5 rounded-lg border border-border bg-card/40 px-3 py-2.5 text-center text-[11px] leading-relaxed text-muted">
-              Demo login: <span className="text-muted-foreground">mohammad@tradin.com</span> /
-              <span className="text-muted-foreground"> OpsOS!2026</span>
+              Demo login:{" "}
+              <span className="text-muted-foreground">mohammad@tradin.com</span>{" "}
+              /<span className="text-muted-foreground"> OpsOS!2026</span>
             </p>
           ) : null}
         </motion.div>

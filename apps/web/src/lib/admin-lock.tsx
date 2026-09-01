@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from "react";
 
-import { apiFetch } from "@/lib/api";
+import { apiFetch, ApiError } from "@/lib/api";
 
 /**
  * The Admin tab's unlock, held for as long as it lasts and no longer.
@@ -75,6 +75,17 @@ export function AdminLockProvider({ children }: { children: ReactNode }) {
       return apiFetch<T>(path, {
         ...init,
         headers: { ...(init?.headers ?? {}), "X-Admin-Token": token },
+      }).catch((e: unknown) => {
+        // The unlock expires on its own clock, and the guard says so plainly —
+        // but the screen stayed in its unlocked state, so every panel showed a
+        // refusal and none of them offered the passphrase box that would fix
+        // it. Dropping the token puts the Admin tab back on its lock screen,
+        // which is the one place that can.
+        const status = e instanceof ApiError ? e.status : 0;
+        const expired =
+          status === 403 && /expired|unlock/i.test((e as Error).message ?? "");
+        if (expired) setToken(null);
+        throw e;
       });
     },
     [token],
