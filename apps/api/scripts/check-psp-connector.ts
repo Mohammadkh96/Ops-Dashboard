@@ -563,6 +563,60 @@ section('an id the provider reuses across rows');
   ok('a complete one is used', partial[1].id === 'x:y', partial[1]);
 }
 
+section("ForumPay's settlement date, which its manual denies exists");
+{
+  // Their OpenAPI documents `confirmed` as a BOOLEAN — "Is transaction
+  // successful and confirmed", example: false — and documents no settlement
+  // timestamp at all. The live API sends a timestamp in that field, which is
+  // the third thing their manual has been wrong about here, after the bare
+  // array that is really {"invoices":[...]} and a payer_email that does not
+  // exist.
+  //
+  // It matters because it is the only thing that places a payment correctly
+  // against a balance anchor: raised the 31st, settled the 2nd, money moved on
+  // the 2nd.
+  const endpoint: EndpointConfig = {
+    path: '',
+    recordsPath: '',
+    fields: { id: 'payment_id', date: 'inserted', settled: 'confirmed' },
+  };
+  const rows = readTransactions(
+    [
+      { payment_id: 'a', inserted: '2026-09-02 05:41:34', confirmed: '2026-09-02 05:41:35' },
+      // Raised before an anchor, settled after it.
+      { payment_id: 'e', inserted: '2026-08-31 14:00:00', confirmed: '2026-09-02 06:30:00' },
+      // The shapes a row that has NOT settled arrives in. All three must give
+      // null rather than a date, so the created date stands in — a pending
+      // payment has no settlement time and must not be given one.
+      { payment_id: 'b', inserted: '2026-08-31 14:00:00', confirmed: false },
+      { payment_id: 'c', inserted: '2026-08-31 14:00:00', confirmed: '' },
+      { payment_id: 'd', inserted: '2026-08-31 14:00:00' },
+    ],
+    endpoint,
+  );
+
+  ok('a settled row carries both dates',
+     rows[0].atISO === '2026-09-02T05:41:34.000Z' &&
+     rows[0].settledISO === '2026-09-02T05:41:35.000Z', rows[0]);
+  ok('and they can be days apart',
+     rows[1].atISO?.startsWith('2026-08-31') === true &&
+     rows[1].settledISO?.startsWith('2026-09-02') === true, rows[1]);
+  ok('the documented boolean is not a date', rows[2].settledISO === null, rows[2]);
+  ok('nor is an empty string', rows[3].settledISO === null, rows[3]);
+  ok('nor is an absent field', rows[4].settledISO === null, rows[4]);
+  ok('and the created date always survives',
+     rows.every((r) => r.atISO !== null), rows.map((r) => r.atISO));
+
+  // Unconfigured, nothing is guessed: a field named `settled` would be wrong
+  // here, and guessing one silently moves payments in time.
+  const unmapped = readTransactions(
+    [{ payment_id: 'a', inserted: '2026-09-02 05:41:34', confirmed: '2026-09-02 05:41:35' }],
+    { path: '', recordsPath: '', fields: { id: 'payment_id', date: 'inserted' } },
+  );
+  ok('nothing is guessed when it is not configured',
+     unmapped[0].settledISO === null, unmapped[0]);
+}
+
 section('a web page where an API should be');
 {
   // The commonest configuration mistake: a provider's portal and its API are
