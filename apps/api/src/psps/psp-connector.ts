@@ -1,4 +1,4 @@
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 
 /**
  * One HTTP call to a payment provider.
@@ -9,10 +9,18 @@ import { createHmac } from 'node:crypto';
  * providers is configuration — the base URL, how the key is presented, which
  * path to call, where the numbers are in the reply.
  *
- * READ-ONLY, STRUCTURALLY. The method is not configurable and is always GET.
- * That is not a policy note, it is the reason this is safe to point at a live
- * payment provider with real keys: there is no code path here that can move
- * money, whatever gets typed into the form.
+ * READ-ONLY, STRUCTURALLY. The method of a provider call is not configurable
+ * and is always GET. That is not a policy note, it is the reason this is safe
+ * to point at a live payment provider with real keys: there is no code path
+ * here that can move money, whatever gets typed into the form.
+ *
+ * There is exactly one POST in this file, and it is worth being explicit about
+ * why it does not weaken that. `oauth2` providers do not accept a static key at
+ * all — they mint a short-lived token from it, and minting is a POST. That call
+ * is not configurable either: its URL is the token endpoint and nothing else,
+ * its body is the fixed string `grant_type=client_credentials`, and its reply
+ * is read for one field. No path, verb or payload from the form reaches it, so
+ * it cannot be aimed at a payments endpoint however the form is filled in.
  */
 
 /** How the credential is presented to the provider. */
@@ -26,7 +34,19 @@ export type AuthMode =
   /** A query parameter, e.g. ?api_key=<key> — worse, but some require it. */
   | 'query'
   /** An HMAC-SHA256 of the path, signed with the secret. */
-  | 'hmac';
+  | 'hmac'
+  /**
+   * Exchange the key and secret for a short-lived token, then Bearer that.
+   *
+   * The others all present a credential that IS the credential. This one does
+   * not: the provider issues a client id and a client key that are only good
+   * for asking, and every real call carries a JWT minted from them minutes
+   * ago. BEEM is one — it answers a static key with
+   * `Invalid JWT serialization: Missing dot delimiter(s)`, which is a server
+   * saying "that is not a token" rather than "that is the wrong token", and no
+   * amount of re-pasting the key fixes it.
+   */
+  | 'oauth2';
 
 export const AUTH_MODES: AuthMode[] = [
   'bearer',
@@ -34,6 +54,7 @@ export const AUTH_MODES: AuthMode[] = [
   'basic',
   'query',
   'hmac',
+  'oauth2',
 ];
 
 /** Where in a response the interesting values are. */
@@ -184,6 +205,220 @@ function usefulHeaders(res: Response): Record<string, string> | undefined {
 const TIMEOUT_MS = 15_000;
 
 /**
+ * Tokens already minted, so a paged sync does not mint one per page.
+ *
+ * A full BEEM ledger is dozens of requests. Asking for a fresh token before
+ * each is a login attempt per page, which is the shape of traffic that gets a
+ * client rate-limited or locked out by the provider's own abuse rules — for no
+ * gain, since the token they issued is good for the whole run.
+ *
+ * In memory and per process, deliberately. A token is a live credential; the
+ * database is not where it should be, and a serverless process that goes away
+ * taking its cache with it costs one extra exchange.
+ */
+const tokenCache = new Map<string, { token: string; expiresAt: number }>();
+
+/**
+ * Treat a token as expired a minute before it says so.
+ *
+ * The clock here and the clock there are not the same clock, and a token that
+ * expires in flight fails the request that carried it. A minute is far more
+ * than the drift and far less than any real token's life.
+ */
+const TOKEN_SKEW_MS = 60_000;
+
+/** Forgets every minted token. Exported for the checks. */
+export function clearTokenCache(): void {
+  tokenCache.clear();
+}
+
+/** An OAuth2 error response's own words, which beat any status code. */
+function oauthError(body: unknown): string | null {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+  const o = body as Record<string, unknown>;
+  for (const k of ['error_description', 'message', 'error']) {
+    const v = o[k];
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  return null;
+}
+
+type TokenResult =
+  | { ok: true; token: string; cacheKey: string }
+  | { ok: false; status: number | null; error: string; body?: unknown };
+
+/**
+ * A client id and client key, exchanged for a token that can be used.
+ *
+ * Two attempts, not one, and that is the point of doing this in code rather
+ * than adding another dropdown. RFC 6749 allows the client credentials either
+ * in an `Authorization: Basic` header or in the form body, providers are split
+ * roughly evenly between them, and which one a given provider wants is not
+ * something anybody can read off a screen — it is one 400 away from being
+ * known. So: Basic first, because it is the one the RFC says a server MUST
+ * support, then the body. The failure that gets reported is the LAST one, which
+ * is the one from the attempt the provider was most likely to accept.
+ */
+async function accessToken(
+  conn: { id?: string | null; authName?: string | null },
+  creds: Credentials,
+  base: string,
+): Promise<TokenResult> {
+  const raw = (conn.authName ?? '').trim();
+  if (!raw) {
+    return {
+      ok: false,
+      status: null,
+      error:
+        'No token endpoint configured. The oauth2 mode does not send the key — it exchanges the key and secret for a short-lived token first, and needs the address the provider mints one at. Put it in the box beside the auth mode, e.g. /oauth/token.',
+    };
+  }
+
+  // Absolute allowed: an authorisation server is routinely a different host
+  // from the API it guards, and forcing the token path onto the API's base URL
+  // would make those providers unconfigurable.
+  let url: URL;
+  try {
+    url = /^https?:\/\//i.test(raw)
+      ? new URL(raw)
+      : new URL(`${base}${raw.startsWith('/') ? '' : '/'}${raw}`);
+  } catch {
+    return {
+      ok: false,
+      status: null,
+      error: `"${raw}" is not a usable token endpoint.`,
+    };
+  }
+  if (url.protocol !== 'https:') {
+    // Stricter than it looks like it needs to be. Every other call carries a
+    // key; this one carries the key AND the secret, in a request body.
+    return {
+      ok: false,
+      status: null,
+      error:
+        'The token endpoint must be https. The client secret is posted to it, and plain http would put it on the wire in the clear.',
+    };
+  }
+
+  // The credentials are part of the key so that replacing a rotated secret
+  // takes effect on the next call rather than whenever the old token happened
+  // to expire — which is the difference between "I pasted the new key and it
+  // works" and "I pasted the new key and it still fails for an hour".
+  const fingerprint = createHash('sha256')
+    .update(`${creds.key ?? ''} ${creds.secret ?? ''}`)
+    .digest('hex')
+    .slice(0, 16);
+  const cacheKey = `${conn.id ?? ''}|${url.href}|${fingerprint}`;
+
+  const hit = tokenCache.get(cacheKey);
+  if (hit && hit.expiresAt > Date.now()) {
+    return { ok: true, token: hit.token, cacheKey };
+  }
+
+  let last: { status: number | null; error: string; body?: unknown } = {
+    status: null,
+    error: 'The token endpoint was never reached.',
+  };
+
+  for (const inBody of [false, true]) {
+    const form = new URLSearchParams({ grant_type: 'client_credentials' });
+    const headers: Record<string, string> = {
+      accept: 'application/json',
+      'content-type': 'application/x-www-form-urlencoded',
+    };
+    if (inBody) {
+      form.set('client_id', creds.key ?? '');
+      form.set('client_secret', creds.secret ?? '');
+    } else {
+      headers.authorization = `Basic ${Buffer.from(
+        `${creds.key ?? ''}:${creds.secret ?? ''}`,
+      ).toString('base64')}`;
+    }
+
+    let res: Response;
+    let text: string;
+    try {
+      res = await fetch(url, {
+        // The only POST in this file. Fixed body, fixed URL — see the note at
+        // the top for why that is not a hole in the GET-only rule.
+        method: 'POST',
+        headers,
+        body: form,
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      });
+      text = await res.text();
+    } catch (e) {
+      const timedOut = e instanceof DOMException && e.name === 'TimeoutError';
+      last = {
+        status: null,
+        error: timedOut
+          ? `The token endpoint did not answer within ${TIMEOUT_MS / 1000}s.`
+          : e instanceof Error
+            ? e.message
+            : String(e),
+      };
+      // A network failure is not evidence about how the credentials should be
+      // presented, so there is nothing to learn from trying the other way.
+      break;
+    }
+
+    let parsed: unknown = text;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      /* Not JSON. Kept as text — an HTML login page is the most useful error a
+         wrong token URL gives. */
+    }
+
+    if (!res.ok) {
+      const said = oauthError(parsed);
+      last = {
+        status: res.status,
+        error:
+          `The token endpoint refused the client credentials (${res.status}).` +
+          (said ? ` It said: ${said}` : ''),
+        body: parsed,
+      };
+      // 400 and 401 are the two a server uses to mean "not like that". Anything
+      // else — 404, 500 — is about the endpoint, not the presentation, and
+      // asking again the other way just makes a second bad request.
+      if (res.status === 400 || res.status === 401) continue;
+      break;
+    }
+
+    const o =
+      parsed && typeof parsed === 'object'
+        ? (parsed as Record<string, unknown>)
+        : {};
+    const token = typeof o.access_token === 'string' ? o.access_token : null;
+    if (!token) {
+      last = {
+        status: res.status,
+        error:
+          'The token endpoint answered, but there was no access_token in the reply.',
+        body: parsed,
+      };
+      break;
+    }
+
+    // Five minutes when the provider does not say. Short enough that a token
+    // revoked on their side stops being used quickly, long enough that a paged
+    // sync gets through on one.
+    const seconds = Number(o.expires_in);
+    const ttl =
+      Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 300_000;
+    tokenCache.set(cacheKey, {
+      token,
+      expiresAt:
+        Date.now() + Math.min(ttl, Math.max(30_000, ttl - TOKEN_SKEW_MS)),
+    });
+    return { ok: true, token, cacheKey };
+  }
+
+  return { ok: false, ...last };
+}
+
+/**
  * Makes the call.
  *
  * Never throws. A provider being down, slow, or answering with something
@@ -193,6 +428,8 @@ const TIMEOUT_MS = 15_000;
  */
 export async function callPsp(
   conn: {
+    /** Only used to key the oauth2 token cache; absent is fine. */
+    id?: string | null;
     baseUrl?: string | null;
     authMode?: string | null;
     authName?: string | null;
@@ -237,6 +474,26 @@ export async function callPsp(
   const headers: Record<string, string> = { accept: 'application/json' };
   const mode = (conn.authMode ?? 'bearer') as AuthMode;
 
+  // Which cache entry, if any, this call's token came from — so a token the
+  // provider has stopped honouring can be thrown away and minted again rather
+  // than failing every remaining page of a sync.
+  let tokenKey: string | null = null;
+
+  if (mode === 'oauth2') {
+    const got = await accessToken(conn, creds, base);
+    if (!got.ok) {
+      return {
+        ok: false,
+        status: got.status,
+        error: got.error,
+        body: got.body,
+        ms: Date.now() - started,
+      };
+    }
+    headers.authorization = `Bearer ${got.token}`;
+    tokenKey = got.cacheKey;
+  }
+
   switch (mode) {
     case 'bearer':
       headers.authorization = `Bearer ${creds.key ?? ''}`;
@@ -269,33 +526,48 @@ export async function callPsp(
   }
 
   try {
-    const res = await fetch(url, {
-      // GET, always. Not configurable — see the note at the top of this file.
-      method: 'GET',
-      headers,
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
-    const text = await res.text();
-    let body: unknown = text;
-    try {
-      body = JSON.parse(text);
-    } catch {
-      /* Not JSON. Kept as text so the Test button can show what did arrive —
-         an HTML login page is the most useful error a wrong base URL gives. */
-    }
-    const ms = Date.now() - started;
+    for (let attempt = 0; ; attempt++) {
+      const res = await fetch(url, {
+        // GET, always. Not configurable — see the note at the top of this file.
+        method: 'GET',
+        headers,
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      });
+      const text = await res.text();
+      let body: unknown = text;
+      try {
+        body = JSON.parse(text);
+      } catch {
+        /* Not JSON. Kept as text so the Test button can show what did arrive —
+           an HTML login page is the most useful error a wrong base URL gives. */
+      }
+      const ms = Date.now() - started;
 
-    if (!res.ok) {
-      return {
-        ok: false,
-        status: res.status,
-        error: describeStatus(res.status),
-        body,
-        headers: usefulHeaders(res),
-        ms,
-      };
+      if (!res.ok) {
+        // A cached token the provider no longer honours: revoked, rotated, or
+        // simply shorter-lived than it claimed. Worth exactly one more try with
+        // a fresh one — without this a token that lapses on page four of a sync
+        // fails every page after it and reports the ledger as unreadable.
+        if (res.status === 401 && tokenKey && attempt === 0) {
+          tokenCache.delete(tokenKey);
+          const again = await accessToken(conn, creds, base);
+          if (again.ok) {
+            headers.authorization = `Bearer ${again.token}`;
+            tokenKey = again.cacheKey;
+            continue;
+          }
+        }
+        return {
+          ok: false,
+          status: res.status,
+          error: describeStatus(res.status),
+          body,
+          headers: usefulHeaders(res),
+          ms,
+        };
+      }
+      return { ok: true, status: res.status, body, ms };
     }
-    return { ok: true, status: res.status, body, ms };
   } catch (e) {
     const ms = Date.now() - started;
     const timedOut = e instanceof DOMException && e.name === 'TimeoutError';
@@ -344,16 +616,56 @@ export function describeStatus(status: number): string {
  * usually has: `WWW-Authenticate: Basic realm="api"` IS the answer, in the
  * words of the only party that knows.
  */
+/**
+ * The quoted parameters of a `WWW-Authenticate` challenge.
+ *
+ * `Bearer error="invalid_token", error_description="Invalid JWT serialization"`
+ * → `{ error, error_description }`. Deliberately forgiving about spacing and
+ * order, because this is parsed to make an error message better and a challenge
+ * we cannot read must produce no parameters rather than an exception.
+ */
+function challengeParams(challenge: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const m of challenge.matchAll(/([a-z_]+)\s*=\s*"([^"]*)"/gi)) {
+    out[m[1].toLowerCase()] = m[2];
+  }
+  return out;
+}
+
 export function suggestAuthMode(
   headers?: Record<string, string>,
+  /** The mode that just failed, so the advice is never "keep doing that". */
+  current?: string | null,
 ): string | null {
   const challenge = headers?.['www-authenticate'];
   if (!challenge) return null;
   const scheme = challenge.trim().split(/[\s,]/)[0].toLowerCase();
   if (scheme === 'basic') {
+    if (current === 'basic') {
+      return 'The provider asked for Basic authentication, which is already the mode — so the scheme is right and the credential is not. Check that the key box holds the user and the secret box the password, and not the other way round.';
+    }
     return 'The provider asked for Basic authentication — set the auth mode to “basic”, with the user in the key box and the password in the secret box.';
   }
   if (scheme === 'bearer') {
+    // RFC 6750 lets a Bearer challenge carry its own reason, and it is a far
+    // better answer than the scheme name. "Bearer" alone means "send a token";
+    // `error_description="Invalid JWT serialization"` means "what you sent was
+    // read as a token and is not one", which is a different problem with a
+    // different fix — and the fix is NOT to keep feeding it the same key.
+    const detail = challengeParams(challenge).error_description ?? '';
+    if (/\bjwt\b|json web token/i.test(detail)) {
+      return (
+        'The provider wants a minted token, not the key itself: it read what we sent and rejected it as an unparseable JWT' +
+        (detail ? ` (“${detail}”)` : '') +
+        '. A client id and client key are not that token — they are what a token is minted WITH. Set the auth mode to “oauth2”, put the client id in the key box and the client key in the secret box, and put the provider’s token endpoint in the box beside the auth mode. It will exchange them for a token before every call and re-use it until it expires.'
+      );
+    }
+    if (current === 'bearer' || current === 'oauth2') {
+      return (
+        'The provider asked for Bearer authentication, which is already what was sent — so the scheme is right and the token is not.' +
+        (detail ? ` It said: “${detail}”.` : '')
+      );
+    }
     return 'The provider asked for Bearer authentication — set the auth mode to “bearer”.';
   }
   if (scheme) {

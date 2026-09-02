@@ -393,7 +393,7 @@ export class PspsService {
       // different auth mode" leaves somebody re-typing a key that was right.
       const said = providerError(result.body);
       // And when it named the scheme it wants, that beats both.
-      const suggestion = suggestAuthMode(result.headers);
+      const suggestion = suggestAuthMode(result.headers, conn.authMode);
       const message = [
         result.error,
         said ? `The provider said: ${said}` : null,

@@ -142,6 +142,9 @@ export const AUTH_MODES = [
   "basic",
   "query",
   "hmac",
+  // Not a way of presenting the key — a step before presenting anything. See
+  // AuthMode in the API's psp-connector.ts.
+  "oauth2",
 ] as const;
 
 export function usePsps() {

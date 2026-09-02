@@ -558,16 +558,48 @@ function PspForm({
               </select>
             </label>
             <label className="flex flex-col gap-1.5">
-              <span className={label}>Header / parameter name</span>
+              {/* One box, three jobs, because what the mode needs alongside the
+              credential differs and three boxes of which two are always greyed
+              out is worse. Labelled for the mode that is actually selected —
+              "Header / parameter name" above a box that wants a token URL is
+              how a field gets left empty. */}
+              <span className={label}>
+                {authMode === "oauth2"
+                  ? "Token endpoint"
+                  : "Header / parameter name"}
+              </span>
               <input
                 value={authName}
                 onChange={(e) => setAuthName(e.target.value)}
-                placeholder="X-API-KEY"
+                placeholder={
+                  authMode === "oauth2" ? "/oauth/token" : "X-API-KEY"
+                }
                 disabled={authMode === "bearer" || authMode === "basic"}
                 className={`${field} disabled:opacity-40`}
               />
             </label>
           </div>
+
+          {authMode === "oauth2" ? (
+            <p className="rounded-lg border border-border bg-card/40 px-3 py-2.5 text-[11px] leading-relaxed text-muted">
+              This mode does not send the key. It posts the key and secret to
+              the token endpoint, gets a short-lived token back, and uses that —
+              re-using it until it expires rather than logging in once per page.
+              Put the <strong className="text-primary">client id</strong> in the
+              key box and the{" "}
+              <strong className="text-primary">client key</strong> in the secret
+              box. If the provider’s login server is a different host, the token
+              endpoint can be a whole https address instead of a path.
+            </p>
+          ) : null}
+
+          {authMode === "oauth2" && !authName.trim() ? (
+            <span className="text-[11px] text-accent-orange">
+              The token endpoint is required for this mode — without it there is
+              nothing to exchange the credentials at, and every call will fail
+              before it is made. Ask the provider where it mints tokens.
+            </span>
+          ) : null}
 
           <div className="flex flex-col gap-2 rounded-lg border border-border bg-card/40 px-3 py-2.5">
             <span className={label}>Credentials</span>
