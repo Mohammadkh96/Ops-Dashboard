@@ -40,6 +40,11 @@ export type MovementRules = {
   add?: string[];
   subtract?: string[];
   statuses?: string[];
+  /**
+   * The provider already puts the sign in the amount, as BEEM's wallet export
+   * does. Then add and subtract mean only "counts" — see the service.
+   */
+  signed?: boolean;
 };
 
 /** A provider connection. Never carries the credential — only whether one is stored. */

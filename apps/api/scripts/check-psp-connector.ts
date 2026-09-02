@@ -500,6 +500,69 @@ section('a field that lives in different places on different rows');
   );
 }
 
+section('an id the provider reuses across rows');
+{
+  // BEEM's wallet export, verbatim: a payment and its network fee share ONE
+  // Transaction ID — 116 ids across 232 rows. Imported on that column alone,
+  // every fee row dedupes into its payment, half the file never lands, and
+  // the balance is wrong by the whole of the fees with nothing on screen to
+  // say why. Joined to the type, the pair is unique for all 232.
+  const rows = [
+    {
+      'Date Created': '2026-08-30 20:16:56.536852',
+      'Transaction ID': '01a05450-fd19-7c6f-a9df-4542ea85b4de',
+      'Transaction Type': 'NETWORK_FEE',
+      Amount: '-3.9954',
+    },
+    {
+      'Date Created': '2026-08-30 20:16:30.735124',
+      'Transaction ID': '01a05450-fd19-7c6f-a9df-4542ea85b4de',
+      'Transaction Type': 'PAYMENT_OUT',
+      Amount: '-550.055005',
+    },
+  ];
+
+  const collides = readTransactions(rows, {
+    path: '',
+    fields: { id: 'Transaction ID' },
+  });
+  ok(
+    'on its own the id is the same for both rows',
+    collides[0].id === collides[1].id,
+    collides.map((r) => r.id),
+  );
+
+  const joined = readTransactions(rows, {
+    path: '',
+    fields: {
+      id: 'Transaction ID+Transaction Type',
+      amount: 'Amount',
+      date: 'Date Created',
+    },
+  });
+  ok('joined, they are distinct', joined[0].id !== joined[1].id, joined.map((r) => r.id));
+  ok(
+    'and the join is readable',
+    joined[0].id === '01a05450-fd19-7c6f-a9df-4542ea85b4de:NETWORK_FEE',
+    joined[0].id,
+  );
+  ok('a signed amount survives', joined[1].amount === -550.055005, joined[1]);
+  ok(
+    'and a microsecond timestamp is read',
+    Boolean(joined[0].atISO?.startsWith('2026-08-30T20:16:56')),
+    joined[0].atISO,
+  );
+
+  // Every part must be filled, or the join would produce ONE value for two
+  // different rows — the exact failure it exists to prevent.
+  const partial = readTransactions(
+    [{ a: 'x' }, { a: 'x', b: 'y' }],
+    { path: '', fields: { id: 'a+b|a' } },
+  );
+  ok('an incomplete join falls through', partial[0].id === 'x', partial[0]);
+  ok('a complete one is used', partial[1].id === 'x:y', partial[1]);
+}
+
 section('a web page where an API should be');
 {
   // The commonest configuration mistake: a provider's portal and its API are

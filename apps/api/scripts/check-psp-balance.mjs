@@ -329,6 +329,59 @@ section('a terminal whose ledger comes from Paymaxis');
   ok('a pending deposit is not money', b.movement.ignoredStatus === 1, b.movement);
 }
 
+section('a provider that already puts the sign in the amount');
+{
+  // BEEM's wallet export, with its real totals for June-August 2026. Every
+  // amount is signed: PAYMENT_IN positive, PAYMENT_OUT and both fee types
+  // negative, and the signed total reconciles to their own Running Balance
+  // column exactly. Configured the ordinary way this moves the balance by
+  // twice the outflows, in the wrong direction, and looks reasonable doing it.
+  const store = makeStore();
+  store.connections.push({
+    id: 'c1', terminal: 'BEEM_Tradin', ledgerSource: 'provider',
+    movementRules: {
+      currency: 'USDC',
+      add: ['PAYMENT_IN'],
+      subtract: ['PAYMENT_OUT', 'NETWORK_FEE', 'PROCESSING_FEE'],
+      statuses: ['COMPLETE'],
+      signed: true,
+    },
+  });
+  store.anchors.push({
+    id: 'a0', connectionId: 'c1', amount: 1186.773353, currency: 'USDC',
+    takenAt: D('2026-06-03T12:00:00Z'), enteredAt: D('2026-06-03T12:00:00Z'),
+    enteredBy: null, note: null, estimateWas: null, drift: null,
+  });
+  const beem = (direction, amount) => ({
+    connectionId: 'c1', externalId: `${direction}-${amount}`, direction,
+    status: 'COMPLETE', currency: 'USDC', amount,
+    occurredAt: D('2026-07-01T00:00:00Z'),
+  });
+  store.txns.push(
+    beem('PAYMENT_IN', 35939.594759),
+    beem('PAYMENT_OUT', -11609.154551),
+    beem('NETWORK_FEE', -284.4885),
+    beem('PROCESSING_FEE', -71.87919),
+  );
+
+  const b = await new PspBalanceService(store).balance('c1');
+  // Their own Running Balance column, to the cent.
+  ok('the estimate matches the provider running balance',
+     Math.abs(b.estimate - 25160.85) < 0.01, b);
+  ok('money in is the positive rows', Math.abs(b.movement.added - 35939.59) < 0.01, b.movement);
+  ok('money out is the negative ones, as a magnitude',
+     Math.abs(b.movement.subtracted - 11965.52) < 0.01, b.movement);
+  ok('all four types counted', b.movement.counted === 4, b.movement);
+
+  // The same rows WITHOUT the flag: the failure this exists to prevent.
+  store.connections[0].movementRules = {
+    ...store.connections[0].movementRules, signed: false,
+  };
+  const wrong = await new PspBalanceService(store).balance('c1');
+  ok('unflagged, the same ledger comes out badly wrong',
+     Math.abs(wrong.estimate - 25160.85) > 20000, wrong);
+}
+
 section('the vocabulary a provider actually uses');
 {
   const store = makeStore();

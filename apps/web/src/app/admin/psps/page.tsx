@@ -1135,6 +1135,29 @@ function MovementRulesEditor({
             onToggle={(w) => toggle("statuses", w)}
           />
 
+          {/* The trap this exists for: BEEM's export gives PAYMENT_OUT as
+              -550.06, already negative. Subtracting a negative adds it, so the
+              ordinary configuration moves the balance by twice the outflows in
+              the wrong direction — and looks completely reasonable doing it. */}
+          <label className="flex items-start gap-2">
+            <input
+              type="checkbox"
+              checked={rules.signed ?? false}
+              onChange={(e) => set({ signed: e.target.checked })}
+              className="mt-0.5"
+            />
+            <span className="flex flex-col gap-0.5">
+              <span className="text-[11px] font-medium">
+                Amounts already carry a minus sign
+              </span>
+              <span className="text-[11px] text-muted">
+                Tick this when the provider reports outgoing money as a negative
+                number, as BEEM does. The lists above then only decide which
+                rows count; the direction comes from the amount itself.
+              </span>
+            </span>
+          </label>
+
           <label className="flex flex-col gap-1">
             <span className="text-[11px] font-medium">Currency</span>
             <input

@@ -554,18 +554,48 @@ export function readExtras(
  * First NON-EMPTY wins, not first present — a provider that sends `""` for the
  * field it is not using is the common case, and "present but empty" is the same
  * fact as absent.
+ *
+ * Fields can also be JOINED, written `Transaction ID+Transaction Type`, and
+ * that exists because of what happens to an id that is not unique. BEEM's
+ * wallet export gives a payment and its network fee THE SAME Transaction ID —
+ * 116 ids across 232 rows — so importing on that column alone would dedupe
+ * every fee row into its payment, store half the file, and leave a balance
+ * wrong by the whole of the fees with nothing on screen to say so. Joined, the
+ * pair is unique for all 232.
+ *
+ * A join needs EVERY part filled. A missing part would silently produce the
+ * same value for two different rows, which is the exact failure it is here to
+ * prevent; so an incomplete join is skipped and the next alternative is tried.
+ *
+ * Alternatives are split before joins, so `a+b|c` reads "a joined to b, or
+ * else c".
  */
 export function pick(row: unknown, spec?: string): unknown {
   if (!spec) return undefined;
   for (const path of spec.split('|')) {
     const p = path.trim();
     if (!p) continue;
+
+    if (p.includes('+')) {
+      const parts = p
+        .split('+')
+        .map((x) => x.trim())
+        .filter(Boolean);
+      const values = parts.map((x) => at(row, x));
+      if (!parts.length || values.some(isEmpty)) continue;
+      return values.map((v) => String(v)).join(':');
+    }
+
     const v = at(row, p);
-    if (v === null || v === undefined) continue;
-    if (typeof v === 'string' && v.trim() === '') continue;
+    if (isEmpty(v)) continue;
     return v;
   }
   return undefined;
+}
+
+function isEmpty(v: unknown): boolean {
+  if (v === null || v === undefined) return true;
+  return typeof v === 'string' && v.trim() === '';
 }
 
 /**

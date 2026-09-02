@@ -48,6 +48,21 @@ export type MovementRules = {
    * almost never what anyone wants — a pending deposit is not money yet.
    */
   statuses?: string[];
+  /**
+   * The provider already put the sign in the amount.
+   *
+   * BEEM's wallet export does: PAYMENT_IN is +35,939.59 and PAYMENT_OUT is
+   * −11,609.15, and the signed total reconciles to their Running Balance
+   * column to the last decimal place. Subtracting a row that is ALREADY
+   * negative adds it back — so a ledger like that, configured the ordinary
+   * way, moves the balance by twice the outflows in the wrong direction and
+   * looks entirely reasonable while doing it.
+   *
+   * When this is set, add and subtract mean only "counts"; the direction comes
+   * from the data. The in/out figures on screen are still split by sign, so
+   * they read the same either way.
+   */
+  signed?: boolean;
 };
 
 /** One anchor, as the API reports it. */
@@ -119,6 +134,7 @@ export function readRules(value: unknown): MovementRules | null {
     add: words(r.add),
     subtract: words(r.subtract),
     statuses: words(r.statuses),
+    signed: r.signed === true,
   };
   const empty =
     !rules.currency &&
@@ -279,12 +295,23 @@ export class PspBalanceService {
         m.ignoredCurrency += g.count;
       } else if (rules?.statuses?.length && !has(rules.statuses, g.status)) {
         m.ignoredStatus += g.count;
-      } else if (has(rules?.add, g.direction)) {
-        m.added += g.sum;
+      } else if (
+        has(rules?.add, g.direction) ||
+        has(rules?.subtract, g.direction)
+      ) {
         m.counted += g.count;
-      } else if (has(rules?.subtract, g.direction)) {
-        m.subtracted += g.sum;
-        m.counted += g.count;
+        if (rules?.signed) {
+          // The provider already put the sign in the amount, so which list the
+          // word sits in decides only WHETHER it counts. Split by sign for the
+          // in/out figures, so the screen reads the same as it does for a
+          // provider that reports magnitudes.
+          if (g.sum >= 0) m.added += g.sum;
+          else m.subtracted += -g.sum;
+        } else if (has(rules?.add, g.direction)) {
+          m.added += g.sum;
+        } else {
+          m.subtracted += g.sum;
+        }
       } else {
         m.ignoredDirection += g.count;
       }
