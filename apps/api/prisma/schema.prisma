@@ -794,6 +794,14 @@ model PspTransaction {
   occurredAt DateTime?
   rawAt      String?
 
+  /// When the money MOVED, where the provider reports that separately from
+  /// when the payment was raised. ForumPay's `inserted` and `settled` are
+  /// routinely days apart, and a balance anchored between the two has to place
+  /// the payment by the second date or it never counts it at all.
+  ///
+  /// Null for the providers that report one timestamp; occurredAt stands in.
+  settledAt DateTime?
+
   /// The provider's id for the payer, where they give one. ForumPay sends the
   /// CRM's own client id here, which turns "we disagree about $443.47" into
   /// "we disagree about client CU31923".
@@ -809,6 +817,7 @@ model PspTransaction {
 
   @@unique([connectionId, externalId])
   @@index([connectionId, occurredAt])
+  @@index([connectionId, settledAt])
   @@index([terminal, occurredAt])
   @@index([status])
 }

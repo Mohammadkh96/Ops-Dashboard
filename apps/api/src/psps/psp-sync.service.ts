@@ -356,6 +356,10 @@ export class PspSyncService {
         row.amount === null ? null : new Prisma.Decimal(row.amount.toString()),
       currency: row.currency,
       occurredAt: row.atISO ? new Date(row.atISO) : null,
+      // Written on every update, so a payment that moves from waiting to
+      // confirmed picks up its settlement date on the next sync. That is the
+      // whole point: it is the moment the row becomes money.
+      settledAt: row.settledISO ? new Date(row.settledISO) : null,
       rawAt: row.at,
       customer: row.customer,
       raw: (row.raw ?? {}) as Prisma.InputJsonValue,

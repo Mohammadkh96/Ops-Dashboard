@@ -351,6 +351,9 @@ function PspForm({
   const [txnCurrency, setTxnCurrency] = useState(txn.fields?.currency ?? "");
   const [txnStatus, setTxnStatus] = useState(txn.fields?.status ?? "");
   const [txnDate, setTxnDate] = useState(txn.fields?.date ?? "");
+  // When the money MOVED, where the provider says that apart from when the
+  // payment was raised. Only the balance uses it — see the note by the input.
+  const [txnSettled, setTxnSettled] = useState(txn.fields?.settled ?? "");
   const [txnReference, setTxnReference] = useState(txn.fields?.reference ?? "");
   const [txnDirection, setTxnDirection] = useState(txn.fields?.direction ?? "");
   const [txnCustomer, setTxnCustomer] = useState(txn.fields?.customer ?? "");
@@ -393,6 +396,7 @@ function PspForm({
           currency: txnCurrency.trim() || undefined,
           status: txnStatus.trim() || undefined,
           date: txnDate.trim() || undefined,
+          settled: txnSettled.trim() || undefined,
           reference: txnReference.trim() || undefined,
           direction: txnDirection.trim() || undefined,
           customer: txnCustomer.trim() || undefined,
@@ -730,6 +734,12 @@ function PspForm({
               className={field}
             />
             <input
+              value={txnSettled}
+              onChange={(e) => setTxnSettled(e.target.value)}
+              placeholder="Settled date, e.g. settled"
+              className={field}
+            />
+            <input
               value={txnReference}
               onChange={(e) => setTxnReference(e.target.value)}
               placeholder="Reference, e.g. reference_no|pos_id"
@@ -788,6 +798,15 @@ function PspForm({
           ForumPay needs <code className="font-mono">reference_no|pos_id</code>,
           because its Sell rows put the reference in one and its Buy rows in the
           other.
+        </span>
+        <span className="text-[11px] text-muted">
+          Settled date: fill this in where the provider stamps a payment twice —
+          ForumPay writes <code className="font-mono">inserted</code> when a
+          payment is raised and <code className="font-mono">settled</code> when
+          it completes, days apart. The list is ordered by the first, matching
+          their portal; the BALANCE is moved by the second, because that is when
+          the money moved. Without it a payment raised before a balance was
+          entered and settled after it never counts at all.
         </span>
         <span className="text-[11px] text-muted">
           Amounts: pick the provider’s <em>fiat</em> field where it has one —

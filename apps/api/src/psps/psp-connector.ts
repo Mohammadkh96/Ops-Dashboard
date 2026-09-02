@@ -58,6 +58,19 @@ export type EndpointConfig = {
     status?: string;
     /** When it happened, as the provider writes it. */
     date?: string;
+    /**
+     * When the payment SETTLED, where the provider reports that separately.
+     *
+     * ForumPay stamps `inserted` on creation and `settled` on completion, and
+     * they are routinely days apart. The ledger is listed by the first — that
+     * is the date on their portal — but a BALANCE has to be moved by the
+     * second, because that is when the money moved. A payment raised before an
+     * anchor and settled after it is otherwise never counted at all.
+     *
+     * Optional, and never guessed: a wrong field name here silently moves
+     * payments in time.
+     */
+    settled?: string;
     /** Our reference on their side: order id, POS id, invoice number. */
     reference?: string;
     /**
@@ -463,6 +476,18 @@ export type Txn = {
   /** As the provider wrote it, plus our reading of it when we could. */
   at: string | null;
   atISO: string | null;
+  /**
+   * When the money actually moved, if the provider says so separately.
+   *
+   * ForumPay stamps `inserted` when a payment is CREATED and `settled` when it
+   * completes, and those can be days apart: a payment raised on the 31st that
+   * confirms on the 2nd moved money on the 2nd. A balance anchored in between
+   * has to place it by the second date or it never counts the payment at all.
+   *
+   * Null where the provider offers nothing better, and then the created date
+   * stands in.
+   */
+  settledISO: string | null;
   reference: string | null;
   /** The provider's own word for the direction: "Buy", "Sell", "payout"… */
   direction: string | null;
@@ -507,6 +532,9 @@ export function readTransactions(
 
   return rows.map((row) => {
     const raw = toText(pick(row, f.date ?? 'date'));
+    // Only when configured. Guessing a field name here would be worse than
+    // having none: a wrong guess silently moves payments in time.
+    const settled = f.settled ? toText(pick(row, f.settled)) : null;
     return {
       id: toText(pick(row, f.id ?? 'id')),
       amount: toNumber(pick(row, f.amount ?? 'amount')),
@@ -514,6 +542,7 @@ export function readTransactions(
       status: toText(pick(row, f.status ?? 'status')),
       at: raw,
       atISO: toISO(raw),
+      settledISO: toISO(settled),
       reference: toText(pick(row, f.reference ?? 'reference')),
       direction: toText(pick(row, f.direction ?? 'type')),
       customer: toText(pick(row, f.customer ?? 'customer')),

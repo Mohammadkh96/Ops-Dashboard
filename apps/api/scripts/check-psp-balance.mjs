@@ -52,13 +52,31 @@ function makeStore() {
   const anchors = [];
   const events = [];
 
+  /**
+   * Just the where-clause shapes the service actually builds.
+   *
+   * Grown deliberately rather than made general: every clause understood here
+   * is one the code under test writes, and a fake that quietly matched
+   * something it did not understand would report a balance of zero as a pass.
+   */
   const matches = (row, where = {}) =>
     Object.entries(where).every(([k, cond]) => {
+      if (k === 'OR') return cond.some((c) => matches(row, c));
+      if (k === 'AND') return cond.every((c) => matches(row, c));
+      if (k === 'NOT') return !matches(row, cond);
       const v = row[k];
       if (cond === null) return v === null || v === undefined;
       if (cond && typeof cond === 'object' && !(cond instanceof Date)) {
         if ('gt' in cond) return v instanceof Date && v > cond.gt;
-        return false;
+        if ('gte' in cond) return v instanceof Date && v >= cond.gte;
+        if ('lt' in cond) return v instanceof Date && v < cond.lt;
+        if ('lte' in cond) return v instanceof Date && v <= cond.lte;
+        if ('not' in cond) {
+          return cond.not === null
+            ? v !== null && v !== undefined
+            : v !== cond.not;
+        }
+        throw new Error(`the fake does not understand ${JSON.stringify(cond)}`);
       }
       return v === cond;
     });
@@ -223,6 +241,50 @@ section('an anchor, moved by what came after it');
   ok('the anchor is returned with the estimate', b.anchor?.amount === 61512.27, b.anchor);
   ok('and who entered it', b.anchor?.enteredBy === 'ops@tradin.com', b.anchor);
   ok('the age is reported in hours', typeof b.ageHours === 'number' && b.ageHours > 0, b);
+}
+
+section('a payment raised before the anchor and settled after it');
+{
+  // The ForumPay SL case, exactly. A payment is raised on the 31st and sits
+  // pending. Somebody anchors the balance on the 2nd at 05:50 — the portal
+  // does NOT include that payment, because it has not settled. It confirms at
+  // 06:30. The money moved after the anchor, so it must count.
+  //
+  // Placed by its creation date it looks like it predates the anchor, so it
+  // was treated as already inside the portal figure and never counted by
+  // anything. Invisible rather than wrong, which is worse.
+  const store = makeStore();
+  seed(store);
+  store.anchors.push({
+    id: 'a0', connectionId: 'c1', amount: 172383.5, currency: 'USD',
+    takenAt: D('2026-09-02T05:50:00Z'), enteredAt: D('2026-09-02T05:50:00Z'),
+    enteredBy: null, note: null, estimateWas: null, drift: null,
+  });
+  store.txns.push(
+    // Raised the 31st, settled after the anchor. This is the one that went missing.
+    txn({ externalId: 'late', direction: 'Sell', amount: 500,
+          occurredAt: D('2026-08-31T14:00:00Z'), settledAt: D('2026-09-02T06:30:00Z') }),
+    // Raised AND settled before the anchor: genuinely inside the portal figure.
+    txn({ externalId: 'old', direction: 'Sell', amount: 9999,
+          occurredAt: D('2026-08-31T09:00:00Z'), settledAt: D('2026-08-31T09:05:00Z') }),
+    // A provider that reports no settlement date at all still works off the
+    // created date, which is all there is.
+    txn({ externalId: 'plain', direction: 'Sell', amount: 25,
+          occurredAt: D('2026-09-02T07:00:00Z'), settledAt: null }),
+  );
+
+  const b = await new PspBalanceService(store).balance('c1');
+  ok('the late settlement counts', b.movement.added === 525, b.movement);
+  ok('two payments counted', b.movement.counted === 2, b.movement);
+  ok('the genuinely old one does not', b.movement.beforeAnchor === 1, b.movement);
+  ok('the estimate moves by both', b.estimate === 172908.5, b);
+
+  // Without a settled date the old behaviour returns, and the payment is lost.
+  store.txns[0].settledAt = null;
+  const without = await new PspBalanceService(store).balance('c1');
+  ok('unmapped, the same payment goes missing', without.movement.added === 25, without.movement);
+  ok('and is at least reported as before the anchor',
+     without.movement.beforeAnchor === 2, without.movement);
 }
 
 section('the provider is not consistent about case');

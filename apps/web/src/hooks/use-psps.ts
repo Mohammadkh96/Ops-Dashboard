@@ -18,6 +18,8 @@ export type EndpointConfig = {
     id?: string;
     status?: string;
     date?: string;
+    /** When it SETTLED, where the provider reports that separately. */
+    settled?: string;
     reference?: string;
     direction?: string;
     customer?: string;
@@ -431,6 +433,8 @@ export type BalanceView = {
     ignoredStatus: number;
     ignoredCurrency: number;
     undated: number;
+    /** Already inside the anchor figure — moved before it was taken. */
+    beforeAnchor: number;
   };
   /** False when no rule can classify anything — see the note on the card. */
   configured: boolean;

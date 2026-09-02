@@ -178,6 +178,15 @@ export function BalancePanel({
                   {movement.undated.toLocaleString()} with no readable date
                 </span>
               ) : null}
+              {/* Said out loud because these are held out by a DATE rather than
+                  by a rule, so they never appear in "not counted" — and a
+                  payment that settles after the anchor but was raised before it
+                  used to land here and vanish. */}
+              {movement.beforeAnchor > 0 ? (
+                <span title="Moved before the anchor, so already inside that figure">
+                  {movement.beforeAnchor.toLocaleString()} before the anchor
+                </span>
+              ) : null}
             </div>
 
             {!balance.configured ? (

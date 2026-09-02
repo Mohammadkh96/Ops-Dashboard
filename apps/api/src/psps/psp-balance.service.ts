@@ -101,6 +101,16 @@ export type BalanceView = {
     ignoredCurrency: number;
     /** Rows whose timestamp we could not read, so cannot place against the anchor. */
     undated: number;
+    /**
+     * Rows that moved BEFORE the anchor, and are therefore already inside the
+     * figure somebody read off the portal.
+     *
+     * Reported because it used to be invisible. A payment excluded here is
+     * excluded by a date comparison rather than by a rule, so it never reached
+     * the "not counted" tally either — it simply was not in the query. When a
+     * payment goes missing from a balance this is the first number to look at.
+     */
+    beforeAnchor: number;
   };
   /**
    * Whether the rules can actually classify what this terminal sends. False
@@ -254,6 +264,7 @@ export class PspBalanceService {
       ignoredStatus: 0,
       ignoredCurrency: 0,
       undated: 0,
+      beforeAnchor: 0,
     };
 
     // No anchor means no estimate. Movement without something to move is a
@@ -286,7 +297,24 @@ export class PspBalanceService {
             where: { connectionId: conn.id, occurredAt: null },
           });
 
-    const m = { ...zero, undated };
+    // Everything dated, minus everything after the anchor. Counted rather than
+    // left implicit because these rows are excluded by a date comparison and so
+    // never appear in the "not counted" tally — a payment that vanishes from a
+    // balance vanishes silently, and this is the number that explains it.
+    const beforeAnchor =
+      conn.ledgerSource === 'paymaxis'
+        ? await this.prisma.paymentEvent.count({
+            where: { terminal: conn.terminal, occurredAt: { lte: since } },
+          })
+        : await this.prisma.pspTransaction.count({
+            where: {
+              connectionId: conn.id,
+              NOT: PspBalanceService.movedAfter(conn.id, since),
+              occurredAt: { not: null },
+            },
+          });
+
+    const m = { ...zero, undated, beforeAnchor };
     for (const g of groups) {
       // Order matters, because each row is excluded for exactly one reason and
       // the reason is what the screen shows. Currency first: a EUR row under a
@@ -334,13 +362,35 @@ export class PspBalanceService {
     };
   }
 
+  /**
+   * Everything that MOVED after the anchor.
+   *
+   * "Moved", not "was created". A payment ForumPay raised on the 31st and
+   * settled on the 2nd moved money on the 2nd — and placing it by its creation
+   * date put it before an anchor taken on the 2nd, where it counted as already
+   * inside the figure somebody read off the portal. It was not: the portal did
+   * not have it either when they read it. So the payment was never counted at
+   * all, by anything, and nothing on the screen said so.
+   *
+   * settledAt where the provider gives one, occurredAt where it does not.
+   */
+  private static movedAfter(connectionId: string, since: Date) {
+    return {
+      connectionId,
+      OR: [
+        { settledAt: { gt: since } },
+        { settledAt: null, occurredAt: { gt: since } },
+      ],
+    };
+  }
+
   private async groupsFromStore(
     connectionId: string,
     since: Date,
   ): Promise<Group[]> {
     const rows = await this.prisma.pspTransaction.groupBy({
       by: ['direction', 'status', 'currency'],
-      where: { connectionId, occurredAt: { gt: since } },
+      where: PspBalanceService.movedAfter(connectionId, since),
       _sum: { amount: true },
       _count: { _all: true },
     });
@@ -396,7 +446,7 @@ export class PspBalanceService {
     const groups = new Map<string, Group>();
     for (const r of latestPerPayment(rows)) {
       const e = r as (typeof rows)[number];
-      const key = `${e.type ?? ''} ${e.state ?? ''} ${e.currency ?? ''}`;
+      const key = JSON.stringify([e.type, e.state, e.currency]);
       const g = groups.get(key) ?? {
         direction: e.type,
         status: e.state,
