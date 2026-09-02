@@ -148,7 +148,7 @@ export function BalancePanel({
                 valueClass={
                   movement.net >= 0 ? "text-accent-green" : "text-accent-orange"
                 }
-                note={`${movement.counted.toLocaleString()} transaction${movement.counted === 1 ? "" : "s"} counted`}
+                note={`${movement.counted.toLocaleString()} transaction${movement.counted === 1 ? "" : "s"} counting`}
               />
               <Figure
                 label="Estimated now"
@@ -188,6 +188,32 @@ export function BalancePanel({
                 </span>
               ) : null}
             </div>
+
+            {/* A balance entered before baselines existed is still worked out
+                by date, which cannot see a payment that settles after it was
+                entered — the failure that kept losing payments. Re-entering
+                the figure switches it over, so the screen asks. */}
+            {balance.basis === "date" ? (
+              <p className="flex items-start gap-1.5 text-[11px] text-accent-orange">
+                <Info className="mt-px size-3.5 shrink-0" />
+                This balance is still worked out by date, so a payment that
+                settles after it was entered will not be counted. Press{" "}
+                <span className="font-medium">Update from portal</span> once to
+                fix that permanently.
+              </p>
+            ) : null}
+
+            {/* The baseline was measured under different rules, so the two
+                totals answer different questions and their difference is not
+                movement. */}
+            {balance.rulesChanged ? (
+              <p className="flex items-start gap-1.5 text-[11px] text-accent-orange">
+                <Info className="mt-px size-3.5 shrink-0" />
+                The add/subtract rules changed after this balance was entered,
+                so the movement above is not reliable. Enter the balance again
+                to measure from the new rules.
+              </p>
+            ) : null}
 
             {!balance.configured ? (
               <p className="flex items-start gap-1.5 text-[11px] text-accent-orange">

@@ -70,8 +70,12 @@ try {
   const { PspBalanceService } = require('../dist/src/psps/psp-balance.service');
   prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: url }) });
 
-  const ANCHOR_AT = new Date('2026-09-02T05:50:00Z');
-  const conn = await prisma.pspConnection.create({
+  const svc = new PspBalanceService(prisma);
+  const anchorFor = (connId, amount) =>
+    svc.setAnchor(connId, { amount, currency: 'USD', takenAt: new Date().toISOString() });
+
+  // ══ ForumPay: its own API, one row per payment ═════════════════════════
+  const fp = await prisma.pspConnection.create({
     data: {
       terminal: 'ForumPay_Tradin SL',
       provider: 'forumpay',
@@ -85,108 +89,179 @@ try {
       },
     },
   });
-  await prisma.pspBalanceAnchor.create({
-    data: {
-      connectionId: conn.id,
-      amount: '172383.50',
-      currency: 'USD',
-      takenAt: ANCHOR_AT,
-    },
-  });
-
-  const row = (o) =>
+  const fpRow = (o) =>
     prisma.pspTransaction.create({
       data: {
-        connectionId: conn.id,
-        terminal: conn.terminal,
+        connectionId: fp.id,
+        terminal: fp.terminal,
         currency: 'USD',
-        status: 'confirmed',
         direction: 'Sell',
         raw: {},
         ...o,
       },
     });
 
-  // The shape of a real ForumPay ledger the day after an anchor: mostly old
-  // rows, none of which carry a settled date until the field is mapped.
-  for (let i = 0; i < 5; i++) {
-    await row({
-      externalId: `old-${i}`,
-      amount: '100.00',
-      occurredAt: new Date('2026-08-20T10:00:00Z'),
-    });
-  }
-  await row({
-    externalId: 'after',
-    amount: '124.00',
-    occurredAt: new Date('2026-09-02T07:00:00Z'),
-  });
-  await row({
-    externalId: 'undated',
-    amount: '9.00',
-    occurredAt: null,
-  });
-
-  const svc = new PspBalanceService(prisma);
-
-  section('with no settled date mapped, as every provider starts');
+  section('ForumPay: a payment still pending when the balance is entered');
   {
-    const b = await svc.balance(conn.id);
-    ok('the new transaction counts', b.movement.added === 124, b.movement);
-    // The bug: NOT(...) over a null column returned zero here.
-    ok('and the five older ones are REPORTED, not silently dropped',
-       b.movement.beforeAnchor === 5, b.movement);
-    ok('the undated one is counted separately', b.movement.undated === 1, b.movement);
-    ok('the estimate is anchor plus movement',
-       Math.abs(b.estimate - 172507.5) < 0.005, b.estimate);
-  }
-
-  section('a payment raised before the anchor and settled after it');
-  {
-    // The reported case: raised 31 Aug, still pending at the anchor, confirmed
-    // afterwards. It moved money after the anchor, so it has to count.
-    await row({
-      externalId: 'late',
-      amount: '500.00',
+    // History, all settled long ago.
+    for (let i = 0; i < 3; i++) {
+      await fpRow({
+        externalId: `hist-${i}`, amount: '1000.00', status: 'confirmed',
+        occurredAt: new Date('2026-08-20T10:00:00Z'),
+        settledAt: new Date('2026-08-20T10:01:00Z'),
+      });
+    }
+    // Raised on the 31st and NOT yet confirmed. It is not in the portal figure
+    // and must not be in the baseline.
+    await fpRow({
+      externalId: 'pending', amount: '500.00', status: 'waiting',
       occurredAt: new Date('2026-08-31T14:00:00Z'),
-      settledAt: new Date('2026-09-02T06:30:00Z'),
     });
-    const b = await svc.balance(conn.id);
-    ok('it counts', b.movement.added === 624, b.movement);
-    ok('and is not also counted as before the anchor',
-       b.movement.beforeAnchor === 5, b.movement);
+
+    const { balance: b } = await anchorFor(fp.id, '172383.50');
+    ok('the baseline is the settled history', b.movement.net === 0, b.movement);
+    ok('and it is a baseline, not a date window', b.basis === 'baseline', b.basis);
+    ok('the estimate starts at the figure entered',
+       Math.abs(b.estimate - 172383.5) < 0.005, b.estimate);
+
+    // Now it confirms. Its occurredAt is STILL 31 August — before the anchor.
+    await prisma.pspTransaction.update({
+      where: { connectionId_externalId: { connectionId: fp.id, externalId: 'pending' } },
+      data: { status: 'confirmed', settledAt: new Date() },
+    });
+    const after = await svc.balance(fp.id);
+    ok('confirming it moves the balance', after.movement.net === 500, after.movement);
+    ok('by exactly its amount',
+       Math.abs(after.estimate - 172883.5) < 0.005, after.estimate);
   }
 
-  section('a payment raised and settled before the anchor');
+  section('ForumPay: a confirmed payment that is later cancelled');
   {
-    await row({
-      externalId: 'settled-early',
-      amount: '77.00',
-      occurredAt: new Date('2026-08-31T14:00:00Z'),
-      settledAt: new Date('2026-08-31T14:05:00Z'),
+    // The date window could not express this at all: the payment stops being
+    // money, and the balance has to go DOWN.
+    const before = await svc.balance(fp.id);
+    await prisma.pspTransaction.update({
+      where: { connectionId_externalId: { connectionId: fp.id, externalId: 'hist-0' } },
+      data: { status: 'cancelled' },
     });
-    const b = await svc.balance(conn.id);
-    ok('it does not move the balance', b.movement.added === 624, b.movement);
-    ok('and is reported as already inside the anchor',
-       b.movement.beforeAnchor === 6, b.movement);
+    const after = await svc.balance(fp.id);
+    ok('the estimate falls', after.estimate < before.estimate, {
+      before: before.estimate, after: after.estimate,
+    });
+    ok('by the payment that stopped being money',
+       Math.abs(before.estimate - after.estimate - 1000) < 0.005,
+       { before: before.estimate, after: after.estimate });
   }
 
-  section('every row is accounted for somewhere');
+  section('ForumPay: nothing is double counted by a re-sync');
   {
-    const b = await svc.balance(conn.id);
-    const total = await prisma.pspTransaction.count({ where: { connectionId: conn.id } });
-    const seen =
-      b.movement.counted +
-      b.movement.ignoredDirection +
-      b.movement.ignoredStatus +
-      b.movement.ignoredCurrency +
-      b.movement.beforeAnchor +
-      b.movement.undated;
-    // The property that matters: a payment can be counted, excluded for a
-    // stated reason, or before the anchor — never simply missing.
-    ok(`all ${total} rows are in exactly one bucket`, seen === total, {
-      total, seen, movement: b.movement,
+    const before = await svc.balance(fp.id);
+    // A sync rewrites every row it saw, unchanged.
+    const rows = await prisma.pspTransaction.findMany({ where: { connectionId: fp.id } });
+    for (const r of rows) {
+      await prisma.pspTransaction.update({ where: { id: r.id }, data: { status: r.status } });
+    }
+    const after = await svc.balance(fp.id);
+    ok('the estimate is unchanged', after.estimate === before.estimate, {
+      before: before.estimate, after: after.estimate,
     });
+  }
+
+  // ══ MT: through Paymaxis, one row per STATE CHANGE ════════════════════
+  const mt = await prisma.pspConnection.create({
+    data: {
+      terminal: 'MT_Tradin',
+      provider: 'match2pay',
+      label: 'Match2Pay',
+      ledgerSource: 'paymaxis',
+      movementRules: {
+        currency: 'USD',
+        add: ['DEPOSIT'],
+        subtract: ['WITHDRAWAL'],
+        statuses: ['COMPLETED'],
+      },
+    },
+  });
+  let evN = 0;
+  const ev = (o) =>
+    prisma.paymentEvent.create({
+      data: {
+        provider: 'paymaxis',
+        terminal: 'MT_Tradin',
+        currency: 'USD',
+        headers: {},
+        payload: {},
+        dedupeKey: `k${++evN}`,
+        ...o,
+      },
+    });
+
+  section('MT: both states of a payment carry the SAME occurredAt');
+  {
+    // Verbatim from the ledger screen: one second, two states. This is why no
+    // date could ever place it — there is no settlement timestamp to find.
+    const at = new Date('2026-09-02T05:43:15Z');
+    await ev({ paymentId: 'p-old', type: 'DEPOSIT', state: 'COMPLETED',
+               amount: 2000, occurredAt: new Date('2026-08-15T10:00:00Z'),
+               receivedAt: new Date('2026-08-15T10:00:01Z') });
+    await ev({ paymentId: 'p-late', type: 'DEPOSIT', state: 'PENDING',
+               amount: 30, occurredAt: at, receivedAt: new Date('2026-09-02T05:43:16Z') });
+
+    const { balance: b } = await anchorFor(mt.id, '130000.00');
+    ok('the pending payment is not in the baseline', b.movement.net === 0, b.movement);
+    ok('and MT uses a baseline too', b.basis === 'baseline', b.basis);
+
+    // It completes — same occurredAt, settled amount net of the fee.
+    await ev({ paymentId: 'p-late', type: 'DEPOSIT', state: 'COMPLETED',
+               amount: 29.93, occurredAt: at,
+               receivedAt: new Date('2026-09-02T05:43:59Z') });
+    const after = await svc.balance(mt.id);
+    ok('completing it moves the balance', Math.abs(after.movement.net - 29.93) < 0.005,
+       after.movement);
+    ok('at the settled amount, not the requested one',
+       Math.abs(after.estimate - 130029.93) < 0.005, after.estimate);
+    ok('and the payment counts once, not twice',
+       after.movement.counted === 2, after.movement);
+  }
+
+  section('changing the rules is not silently reported as movement');
+  {
+    await prisma.pspConnection.update({
+      where: { id: mt.id },
+      data: {
+        movementRules: {
+          currency: 'USD',
+          add: ['DEPOSIT'],
+          subtract: ['WITHDRAWAL'],
+          // Counting pending payments too is a different question.
+          statuses: ['COMPLETED', 'PENDING'],
+        },
+      },
+    });
+    const b = await svc.balance(mt.id);
+    ok('the screen is told the rules changed', b.rulesChanged === true, b);
+
+    // Re-entering the balance re-measures the baseline under the new rules.
+    const { balance: fresh } = await anchorFor(mt.id, '130029.93');
+    ok('re-entering it clears that', fresh.rulesChanged === false, fresh);
+    ok('and movement starts from zero again', fresh.movement.net === 0, fresh.movement);
+  }
+
+  section('a word only reordered is the same rules');
+  {
+    await prisma.pspConnection.update({
+      where: { id: mt.id },
+      data: {
+        movementRules: {
+          currency: 'usd',
+          add: ['deposit'],
+          subtract: ['WITHDRAWAL'],
+          statuses: ['PENDING', 'COMPLETED'],
+        },
+      },
+    });
+    const b = await svc.balance(mt.id);
+    ok('case and order are not a change', b.rulesChanged === false, b.rules);
   }
 
   console.log(failures ? `\n${failures} failed` : '\nall good');

@@ -855,6 +855,23 @@ model PspBalanceAnchor {
   estimateWas Decimal? @db.Decimal(20, 8)
   drift       Decimal? @db.Decimal(20, 8)
 
+  /// The totals that were ALREADY counting when this balance was entered.
+  ///
+  /// Movement is `counting now` minus these, rather than a filter on dates.
+  /// That is the whole point: a payment pending when the balance was entered
+  /// and confirmed afterwards is missing from these and present in the current
+  /// totals, so it counts — with no settlement timestamp needed and identically
+  /// for every provider. Paymaxis has no such timestamp to offer, so by date
+  /// those payments were lost for good.
+  ///
+  /// Null on anchors entered before this existed; those fall back to the date
+  /// window until somebody re-enters the balance.
+  baselineIn  Decimal? @db.Decimal(20, 8)
+  baselineOut Decimal? @db.Decimal(20, 8)
+  /// The rules the two totals were measured under. Change which words count
+  /// and the comparison is no longer like-for-like, which the screen says.
+  baselineRules Json?
+
   // Descending, matching the migration and the only query that uses it: the
   // current anchor is the newest by takenAt. Declared rather than left implicit
   // because a schema that says ascending over an index that is descending is

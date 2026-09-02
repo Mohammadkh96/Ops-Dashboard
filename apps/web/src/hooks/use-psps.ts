@@ -439,6 +439,20 @@ export type BalanceView = {
   /** False when no rule can classify anything — see the note on the card. */
   configured: boolean;
   ageHours: number | null;
+  /**
+   * How the movement was worked out.
+   *
+   * "baseline" — what counts now, minus what counted when the balance was
+   * entered. Exact, and the only one that catches a payment settling late or
+   * being reversed afterwards.
+   *
+   * "date" — everything that moved after the anchor. What balances entered
+   * before baselines existed fall back to; it cannot see a late settlement on
+   * a provider that reports only one timestamp, which Paymaxis does.
+   */
+  basis?: "baseline" | "date";
+  /** The rules changed after the baseline was measured, so it must be re-entered. */
+  rulesChanged?: boolean;
 };
 
 /** One connection's estimated balance. A plain session read. */

@@ -231,7 +231,11 @@ section('an anchor, moved by what came after it');
   ok('subtracted is the buy', b.movement.subtracted === 200, b.movement);
   ok('the net is the difference', b.movement.net === 1300.5, b.movement);
   ok('the estimate is anchor plus net', b.estimate === 62812.77, b);
-  ok('three rows counted', b.movement.counted === 3, b.movement);
+  // `counted` is how many are COUNTING NOW, not how many moved since. With a
+  // baseline there is no such number: a payment can enter and leave the
+  // counting set without any date changing. The movement figure is the one
+  // that answers "what happened", and it is asserted above.
+  ok('the counting set is reported', b.movement.counted === 6, b.movement);
 
   // Each exclusion for exactly one reason, and every one of them visible.
   ok('the pending row is excluded as a status', b.movement.ignoredStatus === 1, b.movement);
@@ -275,7 +279,7 @@ section('a payment raised before the anchor and settled after it');
 
   const b = await new PspBalanceService(store).balance('c1');
   ok('the late settlement counts', b.movement.added === 525, b.movement);
-  ok('two payments counted', b.movement.counted === 2, b.movement);
+  ok('the counting set is reported', b.movement.counted === 3, b.movement);
   ok('the genuinely old one does not', b.movement.beforeAnchor === 1, b.movement);
   ok('the estimate moves by both', b.estimate === 172908.5, b);
 
@@ -347,7 +351,9 @@ section('re-anchoring records the drift');
   ok('the new anchor keeps the estimate it replaced', after.anchor.estimateWas === 1300, after.anchor);
   ok('and the gap, signed', after.anchor.drift === 10, after.anchor);
   ok('the estimate now starts from the true figure', after.balance.estimate === 1290, after.balance);
-  ok('the older transaction no longer moves it', after.balance.movement.counted === 0, after.balance.movement);
+  // Re-anchoring re-measures the baseline, so everything already counting is
+  // inside it and the movement restarts at zero.
+  ok('the older transaction no longer moves it', after.balance.movement.net === 0, after.balance.movement);
 
   const history = await svc.history('c1');
   ok('both anchors are kept', history.length === 2, history);

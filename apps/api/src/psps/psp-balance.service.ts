@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 
+import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { latestPerPayment, MAX_EVENTS } from './payment-events';
 
@@ -78,6 +79,14 @@ export type Anchor = {
   /** What was on screen the instant before this replaced it, and the gap. */
   estimateWas: number | null;
   drift: number | null;
+  /**
+   * What was already counting when this balance was entered, and under which
+   * rules. Null on anchors entered before this existed — those fall back to
+   * the date window until somebody re-enters the balance.
+   */
+  baselineIn: number | null;
+  baselineOut: number | null;
+  baselineRules: MovementRules | null;
 };
 
 export type BalanceView = {
@@ -120,6 +129,23 @@ export type BalanceView = {
   configured: boolean;
   /** Hours since the anchor was true. The age is the caveat. */
   ageHours: number | null;
+  /**
+   * How the movement was worked out.
+   *
+   * "baseline" — the difference between what counts now and what counted when
+   * the balance was entered. Exact, and the only one that catches a payment
+   * that settles late or is later reversed.
+   *
+   * "date" — everything that moved after the anchor, which is what anchors
+   * entered before baselines existed fall back to. It cannot see a late
+   * settlement on a provider that reports only one timestamp.
+   */
+  basis: 'baseline' | 'date';
+  /**
+   * The rules changed after the baseline was measured, so the two totals
+   * answer different questions and their difference means nothing.
+   */
+  rulesChanged: boolean;
 };
 
 /** Case-insensitive membership, because "Sell" and "sell" are one word. */
@@ -155,6 +181,30 @@ export function readRules(value: unknown): MovementRules | null {
   return empty ? null : rules;
 }
 
+/**
+ * Whether two sets of rules ask the same question.
+ *
+ * A baseline is a total measured under particular rules. Change which words
+ * count and the current total measures something else, so the difference
+ * between them is not movement — it is the gap between two different
+ * questions. Compared as sorted, lower-cased word lists, because the order
+ * they were ticked in is not part of the meaning.
+ */
+export function sameRules(
+  a: MovementRules | null,
+  b: MovementRules | null,
+): boolean {
+  const norm = (r: MovementRules | null) =>
+    JSON.stringify({
+      currency: r?.currency ?? null,
+      add: [...(r?.add ?? [])].map((w) => w.toLowerCase()).sort(),
+      subtract: [...(r?.subtract ?? [])].map((w) => w.toLowerCase()).sort(),
+      statuses: [...(r?.statuses ?? [])].map((w) => w.toLowerCase()).sort(),
+      signed: r?.signed === true,
+    });
+  return norm(a) === norm(b);
+}
+
 /** Decimal | Float | null, as a number. Prisma returns all three from here. */
 function num(v: unknown): number {
   if (v === null || v === undefined) return 0;
@@ -182,6 +232,70 @@ type Group = {
   sum: number;
   count: number;
 };
+
+/** What a set of transactions comes to, once the rules have been applied. */
+type Totals = {
+  in: number;
+  out: number;
+  counted: number;
+  ignoredDirection: number;
+  ignoredStatus: number;
+  ignoredCurrency: number;
+};
+
+/**
+ * The rules, applied to a set of grouped transactions.
+ *
+ * One function, used twice: over everything counting NOW, and over everything
+ * that was counting when the balance was entered. Movement is the difference.
+ * Using the same code for both is the point — two totals computed by two
+ * routines would differ for reasons nobody could find.
+ */
+function applyRules(
+  groups: Group[],
+  rules: MovementRules | null,
+  currency: string | null,
+): Totals {
+  const t: Totals = {
+    in: 0,
+    out: 0,
+    counted: 0,
+    ignoredDirection: 0,
+    ignoredStatus: 0,
+    ignoredCurrency: 0,
+  };
+  for (const g of groups) {
+    // Order matters, because each row is excluded for exactly one reason and
+    // the reason is what the screen shows. Currency first: a EUR row under a
+    // USD anchor is not "an unknown direction", and saying so would send
+    // somebody off to configure a rule that would not have helped.
+    if (currency && (g.currency ?? '').toUpperCase() !== currency) {
+      t.ignoredCurrency += g.count;
+    } else if (rules?.statuses?.length && !has(rules.statuses, g.status)) {
+      t.ignoredStatus += g.count;
+    } else if (
+      has(rules?.add, g.direction) ||
+      has(rules?.subtract, g.direction)
+    ) {
+      t.counted += g.count;
+      if (rules?.signed) {
+        // The provider already put the sign in the amount, so which list the
+        // word sits in decides only WHETHER it counts. Split by sign for the
+        // in/out figures, so the screen reads the same as it does for a
+        // provider that reports magnitudes.
+        if (g.sum >= 0) t.in += g.sum;
+        else t.out += -g.sum;
+      } else if (has(rules?.add, g.direction)) {
+        t.in += g.sum;
+      } else {
+        t.out += g.sum;
+      }
+    } else {
+      t.ignoredDirection += g.count;
+    }
+  }
+  return t;
+}
 
 @Injectable()
 export class PspBalanceService {
@@ -280,14 +394,54 @@ export class PspBalanceService {
         movement: zero,
         configured: Boolean(rules?.add?.length || rules?.subtract?.length),
         ageHours: null,
+        basis: 'baseline',
+        rulesChanged: false,
       };
     }
 
     const since = new Date(anchor.takenAt);
+
+    // EVERYTHING currently counting, and everything that was counting when the
+    // balance was entered. Movement is the difference between two totals, not
+    // a filter on dates.
+    //
+    // That is what fixes the payment that keeps going missing. Pending at the
+    // anchor, confirmed afterwards: absent from the baseline, present now, so
+    // it counts — and it needs no settlement timestamp, which matters because
+    // Paymaxis has none to give. Its PENDING and COMPLETED events carry the
+    // same occurredAt, so by date those payments could never have been placed
+    // correctly by any field.
+    //
+    // It also expresses something the date filter could not at all: a payment
+    // that was confirmed and is later cancelled or refunded leaves the current
+    // total, and the estimate goes DOWN. That is right, and it used to be
+    // invisible.
     const groups =
       conn.ledgerSource === 'paymaxis'
-        ? await this.groupsFromPaymaxis(conn.terminal, since)
-        : await this.groupsFromStore(conn.id, since);
+        ? await this.groupsFromPaymaxis(conn.terminal)
+        : await this.groupsFromStore(conn.id);
+    const now = applyRules(groups, rules, currency);
+
+    // The baseline. Stored on the anchor when it was entered — or, for anchors
+    // entered before that column existed, reconstructed from the date window so
+    // nothing changes under somebody until they re-enter the balance.
+    const stored =
+      anchor.baselineIn !== null && anchor.baselineOut !== null
+        ? { in: anchor.baselineIn, out: anchor.baselineOut, counted: 0 }
+        : null;
+    const baseline =
+      stored ??
+      applyRules(
+        conn.ledgerSource === 'paymaxis'
+          ? await this.groupsFromPaymaxis(conn.terminal, { until: since })
+          : await this.groupsFromStore(conn.id, { until: since }),
+        rules,
+        currency,
+      );
+
+    const added = round(now.in - baseline.in);
+    const subtracted = round(now.out - baseline.out);
+
     const undated =
       conn.ledgerSource === 'paymaxis'
         ? await this.prisma.paymentEvent.count({
@@ -297,65 +451,22 @@ export class PspBalanceService {
             where: { connectionId: conn.id, occurredAt: null },
           });
 
-    // Everything dated, minus everything after the anchor. Counted rather than
-    // left implicit because these rows are excluded by a date comparison and so
-    // never appear in the "not counted" tally — a payment that vanishes from a
-    // balance vanishes silently, and this is the number that explains it.
-    const beforeAnchor =
-      conn.ledgerSource === 'paymaxis'
-        ? await this.prisma.paymentEvent.count({
-            where: { terminal: conn.terminal, occurredAt: { lte: since } },
-          })
-        : await this.prisma.pspTransaction.count({
-            // Stated positively, and NOT as the negation of `movedAfter`.
-            //
-            // SQL has three-valued logic and the negation walks straight into
-            // it: for a row with no settledAt, `NOT (settledAt > x OR (settledAt
-            // IS NULL AND occurredAt > x))` is `NOT (NULL OR FALSE)`, which is
-            // NULL, not TRUE — so the row is dropped. With no settled field
-            // configured every row has a null settledAt, and the count came
-            // back zero for the exact case it exists to explain.
-            //
-            // JavaScript's `!` has no such subtlety, which is why the in-memory
-            // check passed this and a real database did not.
-            where: PspBalanceService.movedOnOrBefore(conn.id, since),
-          });
-
-    const m = { ...zero, undated, beforeAnchor };
-    for (const g of groups) {
-      // Order matters, because each row is excluded for exactly one reason and
-      // the reason is what the screen shows. Currency first: a EUR row under a
-      // USD anchor is not "an unknown direction", and saying so would send
-      // somebody off to configure a rule that would not have helped.
-      if (currency && (g.currency ?? '').toUpperCase() !== currency) {
-        m.ignoredCurrency += g.count;
-      } else if (rules?.statuses?.length && !has(rules.statuses, g.status)) {
-        m.ignoredStatus += g.count;
-      } else if (
-        has(rules?.add, g.direction) ||
-        has(rules?.subtract, g.direction)
-      ) {
-        m.counted += g.count;
-        if (rules?.signed) {
-          // The provider already put the sign in the amount, so which list the
-          // word sits in decides only WHETHER it counts. Split by sign for the
-          // in/out figures, so the screen reads the same as it does for a
-          // provider that reports magnitudes.
-          if (g.sum >= 0) m.added += g.sum;
-          else m.subtracted += -g.sum;
-        } else if (has(rules?.add, g.direction)) {
-          m.added += g.sum;
-        } else {
-          m.subtracted += g.sum;
-        }
-      } else {
-        m.ignoredDirection += g.count;
-      }
-    }
-
-    m.added = round(m.added);
-    m.subtracted = round(m.subtracted);
-    m.net = round(m.added - m.subtracted);
+    const m = {
+      added,
+      subtracted,
+      net: round(added - subtracted),
+      // How many are counting NOW. Not "how many moved since": with a baseline
+      // there is no such number, because a payment can enter and leave the
+      // counting set without any date changing.
+      counted: now.counted,
+      ignoredDirection: now.ignoredDirection,
+      ignoredStatus: now.ignoredStatus,
+      ignoredCurrency: now.ignoredCurrency,
+      undated,
+      // Nothing is held out by a date any more, so this is only ever non-zero
+      // on a legacy anchor still using the date window.
+      beforeAnchor: stored ? 0 : baseline.counted,
+    };
 
     return {
       connectionId: conn.id,
@@ -364,58 +475,53 @@ export class PspBalanceService {
       estimate: round(anchor.amount + m.net),
       currency,
       movement: m,
+      /** How the movement was worked out — the two are not equally reliable. */
+      basis: stored ? ('baseline' as const) : ('date' as const),
+      /**
+       * The rules have changed since the baseline was measured, so the two
+       * totals answer different questions and their difference means nothing.
+       * Said rather than silently reported.
+       */
+      rulesChanged: stored ? !sameRules(anchor.baselineRules, rules) : false,
       configured: Boolean(rules?.add?.length || rules?.subtract?.length),
       ageHours: Math.max(0, (Date.now() - since.getTime()) / 3_600_000),
     };
   }
 
   /**
-   * Everything that MOVED after the anchor.
+   * The stored ledger, grouped.
    *
-   * "Moved", not "was created". A payment ForumPay raised on the 31st and
-   * settled on the 2nd moved money on the 2nd — and placing it by its creation
-   * date put it before an anchor taken on the 2nd, where it counted as already
-   * inside the figure somebody read off the portal. It was not: the portal did
-   * not have it either when they read it. So the payment was never counted at
-   * all, by anything, and nothing on the screen said so.
+   * With no `until` this is EVERYTHING — which is what the baseline model
+   * wants. With one it is everything that had moved by that instant, used only
+   * to reconstruct a baseline for an anchor entered before baselines existed.
    *
-   * settledAt where the provider gives one, occurredAt where it does not.
+   * "Moved" is settledAt where the provider reports one and occurredAt where it
+   * does not. Stated positively, never as the negation of the other side: SQL
+   * has three-valued logic, and `NOT (settledAt > x OR (settledAt IS NULL AND
+   * occurredAt > x))` is NULL rather than TRUE for a row with no settledAt, so
+   * every such row silently vanishes from the result.
    */
-  private static movedAfter(connectionId: string, since: Date) {
-    return {
-      connectionId,
-      OR: [
-        { settledAt: { gt: since } },
-        { settledAt: null, occurredAt: { gt: since } },
-      ],
-    };
-  }
-
-  /**
-   * The other side of the same line: everything already inside the anchor.
-   *
-   * Written out rather than negating `movedAfter`, because negating it is
-   * wrong — see the note where it is used. Undated rows are in neither: they
-   * are counted separately, since a row that cannot be placed is a different
-   * fact from one placed before the anchor.
-   */
-  private static movedOnOrBefore(connectionId: string, since: Date) {
-    return {
-      connectionId,
-      OR: [
-        { settledAt: { lte: since } },
-        { settledAt: null, occurredAt: { lte: since } },
-      ],
-    };
-  }
-
   private async groupsFromStore(
     connectionId: string,
-    since: Date,
+    opts: { until?: Date } = {},
   ): Promise<Group[]> {
     const rows = await this.prisma.pspTransaction.groupBy({
       by: ['direction', 'status', 'currency'],
-      where: PspBalanceService.movedAfter(connectionId, since),
+      where: opts.until
+        ? {
+            connectionId,
+            OR: [
+              { settledAt: { lte: opts.until } },
+              { settledAt: null, occurredAt: { lte: opts.until } },
+              // A row that cannot be placed in time belongs in the baseline
+              // rather than outside it. It is in the current total either way,
+              // so leaving it out here would make it look like movement — a
+              // payment with an unreadable date would silently inflate the
+              // balance, having never moved at all.
+              { settledAt: null, occurredAt: null },
+            ],
+          }
+        : { connectionId },
       _sum: { amount: true },
       _count: { _all: true },
     });
@@ -449,10 +555,12 @@ export class PspBalanceService {
    */
   private async groupsFromPaymaxis(
     terminal: string,
-    since: Date,
+    opts: { until?: Date } = {},
   ): Promise<Group[]> {
     const rows = await this.prisma.paymentEvent.findMany({
-      where: { terminal, occurredAt: { gt: since } },
+      where: opts.until
+        ? { terminal, OR: [{ occurredAt: { lte: opts.until } }, { occurredAt: null }] }
+        : { terminal },
       orderBy: [{ occurredAt: 'desc' }, { receivedAt: 'desc' }],
       take: MAX_EVENTS,
       select: {
@@ -521,6 +629,28 @@ export class PspBalanceService {
 
     const before = await this.balance(connectionId);
 
+    // THE BASELINE: what is already counting at the moment this figure is
+    // entered. Movement from here on is the difference between this and the
+    // current total, which is what makes a late settlement countable — it is
+    // absent here and present later, whatever its dates say.
+    //
+    // Measured under the rules in force NOW and stored beside them, so a later
+    // rule change can be detected rather than silently changing what the
+    // difference means.
+    const conn = await this.prisma.pspConnection.findUnique({
+      where: { id: connectionId },
+      select: { terminal: true, ledgerSource: true, movementRules: true },
+    });
+    if (!conn) throw new BadRequestException('No such PSP connection.');
+    const rules = readRules(conn.movementRules);
+    const baseline = applyRules(
+      conn.ledgerSource === 'paymaxis'
+        ? await this.groupsFromPaymaxis(conn.terminal)
+        : await this.groupsFromStore(connectionId),
+      rules,
+      rules?.currency ?? currency,
+    );
+
     const row = await this.prisma.pspBalanceAnchor.create({
       data: {
         connectionId,
@@ -530,6 +660,9 @@ export class PspBalanceService {
         enteredBy: enteredBy ?? null,
         note: body.note?.trim() || null,
         estimateWas: before.estimate,
+        baselineIn: round(baseline.in),
+        baselineOut: round(baseline.out),
+        baselineRules: rules ?? Prisma.DbNull,
         // Signed: positive means we were claiming MORE than the portal shows,
         // which is the direction unrecorded fees push it and the one worth
         // noticing.
@@ -634,6 +767,9 @@ function toAnchor(row: {
   note: string | null;
   estimateWas: unknown;
   drift: unknown;
+  baselineIn?: unknown;
+  baselineOut?: unknown;
+  baselineRules?: unknown;
 }): Anchor {
   return {
     id: row.id,
@@ -645,5 +781,16 @@ function toAnchor(row: {
     note: row.note,
     estimateWas: row.estimateWas === null ? null : num(row.estimateWas),
     drift: row.drift === null ? null : num(row.drift),
+    // Null and zero are different here: zero is a measured baseline of nothing
+    // counting yet, null is an anchor from before baselines existed.
+    baselineIn:
+      row.baselineIn === null || row.baselineIn === undefined
+        ? null
+        : num(row.baselineIn),
+    baselineOut:
+      row.baselineOut === null || row.baselineOut === undefined
+        ? null
+        : num(row.baselineOut),
+    baselineRules: readRules(row.baselineRules),
   };
 }
