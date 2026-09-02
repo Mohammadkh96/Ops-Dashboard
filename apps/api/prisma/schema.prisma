@@ -846,5 +846,10 @@ model PspBalanceAnchor {
   estimateWas Decimal? @db.Decimal(20, 8)
   drift       Decimal? @db.Decimal(20, 8)
 
-  @@index([connectionId, takenAt])
+  // Descending, matching the migration and the only query that uses it: the
+  // current anchor is the newest by takenAt. Declared rather than left implicit
+  // because a schema that says ascending over an index that is descending is
+  // permanent drift — `migrate diff` reports it for ever and the next
+  // `migrate dev` offers to "fix" a database that is not broken.
+  @@index([connectionId, takenAt(sort: Desc)])
 }
