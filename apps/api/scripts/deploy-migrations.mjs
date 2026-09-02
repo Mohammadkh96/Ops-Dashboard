@@ -17,6 +17,7 @@
 import { execFileSync } from 'node:child_process';
 
 import { migrationUrl } from './direct-url.mjs';
+import { findHolders, clearIdleHolders } from './migration-lock.mjs';
 
 // The DIRECT connection, not the pooled one the API runs on. See direct-url.mjs
 // — an advisory lock taken through a connection pooler is taken on one backend
@@ -52,6 +53,65 @@ console.log(`[migrations] Applying pending migrations to ${host} (${why})…`);
  * `migrate deploy` is idempotent: it applies what is pending, in order, and a
  * second run after a partial one continues rather than repeating.
  */
+/**
+ * Who holds the lock, in words, or null if we cannot say.
+ *
+ * Never allowed to fail the build on its own: this is a diagnostic printed
+ * beside a failure that has already happened, and a diagnostic that throws
+ * would replace a useful error with a useless one.
+ */
+async function describeLock() {
+  let client;
+  try {
+    const { Client } = (await import('pg')).default;
+    client = new Client({ connectionString: url });
+    await client.connect();
+
+    // Offered deliberately as an opt-in. Terminating a backend during a build
+    // nobody is watching is not something to do by default — but a project
+    // that deploys often enough to keep hitting this can ask for it.
+    if (process.env.MIGRATE_FORCE_UNLOCK === '1') {
+      const { killed, busy } = await clearIdleHolders(client);
+      return (
+        `[migrations] MIGRATE_FORCE_UNLOCK is set. ` +
+        (killed.length
+          ? `Terminated idle session(s) holding the lock: ${killed.join(', ')}.`
+          : 'No idle holder to terminate.') +
+        (busy.length
+          ? ` Left ${busy.length} active session(s) alone — those are doing something.`
+          : '')
+      );
+    }
+
+    const holders = await findHolders(client);
+    if (!holders.length) {
+      return (
+        '[migrations] Nothing is holding the migration lock right now, so this\n' +
+        '[migrations] is a slow or sleeping database rather than a stuck lock.'
+      );
+    }
+    return [
+      `[migrations] ${holders.length} session(s) on the migration lock:`,
+      ...holders.map(
+        (h) =>
+          `[migrations]   pid ${h.pid} — ${h.granted ? 'HOLDS it' : 'waiting'}, ` +
+          `state ${h.state ?? 'unknown'}` +
+          (h.granted && h.state === 'idle'
+            ? '  <- abandoned; clear with: npm run migrate:lock -- --clear'
+            : ''),
+      ),
+    ].join('\n');
+  } catch {
+    return null;
+  } finally {
+    try {
+      await client?.end();
+    } catch {
+      /* nothing to do about a connection that will not close */
+    }
+  }
+}
+
 const ATTEMPTS = 4;
 const WAIT_MS = [3000, 6000, 12000];
 
@@ -66,6 +126,15 @@ for (let attempt = 1; ; attempt++) {
     console.log('[migrations] Done.');
     break;
   } catch (e) {
+    // Before waiting again, find out WHO holds the lock. P1002 says the
+    // database "timed out" and names nobody, and the three causes need
+    // opposite responses: a sleeping database wants another moment, a sibling
+    // deploy mid-migration wants to be left alone, and a killed build's
+    // abandoned session wants terminating. Retrying is only right for one of
+    // them, and the message cannot tell them apart.
+    const holders = await describeLock();
+    if (holders) console.warn(holders);
+
     if (attempt < ATTEMPTS) {
       const wait = WAIT_MS[attempt - 1];
       console.warn(
@@ -87,7 +156,10 @@ for (let attempt = 1; ; attempt++) {
         `[migrations] Tried ${ATTEMPTS} times.\n` +
         '[migrations] If this says P1002 and the host above ends in -pooler, set\n' +
         '[migrations] DIRECT_URL to the unpooled connection string: an advisory\n' +
-        '[migrations] lock cannot be held across a connection pooler.\n',
+        '[migrations] lock cannot be held across a connection pooler.\n' +
+        '[migrations] If it says P1002 and an IDLE session is reported above, a\n' +
+        '[migrations] killed build left the lock held. Clear it with:\n' +
+        '[migrations]     npm run migrate:lock -- --clear\n',
     );
     process.exit(typeof e?.status === 'number' ? e.status : 1);
   }
