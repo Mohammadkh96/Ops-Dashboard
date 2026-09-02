@@ -780,8 +780,21 @@ export class PspSyncService {
         provider: c.provider,
         enabled: c.enabled,
         ledgerSource: c.ledgerSource,
-        /** Whether there is a ledger to open — a card that leads nowhere is worse than no card. */
-        hasTransactions: fromPaymaxis || Boolean(endpoints.transactions?.path),
+        /**
+         * Whether there is a ledger to open — a card that leads nowhere is
+         * worse than no card.
+         *
+         * STORED ROWS COUNT, not just a configured endpoint. A provider filled
+         * entirely by CSV import has no endpoint to call and never will: BEEM
+         * publishes only create-type endpoints, so its ledger arrives through
+         * the file its portal exports. Judging by configuration alone filed it
+         * under "Not connected yet" with its card refusing to open, holding
+         * two hundred transactions nobody could reach.
+         */
+        hasTransactions:
+          fromPaymaxis ||
+          Boolean(endpoints.transactions?.path) ||
+          (stored.get(c.id) ?? 0) > 0,
         stored: fromPaymaxis
           ? (pmCount.get(c.terminal) ?? 0)
           : (stored.get(c.id) ?? 0),

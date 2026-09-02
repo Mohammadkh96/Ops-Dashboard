@@ -68,6 +68,7 @@ try {
   const { PrismaClient } = require('../dist/generated/prisma/client');
   const { PrismaPg } = require('@prisma/adapter-pg');
   const { PspBalanceService } = require('../dist/src/psps/psp-balance.service');
+  const { PspSyncService } = require('../dist/src/psps/psp-sync.service');
   prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: url }) });
 
   const svc = new PspBalanceService(prisma);
@@ -262,6 +263,99 @@ try {
     });
     const b = await svc.balance(mt.id);
     ok('case and order are not a change', b.rulesChanged === false, b.rules);
+  }
+
+  section('BEEM: a ledger that arrives only as a file');
+  {
+    // No endpoint, ever: BEEM publishes create-type endpoints only, so its
+    // ledger comes from the CSV its portal exports. Its amounts already carry
+    // their sign and its Transaction ID repeats across a payment and its fee.
+    const beem = await prisma.pspConnection.create({
+      data: {
+        terminal: 'BEEM_Tradin',
+        provider: 'beem',
+        label: 'BEEM',
+        ledgerSource: 'provider',
+        // Field mapping only — no path. Nothing to call.
+        endpoints: {
+          transactions: {
+            path: '',
+            fields: {
+              id: 'Transaction ID+Transaction Type',
+              amount: 'Amount',
+              currency: 'Wallet Currency',
+              status: 'Payment Status',
+              date: 'Date Created',
+              direction: 'Transaction Type',
+            },
+          },
+        },
+        movementRules: {
+          currency: 'USDC',
+          add: ['PAYMENT_IN'],
+          subtract: ['PAYMENT_OUT', 'NETWORK_FEE', 'PROCESSING_FEE'],
+          statuses: ['COMPLETE'],
+          signed: true,
+        },
+      },
+    });
+
+    // Their real June-August totals, as four signed rows.
+    const beemRow = (direction, amount) =>
+      prisma.pspTransaction.create({
+        data: {
+          connectionId: beem.id,
+          terminal: beem.terminal,
+          externalId: `${direction}-1`,
+          direction,
+          status: 'COMPLETE',
+          currency: 'USDC',
+          amount,
+          occurredAt: new Date('2026-08-30T20:16:56Z'),
+          raw: {},
+        },
+      });
+    await beemRow('PAYMENT_IN', '35939.594759');
+    await beemRow('PAYMENT_OUT', '-11609.154551');
+    await beemRow('NETWORK_FEE', '-284.488500');
+    await beemRow('PROCESSING_FEE', '-71.879190');
+
+    // Imported FIRST, then anchored — which is the order that matters. The
+    // baseline is what is already counting, so anchoring first would leave it
+    // at nothing and the whole import would land as movement.
+    const { balance: b } = await svc.setAnchor(beem.id, {
+      amount: '25160.845871',
+      currency: 'USDC',
+      takenAt: new Date().toISOString(),
+    });
+    ok('anchoring after the import starts movement at zero',
+       b.movement.net === 0, b.movement);
+    ok('at their own running balance',
+       Math.abs(b.estimate - 25160.85) < 0.005, b.estimate);
+
+    // A later export brings one new payment and repeats everything else.
+    await beemRow('PAYMENT_IN', '500.000000').catch(() => {});
+    await prisma.pspTransaction.create({
+      data: {
+        connectionId: beem.id, terminal: beem.terminal,
+        externalId: 'PAYMENT_IN-2', direction: 'PAYMENT_IN', status: 'COMPLETE',
+        currency: 'USDC', amount: '500.00',
+        occurredAt: new Date('2026-09-02T10:00:00Z'), raw: {},
+      },
+    });
+    const after = await svc.balance(beem.id);
+    ok('only the new row moves it', Math.abs(after.movement.net - 500) < 0.005,
+       after.movement);
+    // Signed amounts: the outflows must not be double-negated into gains.
+    ok('money out is reported as out, not as in',
+       after.movement.subtracted === 0 && after.movement.added === 500,
+       after.movement);
+
+    const dir = await new PspSyncService(prisma, svc).directory();
+    const card = dir.find((d) => d.id === beem.id);
+    ok('its card opens even with no endpoint configured',
+       card?.hasTransactions === true, card);
+    ok('and reports what it holds', card?.stored === 5, card?.stored);
   }
 
   console.log(failures ? `\n${failures} failed` : '\nall good');
