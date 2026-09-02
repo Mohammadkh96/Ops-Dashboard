@@ -132,9 +132,15 @@ async function main() {
       /Invalid JWT serialization/.test(said ?? ''),
       said,
     );
+    // It used to go on to say "put the client id in the key box and the client
+    // key in the secret box", which read as settled fact. It was not: BEEM's
+    // documentation turned out to specify RSA request signing, and a gateway
+    // that parses a JWT does not tell you which of the two schemes a client is
+    // meant to use. So the message now offers both and names the document that
+    // decides — see check-psp-signature.ts, which asserts that in full.
     ok(
-      'it says where the client id and key go',
-      /client id/i.test(said ?? '') && /token endpoint/i.test(said ?? ''),
+      'it does not assert oauth2 as the answer',
+      /signature/i.test(said ?? '') && /authentication/i.test(said ?? ''),
       said,
     );
 

@@ -1,4 +1,9 @@
-import { createHash, createHmac } from 'node:crypto';
+import {
+  createHash,
+  createHmac,
+  createPrivateKey,
+  createSign,
+} from 'node:crypto';
 
 /**
  * One HTTP call to a payment provider.
@@ -40,13 +45,25 @@ export type AuthMode =
    *
    * The others all present a credential that IS the credential. This one does
    * not: the provider issues a client id and a client key that are only good
-   * for asking, and every real call carries a JWT minted from them minutes
-   * ago. BEEM is one — it answers a static key with
-   * `Invalid JWT serialization: Missing dot delimiter(s)`, which is a server
-   * saying "that is not a token" rather than "that is the wrong token", and no
-   * amount of re-pasting the key fixes it.
+   * for asking, and every real call carries a token minted from them minutes
+   * ago.
    */
-  | 'oauth2';
+  | 'oauth2'
+  /**
+   * Sign the request itself with an RSA private key — RFC 9421.
+   *
+   * BEEM's, and the reason it is a mode of its own rather than a variant of
+   * `hmac`: there is no shared secret at all. A key pair is generated locally,
+   * the PUBLIC half is uploaded to the provider's portal, and the private half
+   * never leaves here. What travels is a signature over the method, the URL and
+   * a timestamp, so a captured request cannot be replayed or altered — and the
+   * provider never holds anything that could sign as us.
+   *
+   * The `hmac` mode cannot do this. It is symmetric: both sides hold the same
+   * secret, and it signs a payload of our own invention rather than the one
+   * RFC 9421 specifies. A provider verifying a real signature base rejects it.
+   */
+  | 'signature';
 
 export const AUTH_MODES: AuthMode[] = [
   'bearer',
@@ -55,6 +72,7 @@ export const AUTH_MODES: AuthMode[] = [
   'query',
   'hmac',
   'oauth2',
+  'signature',
 ];
 
 /** Where in a response the interesting values are. */
@@ -509,6 +527,21 @@ export async function callPsp(
     case 'query':
       url.searchParams.set(conn.authName || 'api_key', creds.key ?? '');
       break;
+    case 'signature': {
+      // Last, deliberately: every query parameter is already on the URL, and
+      // the URL is what gets signed.
+      const signed = signRequest(url, 'GET', creds);
+      if (!signed.ok) {
+        return {
+          ok: false,
+          status: null,
+          error: signed.error,
+          ms: Date.now() - started,
+        };
+      }
+      Object.assign(headers, signed.headers);
+      break;
+    }
     case 'hmac': {
       // The common shape: the key identifies you, a signature over the path and
       // a timestamp proves you hold the secret. Providers differ on exactly
@@ -582,6 +615,172 @@ export async function callPsp(
       ms,
     };
   }
+}
+
+/**
+ * The one algorithm BEEM's signers name, and therefore the only one written.
+ *
+ * RFC 9421 allows several. Offering a choice would be offering four ways to
+ * produce a signature a provider rejects, with nothing on screen to say which
+ * of them was wrong.
+ */
+const SIGNATURE_ALG = 'rsa-v1_5-sha256';
+
+/**
+ * A pasted private key, as OpenSSL would have written it.
+ *
+ * Necessary because of where it gets pasted. The secret box is a single-line
+ * input — it holds a credential, so it is masked, and a masked multi-line box
+ * is not a thing — and per the HTML spec a text input strips the newlines out
+ * of anything pasted into it. So the PEM that arrives is the right base64 with
+ * its line structure gone, which `createPrivateKey` refuses.
+ *
+ * Rebuilt rather than rejected, because "paste your key, but not like that" is
+ * a dead end for somebody holding the correct key. The BEGIN/END labels are
+ * kept as found: PKCS#1 (`RSA PRIVATE KEY`) and PKCS#8 (`PRIVATE KEY`) are
+ * different encodings, and relabelling one as the other produces a key that
+ * parses as nothing.
+ *
+ * A bare base64 blob with no markers is assumed to be PKCS#8, which is what
+ * BEEM's own reference signers assume.
+ */
+export function normalisePrivateKey(raw: string): string | null {
+  // A literal backslash-n, which is how a key that has been through a JSON
+  // config or an environment variable arrives. Not whitespace, so nothing below
+  // would strip it, and the base64 check would reject the whole key over it.
+  const text = (raw ?? '').replace(/\\r\\n|\\n/g, '\n').trim();
+  if (!text) return null;
+
+  const marked =
+    /-----\s*BEGIN\s+((?:RSA\s+)?PRIVATE\s+KEY)\s*-----([\s\S]*?)-----\s*END\s+(?:RSA\s+)?PRIVATE\s+KEY\s*-----/i.exec(
+      text,
+    );
+
+  // An encrypted key cannot be used without its passphrase, and there is
+  // nowhere here to put one. Better said than left to fail as "not a key".
+  if (/BEGIN\s+ENCRYPTED\s+PRIVATE\s+KEY/i.test(text)) return null;
+
+  const labelText = marked
+    ? marked[1].replace(/\s+/g, ' ').toUpperCase()
+    : 'PRIVATE KEY';
+  const body = (marked ? marked[2] : text).replace(/\s+/g, '');
+  if (!body || !/^[A-Za-z0-9+/]+={0,2}$/.test(body)) return null;
+
+  const wrapped = body.match(/.{1,64}/g)?.join('\n');
+  if (!wrapped) return null;
+  return `-----BEGIN ${labelText}-----\n${wrapped}\n-----END ${labelText}-----\n`;
+}
+
+/**
+ * The four headers RFC 9421 asks for, over this exact request.
+ *
+ * There is no Content-Digest, and that is not an omission. The digest covers a
+ * request BODY, and every call this connector makes is a GET with none — which
+ * is also why the signed component list is three items rather than four. Adding
+ * a digest of an empty body would sign something the provider is not verifying.
+ *
+ * The URL is signed as it will be sent, query string and all, which is why this
+ * runs after the endpoint's query parameters and the sync's paging parameters
+ * are already on it. Signing a URL and then adding `offset=50` to it produces a
+ * signature that verifies against a request nobody made.
+ */
+function signRequest(
+  url: URL,
+  method: string,
+  creds: Credentials,
+):
+  { ok: true; headers: Record<string, string> } | { ok: false; error: string } {
+  const clientId = (creds.key ?? '').trim();
+  if (!clientId) {
+    return {
+      ok: false,
+      error:
+        'No client id. This mode signs each request and names which registered key signed it — put the provider’s client id in the key box and the RSA private key in the secret box.',
+    };
+  }
+  // The client id is interpolated into a header, inside quotes. A newline in it
+  // would end the header and start another one of somebody's choosing.
+  if (/["\r\n]/.test(clientId)) {
+    return {
+      ok: false,
+      error:
+        'The client id contains a quote or a line break, which cannot go in a signature header. Check what was pasted into the key box.',
+    };
+  }
+
+  const pem = normalisePrivateKey(creds.secret ?? '');
+  if (!pem) {
+    return {
+      ok: false,
+      error:
+        'No usable private key in the secret box. This mode wants the RSA private key itself — the whole PEM including the BEGIN and END lines. An encrypted key cannot be used, and neither can a public key: the public half is what goes in the provider’s portal, not here.',
+    };
+  }
+
+  let key: ReturnType<typeof createPrivateKey>;
+  try {
+    key = createPrivateKey({ key: pem, format: 'pem' });
+  } catch {
+    return {
+      ok: false,
+      error:
+        'The stored secret is not a private key this can read. If OpenSSL wrote a PKCS#1 key (it starts “BEGIN RSA PRIVATE KEY”), convert it once: openssl pkcs8 -topk8 -nocrypt -in key.pem -out key-pkcs8.pem',
+    };
+  }
+  if (key.asymmetricKeyType !== 'rsa') {
+    return {
+      ok: false,
+      error: `The stored key is ${String(key.asymmetricKeyType)}, and this signature algorithm needs RSA. Generate one with: openssl genrsa -out api-client-key.pem 2048`,
+    };
+  }
+
+  const created = Math.floor(Date.now() / 1000);
+  const date = new Date(created * 1000).toUTCString();
+  const params = `("@method" "@target-uri" "date");created=${created};keyid="${clientId}";alg="${SIGNATURE_ALG}"`;
+
+  // Newline-joined, no trailing newline, in this order. The provider rebuilds
+  // this string byte for byte and verifies against it — a stray space anywhere
+  // in here is a 401 that looks exactly like a wrong key.
+  const base = [
+    `"@method": ${method.toUpperCase()}`,
+    `"@target-uri": ${url.toString()}`,
+    `"date": ${date}`,
+    `"@signature-params": ${params}`,
+  ].join('\n');
+
+  return {
+    ok: true,
+    headers: {
+      date,
+      'signature-input': `sig=${params}`,
+      signature: `sig=:${createSign('RSA-SHA256').update(base).sign(key, 'base64')}:`,
+    },
+  };
+}
+
+/**
+ * The signature base for a request, for showing a person.
+ *
+ * Exported for one reason: when a provider rejects a signature there is nothing
+ * to look at. The key is right or it is not, the clock is right or it is not,
+ * and the string being signed is right or it is not — and only the last of
+ * those can be checked by reading it. This produces it without signing
+ * anything, so it can be compared against the provider's documentation.
+ */
+export function signatureBase(
+  url: string,
+  method: string,
+  clientId: string,
+  created: number,
+): string {
+  const date = new Date(created * 1000).toUTCString();
+  const params = `("@method" "@target-uri" "date");created=${created};keyid="${clientId}";alg="${SIGNATURE_ALG}"`;
+  return [
+    `"@method": ${method.toUpperCase()}`,
+    `"@target-uri": ${url}`,
+    `"date": ${date}`,
+    `"@signature-params": ${params}`,
+  ].join('\n');
 }
 
 /**
@@ -753,10 +952,20 @@ export function suggestAuthMode(
     // different fix — and the fix is NOT to keep feeding it the same key.
     const detail = challengeParams(challenge).error_description ?? '';
     if (/\bjwt\b|json web token/i.test(detail)) {
+      // What this rules OUT is certain: a static key in a header, under any of
+      // the names, is not what this endpoint accepts — it read what we sent as
+      // a token and it is not one.
+      //
+      // What it rules IN is not, and saying otherwise sent somebody down a
+      // wrong path once already. This challenge came from BEEM, whose gateway
+      // says "token" while its documentation says every request is SIGNED with
+      // an RSA key. A gateway that parses a JWT is not proof that minting one
+      // is how a client is meant to authenticate. So: name both, and say which
+      // document settles it.
       return (
-        'The provider wants a minted token, not the key itself: it read what we sent and rejected it as an unparseable JWT' +
+        'This endpoint will not take a static key at all — it read what we sent as a token and rejected it as an unparseable one' +
         (detail ? ` (“${detail}”)` : '') +
-        '. A client id and client key are not that token — they are what a token is minted WITH. Set the auth mode to “oauth2”, put the client id in the key box and the client key in the secret box, and put the provider’s token endpoint in the box beside the auth mode. It will exchange them for a token before every call and re-use it until it expires.'
+        '. Two schemes look like this, and the provider’s AUTHENTICATION page says which: either it mints short-lived tokens from a client id and secret, which is the “oauth2” mode, or it wants each request signed with an RSA private key whose public half is registered in its portal, which is the “signature” mode. A client id and key on their own do not distinguish them.'
       );
     }
     if (current === 'bearer' || current === 'oauth2') {

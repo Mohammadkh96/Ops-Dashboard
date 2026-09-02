@@ -145,6 +145,8 @@ export const AUTH_MODES = [
   // Not a way of presenting the key — a step before presenting anything. See
   // AuthMode in the API's psp-connector.ts.
   "oauth2",
+  // Nor this: it signs the request instead of presenting a credential at all.
+  "signature",
 ] as const;
 
 export function usePsps() {

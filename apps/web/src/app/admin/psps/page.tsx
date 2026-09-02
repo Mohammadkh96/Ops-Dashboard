@@ -695,7 +695,11 @@ function PspForm({
                 placeholder={
                   authMode === "oauth2" ? "/oauth/token" : "X-API-KEY"
                 }
-                disabled={authMode === "bearer" || authMode === "basic"}
+                disabled={
+                  authMode === "bearer" ||
+                  authMode === "basic" ||
+                  authMode === "signature"
+                }
                 className={`${field} disabled:opacity-40`}
               />
             </label>
@@ -711,6 +715,36 @@ function PspForm({
               <strong className="text-primary">client key</strong> in the secret
               box. If the provider’s login server is a different host, the token
               endpoint can be a whole https address instead of a path.
+            </p>
+          ) : null}
+
+          {authMode === "signature" ? (
+            <p className="rounded-lg border border-border bg-card/40 px-3 py-2.5 text-[11px] leading-relaxed text-muted">
+              This mode sends no key. It signs each request — the method, the
+              full URL and a timestamp — with an RSA private key, and the
+              provider verifies it with the public half you registered in their
+              portal. Nothing that could sign as you ever leaves this server.
+              Put the <strong className="text-primary">client id</strong> in the
+              key box and the{" "}
+              <strong className="text-primary">private key</strong> in the
+              secret box: the whole PEM, BEGIN and END lines included. It is a
+              single-line box and the newlines will vanish as you paste —
+              that is expected and it is handled.
+            </p>
+          ) : null}
+
+          {authMode === "signature" ? (
+            <p className="rounded-lg border border-accent-orange/25 bg-accent-orange-soft px-3 py-2.5 text-[11px] leading-relaxed text-accent-orange">
+              <span className="font-medium">
+                Two things outside this form have to be right.
+              </span>{" "}
+              The <strong>public</strong> key must be registered against a
+              client in the provider’s portal — never the private one. And that
+              client’s IP allow list has to admit this API, which runs on
+              serverless functions with no fixed address: unless you have
+              bought static egress IPs, the allow list needs{" "}
+              <code className="font-mono">0.0.0.0</code>, or every signed
+              request is refused however correct the signature is.
             </p>
           ) : null}
 

@@ -13,6 +13,7 @@
     "check:categories": "tsx scripts/check-incident-categories.ts",
     "check:psp": "tsx scripts/check-psp-connector.ts",
     "check:oauth": "tsx scripts/check-psp-oauth.ts",
+    "check:signature": "tsx scripts/check-psp-signature.ts",
     "check:sync": "npm run build && node scripts/check-psp-sync.mjs",
     "check:balance": "npm run build && node scripts/check-psp-balance.mjs",
     "check:events": "npm run build && node scripts/check-payment-events.mjs",
