@@ -585,6 +585,105 @@ export async function callPsp(
 }
 
 /**
+ * Where an authorisation server publishes its own address book.
+ *
+ * RFC 8414 and OpenID Connect Discovery both say a server SHOULD serve its
+ * metadata — including `token_endpoint` — at a well-known path, unauthenticated.
+ * Enough of them do that asking is worth two GETs.
+ *
+ * Both spellings, because the two specifications chose different names and
+ * providers implement one, the other, or both. And both placements: the RFC
+ * puts the well-known segment before any path prefix, OIDC after it, and a
+ * provider whose API lives under `/auth` may answer at either.
+ */
+const METADATA_PATHS = [
+  '/.well-known/openid-configuration',
+  '/.well-known/oauth-authorization-server',
+];
+
+export type TokenEndpointGuess = {
+  /** Where it was found — the metadata document's own URL. */
+  from: string;
+  /** The token endpoint that document names, absolute. */
+  tokenEndpoint: string;
+  /** Which grants it says it supports, when it says. */
+  grants?: string[];
+};
+
+/**
+ * Asks a provider where it mints tokens.
+ *
+ * The one piece of an oauth2 connection nobody can guess: the base URL and the
+ * ledger path come from the provider's documentation, but the token endpoint is
+ * frequently on a different host and is the field most often missing from what
+ * a provider hands over. Guessing it is not an option — a guess means POSTing a
+ * client secret at an address nobody has verified.
+ *
+ * So this asks instead, and it is deliberately the most boring call in the
+ * file: GET, no credentials, two well-known paths. It reads one field. Nothing
+ * it returns is used automatically — it is put in front of a person, who
+ * decides whether that is really their provider's login server.
+ */
+export async function discoverTokenEndpoint(
+  baseUrl: string,
+): Promise<
+  { ok: true; found: TokenEndpointGuess[] } | { ok: false; error: string }
+> {
+  const base = baseUrl.trim().replace(/\/$/, '');
+  if (!/^https:\/\//i.test(base)) {
+    return { ok: false, error: 'Set an https base URL first.' };
+  }
+
+  let origin: string;
+  try {
+    origin = new URL(base).origin;
+  } catch {
+    return { ok: false, error: `"${base}" is not a valid URL.` };
+  }
+
+  // The origin covers the ordinary case; the full base URL covers a provider
+  // whose API sits under a path prefix. De-duplicated, because for most
+  // providers those are the same address and asking twice is just noise.
+  const candidates = new Set<string>();
+  for (const root of [origin, base]) {
+    for (const p of METADATA_PATHS) candidates.add(`${root}${p}`);
+  }
+
+  const found: TokenEndpointGuess[] = [];
+  for (const url of candidates) {
+    try {
+      const res = await fetch(url, {
+        method: 'GET',
+        headers: { accept: 'application/json' },
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      });
+      if (!res.ok) continue;
+      const doc: unknown = await res.json();
+      if (!doc || typeof doc !== 'object') continue;
+      const o = doc as Record<string, unknown>;
+      const endpoint = o.token_endpoint;
+      if (typeof endpoint !== 'string' || !/^https:\/\//i.test(endpoint)) {
+        continue;
+      }
+      const grants = Array.isArray(o.grant_types_supported)
+        ? o.grant_types_supported.filter(
+            (g): g is string => typeof g === 'string',
+          )
+        : undefined;
+      // Same endpoint via two well-known paths is one finding, not two.
+      if (found.some((f) => f.tokenEndpoint === endpoint)) continue;
+      found.push({ from: url, tokenEndpoint: endpoint, grants });
+    } catch {
+      /* A 404, a timeout, a body that is not JSON. Every one of these is the
+         ordinary answer from a provider that does not publish metadata, and
+         none is worth reporting on its own — only "nothing found" is. */
+    }
+  }
+
+  return { ok: true, found };
+}
+
+/**
  * An HTTP status as something to act on.
  *
  * "Request failed with status code 401" tells somebody nothing they did not

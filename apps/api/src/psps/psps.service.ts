@@ -21,6 +21,7 @@ import {
   AUTH_MODES,
   callPsp,
   describeWebPage,
+  discoverTokenEndpoint,
   looksLikeWebPage,
   providerError,
   suggestAuthMode,
@@ -307,6 +308,39 @@ export class PspsService {
     if (!conn) throw new NotFoundException('No such PSP connection.');
     await this.prisma.pspConnection.delete({ where: { id } });
     return { ok: true, terminal: conn.terminal };
+  }
+
+  /**
+   * Asks the provider where it mints tokens.
+   *
+   * The oauth2 mode needs one field that no provider reliably includes in what
+   * it hands over, and that must not be guessed: a guessed token endpoint is a
+   * client secret POSTed at an unverified address. Most authorisation servers
+   * publish theirs at a well-known path, so the honest move is to ask.
+   *
+   * Spends no credential and writes nothing — the answer is shown to whoever
+   * pressed the button, who decides whether it is really their provider's login
+   * server before saving it.
+   */
+  async discoverToken(id: string) {
+    const conn = await this.prisma.pspConnection.findUnique({ where: { id } });
+    if (!conn) throw new NotFoundException('No such PSP connection.');
+    if (!conn.baseUrl?.trim()) {
+      throw new BadRequestException(
+        'Set the base URL first — that is the host this asks.',
+      );
+    }
+
+    const result = await discoverTokenEndpoint(conn.baseUrl);
+    if (!result.ok) return { ok: false as const, error: result.error };
+    if (!result.found.length) {
+      return {
+        ok: false as const,
+        error:
+          'This provider does not publish its login address. Ask them: “which URL do we POST client_credentials to, to get an access token?”',
+      };
+    }
+    return { ok: true as const, found: result.found };
   }
 
   /**

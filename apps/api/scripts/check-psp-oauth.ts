@@ -23,6 +23,7 @@ import {
   AUTH_MODES,
   callPsp,
   clearTokenCache,
+  discoverTokenEndpoint,
   suggestAuthMode,
   type EndpointConfig,
 } from '../src/psps/psp-connector';
@@ -470,6 +471,139 @@ async function main() {
       'and keeps the body for the Test panel',
       typeof (result as { body?: unknown }).body === 'string',
       (result as { body?: unknown }).body,
+    );
+  }
+
+  section('asking a provider where it mints tokens');
+  {
+    // The one field of an oauth2 connection that cannot be guessed, and the
+    // standardised way to stop guessing: RFC 8414 / OIDC discovery.
+    const { seen, result } = await recording(
+      (s) =>
+        s.url.endsWith('/.well-known/openid-configuration')
+          ? {
+              status: 200,
+              body: {
+                issuer: 'https://api.core.paybeem.com',
+                token_endpoint: 'https://api.core.paybeem.com/oauth2/token',
+                grant_types_supported: ['client_credentials', 'refresh_token'],
+              },
+            }
+          : { status: 404, body: { error: 'Not Found' } },
+      () => discoverTokenEndpoint('https://api.core.paybeem.com'),
+    );
+
+    const r = result as {
+      ok: boolean;
+      found?: { tokenEndpoint: string; from: string; grants?: string[] }[];
+    };
+    ok('it found one', r.ok && r.found?.length === 1, result);
+    ok(
+      'and it is the token endpoint the document named',
+      r.found?.[0].tokenEndpoint ===
+        'https://api.core.paybeem.com/oauth2/token',
+      r.found,
+    );
+    ok(
+      'reporting where it was published, so a person can judge it',
+      (r.found?.[0].from ?? '').endsWith('/.well-known/openid-configuration'),
+      r.found,
+    );
+    ok(
+      'and which grants it says it supports',
+      r.found?.[0].grants?.includes('client_credentials') === true,
+      r.found,
+    );
+    // No credential goes anywhere near this.
+    ok(
+      'every request was a GET',
+      seen.every((s) => s.method === 'GET'),
+    );
+    ok(
+      'and carried no authorization header',
+      seen.every((s) => s.authorization === null),
+    );
+  }
+
+  section('a provider that publishes nothing');
+  {
+    const { result } = await recording(
+      () => ({ status: 404, body: { error: 'Not Found' } }),
+      () => discoverTokenEndpoint('https://api.core.paybeem.com'),
+    );
+    const r = result as { ok: boolean; found?: unknown[] };
+    // Not an error — most providers do not publish metadata, and the screen has
+    // to tell somebody to go and ask rather than showing them a failure.
+    ok('is not a failure', r.ok === true, result);
+    ok('it just found nothing', r.found?.length === 0, result);
+  }
+
+  section('what discovery will not accept');
+  {
+    // A token endpoint is where a client SECRET gets posted. An http one, or a
+    // relative one, is not something to offer somebody as an answer.
+    const insecure = await recording(
+      (s) =>
+        s.url.includes('.well-known')
+          ? {
+              status: 200,
+              body: { token_endpoint: 'http://auth.example.com/t' },
+            }
+          : { status: 404, body: {} },
+      () => discoverTokenEndpoint('https://api.core.paybeem.com'),
+    );
+    ok(
+      'an http token endpoint is not offered',
+      (insecure.result as { found?: unknown[] }).found?.length === 0,
+      insecure.result,
+    );
+
+    const relative = await recording(
+      (s) =>
+        s.url.includes('.well-known')
+          ? { status: 200, body: { token_endpoint: '/oauth/token' } }
+          : { status: 404, body: {} },
+      () => discoverTokenEndpoint('https://api.core.paybeem.com'),
+    );
+    ok(
+      'nor a relative one',
+      (relative.result as { found?: unknown[] }).found?.length === 0,
+      relative.result,
+    );
+
+    const junk = await recording(
+      () => ({ status: 200, body: '<!doctype html><title>Hi</title>' }),
+      () => discoverTokenEndpoint('https://api.core.paybeem.com'),
+    );
+    ok(
+      'and a web page is not metadata',
+      (junk.result as { found?: unknown[] }).found?.length === 0,
+      junk.result,
+    );
+
+    const http = await discoverTokenEndpoint('http://api.core.paybeem.com');
+    ok(
+      'an http base URL is refused outright',
+      !(http as { ok: boolean }).ok,
+      http,
+    );
+  }
+
+  section('the same endpoint via two well-known paths');
+  {
+    const { result } = await recording(
+      () => ({
+        status: 200,
+        body: { token_endpoint: 'https://api.core.paybeem.com/oauth2/token' },
+      }),
+      () => discoverTokenEndpoint('https://api.core.paybeem.com/api'),
+    );
+    // Both spellings and both placements are asked, and for most providers
+    // several answer. One endpoint is one finding, not four.
+    ok(
+      'is reported once',
+      (result as { found?: unknown[] }).found?.length === 1,
+      result,
     );
   }
 

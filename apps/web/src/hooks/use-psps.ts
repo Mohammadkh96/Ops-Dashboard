@@ -220,8 +220,27 @@ export function usePspAdmin() {
     onSuccess: refresh,
   });
 
-  return { create, update, remove, test };
+  // Not in the query cache either, and for a plainer reason than `test`: it is
+  // a question about how a connection SHOULD be configured, asked while
+  // somebody is typing. Caching an answer to that means showing a token
+  // endpoint discovered against a base URL that has since been corrected.
+  const discoverToken = useMutation({
+    mutationFn: (id: string) =>
+      authFetch<TokenDiscovery>(`/psps/${id}/discover-token`, {
+        method: "POST",
+      }),
+  });
+
+  return { create, update, remove, test, discoverToken };
 }
+
+/** Where a provider says it mints tokens — see discoverTokenEndpoint. */
+export type TokenDiscovery =
+  | {
+      ok: true;
+      found: { from: string; tokenEndpoint: string; grants?: string[] }[];
+    }
+  | { ok: false; error: string };
 
 /** One stored transaction, read from our own table rather than the provider. */
 export type LedgerRow = {

@@ -26,6 +26,7 @@ import {
   type MovementRules,
   type Psp,
   type TestResult,
+  type TokenDiscovery,
 } from "@/hooks/use-psps";
 
 const field =
@@ -300,6 +301,104 @@ function PspRow({ psp, onOpen }: { psp: Psp; onOpen: () => void }) {
   );
 }
 
+/**
+ * Finds the one field of an oauth2 connection nobody can guess.
+ *
+ * The base URL and the ledger path come out of a provider's documentation. The
+ * token endpoint frequently does not — it is often on a different host, and it
+ * is the field most often missing from what a provider hands over. It also
+ * cannot be guessed at, because a guess means posting a client secret to an
+ * address nobody has checked.
+ *
+ * Most authorisation servers publish theirs at a well-known path, so this asks.
+ * What comes back is put in front of a person rather than filled in for them:
+ * the whole point is that somebody looks at the host and decides it really is
+ * their provider's login server.
+ */
+function TokenEndpointFinder({
+  baseUrl,
+  authName,
+  found,
+  pending,
+  canStore,
+  onFind,
+  onPick,
+}: {
+  baseUrl: string;
+  authName: string;
+  found: TokenDiscovery | null;
+  pending: boolean;
+  canStore: boolean;
+  onFind: () => void;
+  onPick: (value: string) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      {!authName.trim() ? (
+        <span className="text-[11px] text-accent-orange">
+          The token endpoint is required for this mode — without it there is
+          nothing to exchange the credentials at, and every call fails before it
+          is made.
+        </span>
+      ) : null}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          variant="secondary"
+          disabled={pending || !canStore || !baseUrl.trim()}
+          onClick={onFind}
+        >
+          {pending ? "Asking…" : "Ask the provider where it mints tokens"}
+        </Button>
+        <span className="text-[11px] text-muted">
+          Saves first, then asks — no credential is spent.
+        </span>
+      </div>
+
+      {found && !found.ok ? (
+        <span className="text-[11px] text-accent-orange">{found.error}</span>
+      ) : null}
+
+      {found?.ok
+        ? found.found.map((f) => {
+            // A server that lists its grants and does not list this one will
+            // refuse the exchange. Better said here than discovered as a 400
+            // with the credentials already sent.
+            const usable = !f.grants || f.grants.includes("client_credentials");
+            return (
+              <div
+                key={f.tokenEndpoint}
+                className="flex flex-col gap-1.5 rounded-lg border border-border bg-card/40 px-3 py-2.5"
+              >
+                <code className="break-all font-mono text-xs text-primary">
+                  {f.tokenEndpoint}
+                </code>
+                <span className="break-all text-[11px] text-muted">
+                  Published at {f.from}
+                </span>
+                {!usable ? (
+                  <span className="text-[11px] text-accent-orange">
+                    This server lists its grants and client_credentials is not
+                    among them ({f.grants?.join(", ")}). It will refuse the
+                    exchange — ask the provider which grant your client id is
+                    for.
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => onPick(f.tokenEndpoint)}
+                  className="self-start text-[11px] text-accent-blue underline underline-offset-2"
+                >
+                  Use this one
+                </button>
+              </div>
+            );
+          })
+        : null}
+    </div>
+  );
+}
+
 /** The configuration form for one provider. */
 function PspForm({
   psp,
@@ -314,7 +413,7 @@ function PspForm({
   onClose: () => void;
   onSaved: (message: string) => void;
 }) {
-  const { update, remove, test } = usePspAdmin();
+  const { update, remove, test, discoverToken } = usePspAdmin();
   const balance = psp.endpoints?.balance ?? { path: "" };
 
   const [baseUrl, setBaseUrl] = useState(psp.baseUrl ?? "");
@@ -337,6 +436,7 @@ function PspForm({
   const [query, setQuery] = useState(queryToText(balance.query));
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<TestResult | null>(null);
+  const [tokenFound, setTokenFound] = useState<TokenDiscovery | null>(null);
 
   // The transactions endpoint, kept entirely separate from the balance one.
   // They are different paths with different field names on nearly every
@@ -447,6 +547,27 @@ function PspForm({
               setError(e instanceof Error ? e.message : String(e)),
           },
         );
+      },
+      onError: (e: unknown) =>
+        setError(e instanceof Error ? e.message : String(e)),
+    });
+  };
+
+  // Same shape as saveThenTest, and for the same reason: the server asks, from
+  // the stored row. Discovering against a base URL that is still only typed
+  // into the box would answer a question about the previous provider.
+  const saveThenDiscover = () => {
+    setError(null);
+    setTokenFound(null);
+    update.mutate(body(), {
+      onSuccess: () => {
+        setApiKey("");
+        setApiSecret("");
+        discoverToken.mutate(psp.id, {
+          onSuccess: setTokenFound,
+          onError: (e: unknown) =>
+            setError(e instanceof Error ? e.message : String(e)),
+        });
       },
       onError: (e: unknown) =>
         setError(e instanceof Error ? e.message : String(e)),
@@ -593,12 +714,16 @@ function PspForm({
             </p>
           ) : null}
 
-          {authMode === "oauth2" && !authName.trim() ? (
-            <span className="text-[11px] text-accent-orange">
-              The token endpoint is required for this mode — without it there is
-              nothing to exchange the credentials at, and every call will fail
-              before it is made. Ask the provider where it mints tokens.
-            </span>
+          {authMode === "oauth2" ? (
+            <TokenEndpointFinder
+              baseUrl={baseUrl}
+              authName={authName}
+              found={tokenFound}
+              pending={update.isPending || discoverToken.isPending}
+              canStore={canStore}
+              onFind={saveThenDiscover}
+              onPick={setAuthName}
+            />
           ) : null}
 
           <div className="flex flex-col gap-2 rounded-lg border border-border bg-card/40 px-3 py-2.5">

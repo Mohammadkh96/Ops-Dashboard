@@ -152,6 +152,19 @@ export class PspsController {
   }
 
   /**
+   * Asks the provider where its token endpoint is.
+   *
+   * A POST because it makes an outbound call, like the test beside it — though
+   * unlike the test it spends no credential at all. Behind the admin lock
+   * anyway: it is part of configuring a connection, and it names hosts.
+   */
+  @UseGuards(JwtAuthGuard, AdminUnlockGuard)
+  @Post(':id/discover-token')
+  discoverToken(@Param('id') id: string) {
+    return this.psps.discoverToken(id);
+  }
+
+  /**
    * The provider's own transaction list, read live.
    *
    * A POST for the same reason the test is: it spends a real credential on an
