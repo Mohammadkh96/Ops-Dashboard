@@ -32,6 +32,16 @@ export type EndpointConfig = {
     extras?: Record<string, string>;
   };
   query?: Record<string, string>;
+  /**
+   * How to ask for the next page. Names differ per provider — BEEM calls the
+   * page size `max`, ForumPay `limit` — and getting one wrong truncates a sync
+   * silently. See the note by the inputs.
+   */
+  pagination?: {
+    limitParam?: string;
+    offsetParam?: string;
+    pageSize?: number;
+  };
 };
 
 /**

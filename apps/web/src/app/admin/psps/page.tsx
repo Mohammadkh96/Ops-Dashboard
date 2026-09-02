@@ -363,6 +363,13 @@ function PspForm({
   // and a list reads better down the page than along it.
   const [txnExtras, setTxnExtras] = useState(extrasToText(txn.fields?.extras));
   const [txnQuery, setTxnQuery] = useState(queryToText(txn.query));
+  // How to ask for the next page. Defaults suit most providers; BEEM calls the
+  // page size `max`, and a wrong name here truncates a sync without saying so.
+  const [pgLimit, setPgLimit] = useState(txn.pagination?.limitParam ?? "");
+  const [pgOffset, setPgOffset] = useState(txn.pagination?.offsetParam ?? "");
+  const [pgSize, setPgSize] = useState(
+    txn.pagination?.pageSize ? String(txn.pagination.pageSize) : "",
+  );
 
   // Which of the provider's own words move the balance, and which way.
   const [rules, setRules] = useState<MovementRules>(psp.movementRules ?? {});
@@ -406,6 +413,11 @@ function PspForm({
           extras: textToExtras(txnExtras),
         },
         query: textToQuery(txnQuery),
+        pagination: {
+          limitParam: pgLimit.trim() || undefined,
+          offsetParam: pgOffset.trim() || undefined,
+          pageSize: Number(pgSize) > 0 ? Number(pgSize) : undefined,
+        },
       },
     },
     movementRules: rules,
@@ -773,6 +785,47 @@ function PspForm({
               className={field}
             />
           </div>
+        </div>
+      ) : null}
+
+      {/* Only where there is an API to page through. */}
+      {ledgerSource === "provider" && txnPath.trim() ? (
+        <div className="flex flex-col gap-2">
+          <span className={label}>Paging</span>
+          <div className="grid grid-cols-3 gap-2">
+            <input
+              value={pgLimit}
+              onChange={(e) => setPgLimit(e.target.value)}
+              placeholder="limit"
+              className={field}
+            />
+            <input
+              value={pgOffset}
+              onChange={(e) => setPgOffset(e.target.value)}
+              placeholder="offset"
+              className={field}
+            />
+            <input
+              value={pgSize}
+              onChange={(e) => setPgSize(e.target.value)}
+              placeholder="50"
+              inputMode="numeric"
+              className={field}
+            />
+          </div>
+          <span className="text-[11px] text-muted">
+            The parameter names this endpoint pages with, and how many rows to
+            ask for. Blank uses <code className="font-mono">limit</code>,{" "}
+            <code className="font-mono">offset</code> and 50, which suits most
+            providers — BEEM calls the page size{" "}
+            <code className="font-mono">max</code>.
+          </span>
+          <span className="text-[11px] text-muted">
+            Worth getting right: a sync stops when a page comes back shorter
+            than it asked for, so asking for 50 from a provider that ignores
+            the name and returns 25 looks like the end of the ledger. It stops
+            after one page and reports success.
+          </span>
         </div>
       ) : null}
 
