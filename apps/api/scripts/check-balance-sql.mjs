@@ -168,6 +168,78 @@ try {
     });
   }
 
+  section("ForumPay: the provider's cut, which is not inside the amount");
+  {
+    // The reported gap: the estimate ran about 0.2% high against the portal,
+    // always in the same direction, which is the shape of a percentage nobody
+    // is subtracting. ForumPay charges a fee on every transaction and reports
+    // it separately from invoice_amount, so a payout of 1,570.45 takes MORE
+    // than 1,570.45 out of the balance.
+    const fees = await prisma.pspConnection.create({
+      data: {
+        terminal: 'ForumPay_Fees',
+        provider: 'forumpay',
+        label: 'ForumPay with fees',
+        ledgerSource: 'provider',
+        movementRules: {
+          currency: 'USD',
+          add: ['Sell'],
+          subtract: ['Buy'],
+          statuses: ['confirmed'],
+        },
+      },
+    });
+    const row = (o) =>
+      prisma.pspTransaction.create({
+        data: {
+          connectionId: fees.id,
+          terminal: fees.terminal,
+          currency: 'USD',
+          status: 'confirmed',
+          raw: {},
+          occurredAt: new Date(),
+          ...o,
+        },
+      });
+
+    const { balance: start } = await svc.setAnchor(fees.id, {
+      amount: '64741.31',
+      currency: 'USD',
+      takenAt: new Date().toISOString(),
+    });
+    ok('nothing moves before anything happens', start.movement.net === 0, start.movement);
+
+    // A payout of 1,570.45 that also cost 3.14 in fees.
+    await row({ externalId: 'payout', direction: 'Buy', amount: '1570.45', fee: '3.14' });
+    const b = await svc.balance(fees.id);
+    ok('the fee leaves the balance as well as the payout',
+       Math.abs(b.movement.subtracted - 1573.59) < 0.005, b.movement);
+    ok('and is reported separately', Math.abs(b.movement.fees - 3.14) < 0.005, b.movement);
+    ok('so the estimate matches the portal',
+       Math.abs(b.estimate - 63167.72) < 0.005, b.estimate);
+
+    // A fee on a DEPOSIT is also a deduction: the provider charges for taking
+    // money in, and netting it against the deposit would understate both.
+    await row({ externalId: 'deposit', direction: 'Sell', amount: '1000.00', fee: '2.00' });
+    const c = await svc.balance(fees.id);
+    ok('a deposit still brings in its full amount',
+       Math.abs(c.movement.added - 1000) < 0.005, c.movement);
+    ok('and its fee is an outflow, not a smaller deposit',
+       Math.abs(c.movement.fees - 5.14) < 0.005, c.movement);
+    ok('the estimate accounts for both',
+       Math.abs(c.estimate - 64165.72) < 0.005, c.estimate);
+
+    // A provider that reports no fee must be unaffected. (The sign a provider
+    // writes its fee with is normalised where it is parsed, not here — see
+    // check:psp. Normalising in two places invites the two to disagree.)
+    await row({ externalId: 'nofee', direction: 'Sell', amount: '50.00' });
+    const e = await svc.balance(fees.id);
+    ok('a row with no fee changes nothing',
+       Math.abs(e.movement.fees - 5.14) < 0.005, e.movement);
+    ok('and still brings in its amount',
+       Math.abs(e.movement.added - 1050) < 0.005, e.movement);
+  }
+
   // ══ MT: through Paymaxis, one row per STATE CHANGE ════════════════════
   const mt = await prisma.pspConnection.create({
     data: {

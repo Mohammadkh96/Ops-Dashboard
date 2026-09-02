@@ -788,6 +788,13 @@ model PspTransaction {
   amount   Decimal? @db.Decimal(20, 8)
   currency String?
 
+  /// The provider's cut on this transaction, where it reports one separately
+  /// from the amount. ForumPay does, and it is money that left the balance —
+  /// ignoring it made the estimate run about 0.2% high, always in the same
+  /// direction. Must be in the SAME currency as the amount, or it is not
+  /// something that can be subtracted from it.
+  fee Decimal? @db.Decimal(20, 8)
+
   /// Their timestamp read as an instant, and the string they actually sent.
   /// Both, because these carry no timezone and a wrong reading moves a payment
   /// across the 04:00 ops-day boundary into the wrong shift.
@@ -868,6 +875,10 @@ model PspBalanceAnchor {
   /// window until somebody re-enters the balance.
   baselineIn  Decimal? @db.Decimal(20, 8)
   baselineOut Decimal? @db.Decimal(20, 8)
+  /// How much of baselineOut was the provider's cut. Not needed for the
+  /// arithmetic — fees are inside baselineOut already — but it lets the screen
+  /// say how much of an outflow was fees rather than payments.
+  baselineFees Decimal? @db.Decimal(20, 8)
   /// The rules the two totals were measured under. Change which words count
   /// and the comparison is no longer like-for-like, which the screen says.
   baselineRules Json?

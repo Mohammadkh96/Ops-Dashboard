@@ -354,6 +354,8 @@ function PspForm({
   // When the money MOVED, where the provider says that apart from when the
   // payment was raised. Only the balance uses it — see the note by the input.
   const [txnSettled, setTxnSettled] = useState(txn.fields?.settled ?? "");
+  // The provider's cut, where it reports one apart from the amount.
+  const [txnFee, setTxnFee] = useState(txn.fields?.fee ?? "");
   const [txnReference, setTxnReference] = useState(txn.fields?.reference ?? "");
   const [txnDirection, setTxnDirection] = useState(txn.fields?.direction ?? "");
   const [txnCustomer, setTxnCustomer] = useState(txn.fields?.customer ?? "");
@@ -397,6 +399,7 @@ function PspForm({
           status: txnStatus.trim() || undefined,
           date: txnDate.trim() || undefined,
           settled: txnSettled.trim() || undefined,
+          fee: txnFee.trim() || undefined,
           reference: txnReference.trim() || undefined,
           direction: txnDirection.trim() || undefined,
           customer: txnCustomer.trim() || undefined,
@@ -740,6 +743,12 @@ function PspForm({
               className={field}
             />
             <input
+              value={txnFee}
+              onChange={(e) => setTxnFee(e.target.value)}
+              placeholder="Fee field, in the SAME currency"
+              className={field}
+            />
+            <input
               value={txnReference}
               onChange={(e) => setTxnReference(e.target.value)}
               placeholder="Reference, e.g. reference_no|pos_id"
@@ -807,6 +816,16 @@ function PspForm({
           their portal; the BALANCE is moved by the second, because that is when
           the money moved. Without it a payment raised before a balance was
           entered and settled after it never counts at all.
+        </span>
+        <span className="text-[11px] text-muted">
+          Fee: the provider’s cut, where it reports one apart from the amount.
+          It is money that left the balance, so leaving it out makes the
+          estimate run high in one direction. It must be in the{" "}
+          <em>same currency as the amount</em> — ForumPay reports several fees
+          and some are in the crypto rather than the fiat, and subtracting a
+          crypto fee from a USD balance is two different units added together.
+          Leave it empty unless you can see it filled, in the right currency, in
+          the field list.
         </span>
         <span className="text-[11px] text-muted">
           Amounts: pick the provider’s <em>fiat</em> field where it has one —

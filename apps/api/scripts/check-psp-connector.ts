@@ -617,6 +617,42 @@ section("ForumPay's settlement date, which its manual denies exists");
      unmapped[0].settledISO === null, unmapped[0]);
 }
 
+section("a provider's cut, and the signs providers write it with");
+{
+  // ForumPay reports a fee separately from invoice_amount, and it is money
+  // that left the balance. Ignoring it ran the estimate about 0.2% high,
+  // always in the same direction.
+  //
+  // Normalised to a magnitude HERE, at the one point every row passes through.
+  // Providers are not consistent about the sign — a fee written "-3.14" is the
+  // same deduction as "3.14" — and a negative one reaching the balance would
+  // ADD money.
+  const rows = readTransactions(
+    [
+      { id: 'a', amount: '1570.45', fee: '3.14' },
+      { id: 'b', amount: '1000.00', fee: '-2.00' },
+      { id: 'c', amount: '100.00', fee: '0' },
+      { id: 'd', amount: '100.00', fee: '' },
+      { id: 'e', amount: '100.00' },
+    ],
+    { path: '', recordsPath: '', fields: { id: 'id', amount: 'amount', fee: 'fee' } },
+  );
+  ok('a fee is read', rows[0].fee === 3.14, rows[0]);
+  ok('a negative fee is the same deduction', rows[1].fee === 2, rows[1]);
+  ok('zero is a fee of zero, not an absent one', rows[2].fee === 0, rows[2]);
+  ok('an empty string is no fee at all', rows[3].fee === null, rows[3]);
+  ok('nor is a missing field', rows[4].fee === null, rows[4]);
+
+  // Unconfigured, nothing is guessed. ForumPay reports several fees and some
+  // are denominated in the CRYPTO rather than the fiat — subtracting one of
+  // those from a USD balance would be two different units added together.
+  const unmapped = readTransactions(
+    [{ id: 'a', amount: '10', fee: '3.14', network_processing_fee: '0.108878' }],
+    { path: '', recordsPath: '', fields: { id: 'id', amount: 'amount' } },
+  );
+  ok('no fee is assumed when none is configured', unmapped[0].fee === null, unmapped[0]);
+}
+
 section('a web page where an API should be');
 {
   // The commonest configuration mistake: a provider's portal and its API are

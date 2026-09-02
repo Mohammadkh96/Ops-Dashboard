@@ -71,6 +71,21 @@ export type EndpointConfig = {
      * payments in time.
      */
     settled?: string;
+    /**
+     * The provider's cut on this transaction, where it reports one apart from
+     * the amount.
+     *
+     * ForumPay does, and it is money that left the balance: a payout of
+     * 1,570.45 also costs a processing fee, so the balance falls by more than
+     * the payout. Ignoring it ran the estimate about 0.2% high, always in the
+     * same direction.
+     *
+     * MUST be in the same currency as the amount. ForumPay reports several
+     * fees, some denominated in the crypto rather than the fiat, and
+     * subtracting a crypto fee from a USD balance is not arithmetic — it is
+     * two different units added together. Never guessed for that reason.
+     */
+    fee?: string;
     /** Our reference on their side: order id, POS id, invoice number. */
     reference?: string;
     /**
@@ -488,6 +503,8 @@ export type Txn = {
    * stands in.
    */
   settledISO: string | null;
+  /** The provider's cut, in the same currency as the amount. See fields.fee. */
+  fee: number | null;
   reference: string | null;
   /** The provider's own word for the direction: "Buy", "Sell", "payout"… */
   direction: string | null;
@@ -543,6 +560,10 @@ export function readTransactions(
       at: raw,
       atISO: toISO(raw),
       settledISO: toISO(settled),
+      // Absolute: a fee is a deduction whichever sign the provider writes it
+      // with, and providers are not consistent. Subtracting a negative fee
+      // would add money.
+      fee: feeOf(pick(row, f.fee)),
       reference: toText(pick(row, f.reference ?? 'reference')),
       direction: toText(pick(row, f.direction ?? 'type')),
       customer: toText(pick(row, f.customer ?? 'customer')),
@@ -620,6 +641,12 @@ export function pick(row: unknown, spec?: string): unknown {
     return v;
   }
   return undefined;
+}
+
+/** A fee as a positive magnitude, or null when there is none to read. */
+function feeOf(v: unknown): number | null {
+  const n = toNumber(v);
+  return n === null ? null : Math.abs(n);
 }
 
 function isEmpty(v: unknown): boolean {

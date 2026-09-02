@@ -168,6 +168,14 @@ export function BalancePanel({
                 <ArrowDown className="size-3 text-accent-orange" />
                 {money(movement.subtracted, currency)} out
               </span>
+              {/* The answer to "why is the estimate three dollars above the
+                  portal": an unaccounted fee looks exactly like that, and once
+                  it IS accounted for this line is where it shows up. */}
+              {movement.fees > 0 ? (
+                <span title="The provider's cut, included in the amount going out">
+                  of which {money(movement.fees, currency)} in fees
+                </span>
+              ) : null}
               {ignored > 0 ? (
                 <span title="Rows that no rule classified, or in another status or currency">
                   {ignored.toLocaleString()} not counted

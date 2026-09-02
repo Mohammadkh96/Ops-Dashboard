@@ -20,6 +20,11 @@ export type EndpointConfig = {
     date?: string;
     /** When it SETTLED, where the provider reports that separately. */
     settled?: string;
+    /**
+     * The provider's cut, where it reports one apart from the amount. Must be
+     * in the SAME currency as the amount — see the note by the input.
+     */
+    fee?: string;
     reference?: string;
     direction?: string;
     customer?: string;
@@ -432,6 +437,8 @@ export type BalanceView = {
     ignoredDirection: number;
     ignoredStatus: number;
     ignoredCurrency: number;
+    /** Of `subtracted`, how much was the provider's cut rather than payments. */
+    fees: number;
     undated: number;
     /** Already inside the anchor figure — moved before it was taken. */
     beforeAnchor: number;

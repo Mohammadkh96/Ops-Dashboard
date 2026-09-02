@@ -86,6 +86,8 @@ export type Anchor = {
    */
   baselineIn: number | null;
   baselineOut: number | null;
+  /** How much of baselineOut was the provider's cut. Display only. */
+  baselineFees: number | null;
   baselineRules: MovementRules | null;
 };
 
@@ -103,6 +105,8 @@ export type BalanceView = {
     net: number;
     added: number;
     subtracted: number;
+    /** Of `subtracted`, how much was the provider's cut rather than payments. */
+    fees: number;
     /** How many rows went each way, and how many were left out and why. */
     counted: number;
     ignoredDirection: number;
@@ -230,6 +234,8 @@ type Group = {
   status: string | null;
   currency: string | null;
   sum: number;
+  /** The provider's cut on these, where it reports one. Always a deduction. */
+  fees: number;
   count: number;
 };
 
@@ -237,6 +243,8 @@ type Group = {
 type Totals = {
   in: number;
   out: number;
+  /** How much of `out` was the provider's cut rather than a payment. */
+  fees: number;
   counted: number;
   ignoredDirection: number;
   ignoredStatus: number;
@@ -259,6 +267,7 @@ function applyRules(
   const t: Totals = {
     in: 0,
     out: 0,
+    fees: 0,
     counted: 0,
     ignoredDirection: 0,
     ignoredStatus: 0,
@@ -278,6 +287,11 @@ function applyRules(
       has(rules?.subtract, g.direction)
     ) {
       t.counted += g.count;
+      // A fee leaves the balance whichever way the payment went — the provider
+      // charges for taking a deposit and for sending a payout alike — so it is
+      // an outflow regardless of direction, never netted against the amount.
+      t.fees += g.fees;
+      t.out += g.fees;
       if (rules?.signed) {
         // The provider already put the sign in the amount, so which list the
         // word sits in decides only WHETHER it counts. Split by sign for the
@@ -379,6 +393,7 @@ export class PspBalanceService {
       ignoredCurrency: 0,
       undated: 0,
       beforeAnchor: 0,
+      fees: 0,
     };
 
     // No anchor means no estimate. Movement without something to move is a
@@ -427,7 +442,12 @@ export class PspBalanceService {
     // nothing changes under somebody until they re-enter the balance.
     const stored =
       anchor.baselineIn !== null && anchor.baselineOut !== null
-        ? { in: anchor.baselineIn, out: anchor.baselineOut, counted: 0 }
+        ? {
+            in: anchor.baselineIn,
+            out: anchor.baselineOut,
+            fees: anchor.baselineFees ?? 0,
+            counted: 0,
+          }
         : null;
     const baseline =
       stored ??
@@ -441,6 +461,9 @@ export class PspBalanceService {
 
     const added = round(now.in - baseline.in);
     const subtracted = round(now.out - baseline.out);
+    // Only meaningful against a stored baseline: a reconstructed one carries no
+    // fee total of its own, so the difference would be the whole history.
+    const fees = stored ? round(now.fees - stored.fees) : 0;
 
     const undated =
       conn.ledgerSource === 'paymaxis'
@@ -454,6 +477,7 @@ export class PspBalanceService {
     const m = {
       added,
       subtracted,
+      fees,
       net: round(added - subtracted),
       // How many are counting NOW. Not "how many moved since": with a baseline
       // there is no such number, because a payment can enter and leave the
@@ -522,7 +546,7 @@ export class PspBalanceService {
             ],
           }
         : { connectionId },
-      _sum: { amount: true },
+      _sum: { amount: true, fee: true },
       _count: { _all: true },
     });
     return rows.map((r) => ({
@@ -530,6 +554,7 @@ export class PspBalanceService {
       status: r.status,
       currency: r.currency,
       sum: num(r._sum.amount),
+      fees: num(r._sum.fee),
       count: r._count._all,
     }));
   }
@@ -588,6 +613,10 @@ export class PspBalanceService {
         status: e.state,
         currency: e.currency,
         sum: 0,
+        // Paymaxis reports no fee of its own. Whatever a provider deducted
+        // before telling Paymaxis is already inside the amount, and anything
+        // deducted afterwards is invisible from here.
+        fees: 0,
         count: 0,
       };
       g.sum += num(e.amount);
@@ -665,6 +694,7 @@ export class PspBalanceService {
         estimateWas: before.estimate,
         baselineIn: round(baseline.in),
         baselineOut: round(baseline.out),
+        baselineFees: round(baseline.fees),
         baselineRules: rules ?? Prisma.DbNull,
         // Signed: positive means we were claiming MORE than the portal shows,
         // which is the direction unrecorded fees push it and the one worth
@@ -772,6 +802,7 @@ function toAnchor(row: {
   drift: unknown;
   baselineIn?: unknown;
   baselineOut?: unknown;
+  baselineFees?: unknown;
   baselineRules?: unknown;
 }): Anchor {
   return {
@@ -794,6 +825,10 @@ function toAnchor(row: {
       row.baselineOut === null || row.baselineOut === undefined
         ? null
         : num(row.baselineOut),
+    baselineFees:
+      row.baselineFees === null || row.baselineFees === undefined
+        ? null
+        : num(row.baselineFees),
     baselineRules: readRules(row.baselineRules),
   };
 }
