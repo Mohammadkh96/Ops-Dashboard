@@ -559,7 +559,10 @@ export class PspBalanceService {
   ): Promise<Group[]> {
     const rows = await this.prisma.paymentEvent.findMany({
       where: opts.until
-        ? { terminal, OR: [{ occurredAt: { lte: opts.until } }, { occurredAt: null }] }
+        ? {
+            terminal,
+            OR: [{ occurredAt: { lte: opts.until } }, { occurredAt: null }],
+          }
         : { terminal },
       orderBy: [{ occurredAt: 'desc' }, { receivedAt: 'desc' }],
       take: MAX_EVENTS,
