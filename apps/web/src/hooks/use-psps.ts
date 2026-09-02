@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useAdminLock } from "@/lib/admin-lock";
@@ -308,8 +309,59 @@ export function usePspSync() {
       void queryClient.invalidateQueries({ queryKey: ["psp-ledger"] });
       void queryClient.invalidateQueries({ queryKey: ["psp-ledger-summary"] });
       void queryClient.invalidateQueries({ queryKey: ["admin", "psps"] });
+      // The balance is COMPUTED FROM these rows, so a sync that brings in a
+      // transaction changes it — and leaving these out is why a fresh payment
+      // appeared in the table while the balance above it still read +0.00.
+      // Every query built on the stored ledger has to be listed here.
+      void queryClient.invalidateQueries({ queryKey: ["psp-balance"] });
+      void queryClient.invalidateQueries({ queryKey: ["psp-directory"] });
     },
   });
+}
+
+/** How often an open ledger pulls the provider's new transactions. */
+const AUTO_SYNC_MS = 120_000;
+
+/**
+ * Keeps an open ledger current without anybody pressing anything.
+ *
+ * WHY: the stored ledger — and the balance computed from it — is only as fresh
+ * as the last sync, and until now the only thing that caused one was a person
+ * remembering to press a button. A payment taken at 05:41 was not on the screen
+ * at 05:45 because nothing had asked ForumPay about it.
+ *
+ * WHAT IT COSTS: a call or two. The sync is incremental — providers return
+ * newest first, so it stops at the first page with nothing new — and it is a
+ * GET, the method is not configurable, and the credential never leaves the
+ * server. This is not a background job that can do anything a person pressing
+ * Sync could not.
+ *
+ * ONLY WHILE THE PAGE IS OPEN, and only for the provider being looked at.
+ * Closing the tab stops it. For the hours when nobody has it open, the
+ * scheduled run on the server does the same job — see `sync-all`.
+ *
+ * Skipped for a Paymaxis-sourced terminal, which has no API to call: its
+ * transactions arrive by callback and are already here.
+ */
+export function usePspAutoSync(id: string | null, enabled: boolean) {
+  const sync = usePspSync();
+  // `mutate` is referentially stable, so the interval is created once per
+  // connection rather than restarted on every render — which it would be if
+  // this depended on the mutation object, and it would then never fire.
+  const { mutate } = sync;
+
+  useEffect(() => {
+    if (!id || !enabled) return;
+    const tick = () => mutate({ id });
+    // Once on open, because the reason somebody opened this page is to see
+    // what has happened, and waiting two minutes to find out is the complaint
+    // this exists to answer.
+    tick();
+    const timer = setInterval(tick, AUTO_SYNC_MS);
+    return () => clearInterval(timer);
+  }, [id, enabled, mutate]);
+
+  return sync.isPending;
 }
 
 /** One provider as the desk sees it — no credentials, no configuration. */
@@ -515,6 +567,8 @@ export function usePspImport() {
       void queryClient.invalidateQueries({ queryKey: ["psp-ledger"] });
       void queryClient.invalidateQueries({ queryKey: ["psp-ledger-summary"] });
       void queryClient.invalidateQueries({ queryKey: ["psp-directory"] });
+      // An import adds transactions, so it moves the balance too.
+      void queryClient.invalidateQueries({ queryKey: ["psp-balance"] });
     },
   });
 }

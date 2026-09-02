@@ -12,6 +12,7 @@ import { useToast } from "@/components/ui/toast";
 import { parseCsv } from "@/lib/csv";
 import { BalancePanel } from "@/components/providers/balance";
 import {
+  usePspAutoSync,
   usePspBalance,
   usePspImport,
   usePspLedger,
@@ -115,6 +116,19 @@ function Ledger() {
   // do anything are worse than no buttons — they read as broken.
   const viaPaymaxis = ledger.data?.source === "paymaxis";
 
+  // Keeps this page current on its own: once on open, then every two minutes
+  // while it stays open. Without it the ledger and the balance above it were
+  // only as fresh as the last person who remembered to press Sync.
+  //
+  // Waits until the source is known — firing before then would call the sync
+  // endpoint on a Paymaxis terminal, which has no API to call and answers with
+  // an error that would surface as a red banner on a page where nothing is
+  // wrong.
+  const autoSyncing = usePspAutoSync(
+    id,
+    ledger.data !== undefined && !viaPaymaxis,
+  );
+
   // A filter change with a page-3 offset shows an empty table and reads as
   // "there is nothing", when what happened is that the result is shorter.
   const filter = (set: (v: string) => void) => (v: string) => {
@@ -150,7 +164,15 @@ function Ledger() {
               <span className="text-[11px] text-muted">
                 Arrives through Paymaxis — always current
               </span>
-            ) : null}
+            ) : (
+              // Said out loud, because a page that quietly calls a payment
+              // provider every two minutes should not be doing it invisibly —
+              // and because "checking…" is the answer to "why has this not
+              // updated yet".
+              <span className="text-[11px] text-muted">
+                {autoSyncing ? "Checking the provider…" : "Checks every 2 min"}
+              </span>
+            )}
             <Link href="/providers">
               <Button variant="ghost" size="sm">
                 <ArrowLeft className="size-3.5" />

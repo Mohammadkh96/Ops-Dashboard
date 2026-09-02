@@ -1,5 +1,3 @@
-import { timingSafeEqual } from 'node:crypto';
-
 import {
   BadRequestException,
   Body,
@@ -7,22 +5,13 @@ import {
   Get,
   Headers,
   Post,
-  UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiExcludeEndpoint, ApiTags } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { assertCronSecret } from '../common/cron-secret';
 import { PaymaxisService } from './paymaxis.service';
-
-/** Constant-time compare so a wrong secret cannot be discovered byte by byte. */
-function secretMatches(presented: string, expected: string): boolean {
-  const a = Buffer.from(presented);
-  const b = Buffer.from(expected);
-  // timingSafeEqual throws on length mismatch, which would itself leak length.
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(a, b);
-}
 
 @ApiTags('paymaxis')
 @Controller('paymaxis')
@@ -114,13 +103,7 @@ export class PaymaxisController {
   @Get('backfill/run')
   @ApiExcludeEndpoint()
   async cronBackfill(@Headers('authorization') auth?: string) {
-    const expected = process.env.CRON_SECRET;
-    if (!expected)
-      throw new UnauthorizedException('CRON_SECRET is not configured');
-    const presented = (auth ?? '').replace(/^Bearer\s+/i, '');
-    if (!presented || !secretMatches(presented, expected)) {
-      throw new UnauthorizedException('invalid cron secret');
-    }
+    assertCronSecret(auth);
     return {
       ranAt: new Date().toISOString(),
       results: await this.paymaxis.backfillStep(),
@@ -217,13 +200,7 @@ export class PaymaxisController {
   @Get('sync')
   @ApiExcludeEndpoint()
   async cronSync(@Headers('authorization') auth?: string) {
-    const expected = process.env.CRON_SECRET;
-    if (!expected)
-      throw new UnauthorizedException('CRON_SECRET is not configured');
-    const presented = (auth ?? '').replace(/^Bearer\s+/i, '');
-    if (!presented || !secretMatches(presented, expected)) {
-      throw new UnauthorizedException('invalid cron secret');
-    }
+    assertCronSecret(auth);
     const shops = this.paymaxis.shops;
     if (!shops.length)
       return { skipped: true, reason: 'PAYMAXIS_SHOPS is not configured' };

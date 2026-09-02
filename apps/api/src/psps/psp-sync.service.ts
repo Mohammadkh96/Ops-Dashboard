@@ -49,6 +49,14 @@ export type SyncResult = {
 const MAX_PAGES = 200;
 /** How long one sync may run. Serverless functions are killed at 60s. */
 const BUDGET_MS = 45_000;
+/**
+ * How long a run across EVERY connection may keep starting new ones.
+ *
+ * Lower than the per-connection budget so a scheduled run reports what it did
+ * instead of being killed mid-flight. Incremental runs cost a call or two
+ * each, so this is only ever reached when a provider is hanging.
+ */
+const ALL_BUDGET_MS = 40_000;
 const DEFAULT_PAGE_SIZE = 50;
 /** How many stored records to read when listing the fields a provider sends. */
 const SAMPLE = 200;
@@ -83,6 +91,83 @@ export class PspSyncService {
     private readonly prisma: PrismaService,
     private readonly balance: PspBalanceService,
   ) {}
+
+  /**
+   * Every provider that has an API to read, incrementally.
+   *
+   * For a scheduler. Without it a ForumPay payment sits at ForumPay until
+   * somebody opens the dashboard and presses Sync — which makes the ledger,
+   * and the balance computed from it, as current as the last person to think
+   * of it rather than as current as the provider.
+   *
+   * INCREMENTAL ONLY, never full. Providers return newest first, so a routine
+   * run costs one or two calls per connection; a scheduled `full=1` would page
+   * an entire ledger every time and would eventually get us rate-limited.
+   *
+   * Bounded twice over: each connection has its own 45s budget, and the run as
+   * a whole stops STARTING new ones after ALL_BUDGET_MS. A serverless function
+   * is killed at 60 seconds, and a run killed halfway through reports nothing
+   * at all — so it stops itself first and says which connections it did not
+   * reach, which the next run picks up.
+   */
+  async syncAll() {
+    const conns = await this.prisma.pspConnection.findMany({
+      where: { enabled: true, ledgerSource: 'provider' },
+      orderBy: { lastSyncAt: { sort: 'asc', nulls: 'first' } },
+      select: { id: true, label: true, endpoints: true },
+    });
+
+    const started = Date.now();
+    const results: (SyncResult & { id: string; label: string })[] = [];
+    const skipped: string[] = [];
+
+    for (const c of conns) {
+      const endpoints = (c.endpoints ?? {}) as Record<string, EndpointConfig>;
+      // Nothing configured to call. Not an error and not worth reporting as
+      // one — the connection is simply not finished yet.
+      if (!endpoints.transactions?.path) continue;
+
+      if (Date.now() - started > ALL_BUDGET_MS) {
+        skipped.push(c.label);
+        continue;
+      }
+      // Oldest-synced first, so a run that runs out of time leaves the
+      // connections it reached and picks up the rest next time rather than
+      // starving the same one for ever.
+      //
+      // Caught per connection: a provider outage returns ok:false, but an
+      // unreadable credential THROWS, and one bad credential must not abort
+      // the run and take every other provider's ledger down with it.
+      try {
+        results.push({ id: c.id, label: c.label, ...(await this.sync(c.id)) });
+      } catch (e) {
+        const error = e instanceof Error ? e.message : String(e);
+        this.log.warn(`${c.label}: ${error}`);
+        results.push({
+          id: c.id,
+          label: c.label,
+          ok: false,
+          pages: 0,
+          fetched: 0,
+          created: 0,
+          updated: 0,
+          stopped: 'stopped on an error',
+          error,
+        });
+      }
+    }
+
+    return {
+      ranAt: new Date().toISOString(),
+      ms: Date.now() - started,
+      synced: results.length,
+      created: results.reduce((n, r) => n + r.created, 0),
+      updated: results.reduce((n, r) => n + r.updated, 0),
+      /** Named, not counted: a connection left out is a ledger going stale. */
+      skipped,
+      results,
+    };
+  }
 
   async sync(id: string, opts: { full?: boolean } = {}): Promise<SyncResult> {
     const conn = await this.prisma.pspConnection.findUnique({ where: { id } });

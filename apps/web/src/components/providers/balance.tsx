@@ -102,7 +102,13 @@ export function BalancePanel({
 }) {
   const [open, setOpen] = useState(false);
 
-  if (!balance) return null;
+  // `movement` as well as `balance`, and not only for tidiness: reading a
+  // field off it unguarded THREW and took the whole transactions page down
+  // with it — the ledger, the filters, the export, everything — because a
+  // balance response arrived without one. A panel that cannot render itself
+  // must disappear, not remove the page it sits on. Any deploy where the
+  // browser holds a newer app than the API can produce exactly that shape.
+  if (!balance?.movement) return null;
   const { anchor, movement, estimate, currency } = balance;
   const stale = (balance.ageHours ?? 0) > STALE_HOURS;
   const ignored =

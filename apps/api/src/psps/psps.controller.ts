@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  Headers,
   Param,
   Patch,
   Post,
@@ -10,10 +11,11 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiExcludeEndpoint, ApiTags } from '@nestjs/swagger';
 
 import { AdminUnlockGuard } from '../auth/guards/admin-unlock.guard';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { assertCronSecret } from '../common/cron-secret';
 import { PspsService } from './psps.service';
 import { PspSyncService } from './psp-sync.service';
 import { PspBalanceService } from './psp-balance.service';
@@ -303,5 +305,29 @@ export class PspsController {
   @Post('refresh')
   refresh() {
     return this.psps.refreshAll();
+  }
+
+  /**
+   * Reads every provider's new transactions. For a scheduler.
+   *
+   * Why it exists: without it, a payment sits at ForumPay until somebody opens
+   * the dashboard and presses Sync, which makes the ledger — and the balance
+   * computed from it — as current as the last person to think of it rather
+   * than as current as the provider.
+   *
+   * A GET because Vercel Cron issues GETs and cannot send a body, and outside
+   * the JWT guard because a scheduler carries no session. That makes
+   * CRON_SECRET the whole of its protection, so it refuses to run at all when
+   * the secret is unset rather than defaulting to open.
+   *
+   * Incremental only — there is no way to ask this one for a full re-read. A
+   * scheduled full sync would page an entire ledger every run and would
+   * eventually get us rate-limited by a payment provider.
+   */
+  @Get('sync-all')
+  @ApiExcludeEndpoint()
+  cronSyncAll(@Headers('authorization') auth?: string) {
+    assertCronSecret(auth);
+    return this.sync.syncAll();
   }
 }
