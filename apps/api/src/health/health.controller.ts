@@ -37,6 +37,22 @@ export class HealthController {
       status: database !== 'up' ? 'degraded' : pending.length ? 'behind' : 'ok',
       timestamp: new Date().toISOString(),
       database,
+      /**
+       * WHICH BUILD is answering.
+       *
+       * "Is the fix deployed?" has no answer otherwise, and a failed deploy
+       * leaves the previous build serving happily — so the symptom of a deploy
+       * that never landed is identical to the symptom of a fix that did not
+       * work. Several hours have been spent on that distinction; this settles
+       * it in one request.
+       *
+       * Vercel sets these; they are absent locally, which is itself the
+       * answer to "am I looking at production".
+       */
+      build: {
+        commit: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? null,
+        branch: process.env.VERCEL_GIT_COMMIT_REF ?? null,
+      },
       pendingMigrations: pending,
       ...(pending.length
         ? {

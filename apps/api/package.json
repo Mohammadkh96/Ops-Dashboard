@@ -16,6 +16,7 @@
     "check:balance": "npm run build && node scripts/check-psp-balance.mjs",
     "check:events": "npm run build && node scripts/check-payment-events.mjs",
     "check:migrations": "node scripts/check-migrations.mjs",
+    "check:sqlbalance": "npm run build && node scripts/check-balance-sql.mjs",
     "migrate:lock": "node scripts/migration-lock.mjs",
     "check:handover": "tsx scripts/check-handover-email.ts",
     "check:funnel": "tsx scripts/check-payment-journey.ts",

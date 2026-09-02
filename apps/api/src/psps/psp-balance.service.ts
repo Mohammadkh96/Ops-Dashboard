@@ -307,11 +307,18 @@ export class PspBalanceService {
             where: { terminal: conn.terminal, occurredAt: { lte: since } },
           })
         : await this.prisma.pspTransaction.count({
-            where: {
-              connectionId: conn.id,
-              NOT: PspBalanceService.movedAfter(conn.id, since),
-              occurredAt: { not: null },
-            },
+            // Stated positively, and NOT as the negation of `movedAfter`.
+            //
+            // SQL has three-valued logic and the negation walks straight into
+            // it: for a row with no settledAt, `NOT (settledAt > x OR (settledAt
+            // IS NULL AND occurredAt > x))` is `NOT (NULL OR FALSE)`, which is
+            // NULL, not TRUE — so the row is dropped. With no settled field
+            // configured every row has a null settledAt, and the count came
+            // back zero for the exact case it exists to explain.
+            //
+            // JavaScript's `!` has no such subtlety, which is why the in-memory
+            // check passed this and a real database did not.
+            where: PspBalanceService.movedOnOrBefore(conn.id, since),
           });
 
     const m = { ...zero, undated, beforeAnchor };
@@ -380,6 +387,24 @@ export class PspBalanceService {
       OR: [
         { settledAt: { gt: since } },
         { settledAt: null, occurredAt: { gt: since } },
+      ],
+    };
+  }
+
+  /**
+   * The other side of the same line: everything already inside the anchor.
+   *
+   * Written out rather than negating `movedAfter`, because negating it is
+   * wrong — see the note where it is used. Undated rows are in neither: they
+   * are counted separately, since a row that cannot be placed is a different
+   * fact from one placed before the anchor.
+   */
+  private static movedOnOrBefore(connectionId: string, since: Date) {
+    return {
+      connectionId,
+      OR: [
+        { settledAt: { lte: since } },
+        { settledAt: null, occurredAt: { lte: since } },
       ],
     };
   }
