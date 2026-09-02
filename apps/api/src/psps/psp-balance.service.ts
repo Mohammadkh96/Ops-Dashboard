@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 
 import { PrismaService } from '../prisma/prisma.service';
+import { latestPerPayment, MAX_EVENTS } from './payment-events';
 
 /**
  * A balance for providers that will not tell us one.
@@ -358,24 +359,56 @@ export class PspBalanceService {
    * Paymaxis calls the direction `type` and the state `state`; everything above
    * this is written against the provider's words and does not need to know
    * which table they came out of.
+   *
+   * NOT a groupBy, which is what this used to be and what made it wrong.
+   * PaymentEvent holds one row per STATE CHANGE, so a deposit that went PENDING
+   * then COMPLETED is two rows — and grouping over them counted the payment
+   * twice, at two different amounts, because a fee is often taken between the
+   * two. A status filter hid it whenever one was configured and let the whole
+   * of it through whenever one was not.
+   *
+   * So the events are collapsed to their latest state first, and the grouping
+   * happens over payments. It is done here rather than in SQL so that the rule
+   * deciding which state wins is one readable function with its own check,
+   * instead of an ORDER BY buried in a DISTINCT ON.
    */
   private async groupsFromPaymaxis(
     terminal: string,
     since: Date,
   ): Promise<Group[]> {
-    const rows = await this.prisma.paymentEvent.groupBy({
-      by: ['type', 'state', 'currency'],
+    const rows = await this.prisma.paymentEvent.findMany({
       where: { terminal, occurredAt: { gt: since } },
-      _sum: { amount: true },
-      _count: { _all: true },
+      orderBy: [{ occurredAt: 'desc' }, { receivedAt: 'desc' }],
+      take: MAX_EVENTS,
+      select: {
+        id: true,
+        paymentId: true,
+        externalId: true,
+        occurredAt: true,
+        receivedAt: true,
+        type: true,
+        state: true,
+        currency: true,
+        amount: true,
+      },
     });
-    return rows.map((r) => ({
-      direction: r.type,
-      status: r.state,
-      currency: r.currency,
-      sum: num(r._sum.amount),
-      count: r._count._all,
-    }));
+
+    const groups = new Map<string, Group>();
+    for (const r of latestPerPayment(rows)) {
+      const e = r as (typeof rows)[number];
+      const key = `${e.type ?? ''} ${e.state ?? ''} ${e.currency ?? ''}`;
+      const g = groups.get(key) ?? {
+        direction: e.type,
+        status: e.state,
+        currency: e.currency,
+        sum: 0,
+        count: 0,
+      };
+      g.sum += num(e.amount);
+      g.count++;
+      groups.set(key, g);
+    }
+    return [...groups.values()];
   }
 
   /**

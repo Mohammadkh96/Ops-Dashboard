@@ -117,6 +117,7 @@ function makeStore() {
     paymentEvent: {
       groupBy: grouper(events),
       count: async ({ where }) => events.filter((r) => matches(r, where)).length,
+      findMany: async ({ where }) => events.filter((r) => matches(r, where)),
     },
   };
 }
@@ -310,11 +311,19 @@ section('a terminal whose ledger comes from Paymaxis');
     takenAt: D(ANCHOR_AT), enteredAt: D(ANCHOR_AT),
     enteredBy: null, note: null, estimateWas: null, drift: null,
   });
+  // Real rows: PaymentEvent always carries an id and a receivedAt, and each of
+  // these is a DIFFERENT payment — the pending one is not a second event about
+  // one of the others.
+  let n = 0;
   const ev = (o) => ({
+    id: `e${++n}`,
+    paymentId: `pay-${n}`,
+    externalId: null,
     terminal: 'MT_Tradin',
     currency: 'USD',
     state: 'COMPLETED',
     occurredAt: D('2026-09-01T15:00:00Z'),
+    receivedAt: D('2026-09-01T15:00:01Z'),
     ...o,
   });
   store.events.push(
@@ -327,6 +336,58 @@ section('a terminal whose ledger comes from Paymaxis');
   ok('Paymaxis rows move the balance too', b.movement.net === 2100, b.movement);
   ok('the estimate is right', b.estimate === 132100, b);
   ok('a pending deposit is not money', b.movement.ignoredStatus === 1, b.movement);
+}
+
+section('a payment Paymaxis reported more than once');
+{
+  // The MT bug, exactly as it appeared: PaymentEvent holds one row per state
+  // change, so a deposit that went PENDING then COMPLETED is two rows — with
+  // the SAME occurredAt, and often two different amounts because a fee is
+  // taken between them. Summed as transactions, every deposit counted twice.
+  const store = makeStore();
+  store.connections.push({
+    id: 'c1', terminal: 'MT_Tradin', ledgerSource: 'paymaxis',
+    movementRules: {
+      currency: 'USD', add: ['DEPOSIT'], subtract: ['WITHDRAWAL'],
+      // Left EMPTY on purpose. A status filter hides this bug whenever one is
+      // configured, which is exactly why it survived: it is only visible when
+      // nothing is filtering the pending rows out.
+      statuses: [],
+    },
+  });
+  store.anchors.push({
+    id: 'a0', connectionId: 'c1', amount: 100000, currency: 'USD',
+    takenAt: D('2026-09-01T00:00:00Z'), enteredAt: D('2026-09-01T00:00:00Z'),
+    enteredBy: null, note: null, estimateWas: null, drift: null,
+  });
+
+  const pair = (paymentId, type, pending, completed, at, recv) => [
+    { id: `${paymentId}-p`, paymentId, externalId: null, terminal: 'MT_Tradin',
+      type, state: 'PENDING', currency: 'USD', amount: pending,
+      occurredAt: D(at), receivedAt: D(recv) },
+    { id: `${paymentId}-c`, paymentId, externalId: null, terminal: 'MT_Tradin',
+      type, state: 'COMPLETED', currency: 'USD', amount: completed,
+      occurredAt: D(at), receivedAt: D(recv.replace('Z', '').slice(0, -2) + '59Z') },
+  ];
+  store.events.push(
+    ...pair('eb55d5a22dc9', 'DEPOSIT', 30.0, 29.93, '2026-09-02T05:43:15Z', '2026-09-02T05:43:16Z'),
+    ...pair('820e9aaf39ce', 'DEPOSIT', 100.0, 100.0, '2026-09-02T06:31:58Z', '2026-09-02T06:31:59Z'),
+    ...pair('b129bddf964d', 'WITHDRAWAL', 11.06, 11.06, '2026-09-02T06:32:24Z', '2026-09-02T06:32:25Z'),
+    // One that only ever had a single event.
+    { id: 'fa1c757ca99e-c', paymentId: 'fa1c757ca99e', externalId: null,
+      terminal: 'MT_Tradin', type: 'DEPOSIT', state: 'COMPLETED', currency: 'USD',
+      amount: 19.93, occurredAt: D('2026-09-02T06:24:51Z'),
+      receivedAt: D('2026-09-02T06:24:52Z') },
+  );
+
+  const b = await new PspBalanceService(store).balance('c1');
+  // Four payments, not seven events.
+  ok('each payment counts once', b.movement.counted === 4, b.movement);
+  // 29.93 + 100 + 19.93 in, 11.06 out. Summed as events it would have been
+  // 279.86 in and 22.12 out.
+  ok('deposits are the settled amounts', Math.abs(b.movement.added - 149.86) < 0.005, b.movement);
+  ok('the withdrawal counts once', Math.abs(b.movement.subtracted - 11.06) < 0.005, b.movement);
+  ok('the estimate is right', Math.abs(b.estimate - 100138.8) < 0.005, b);
 }
 
 section('a provider that already puts the sign in the amount');

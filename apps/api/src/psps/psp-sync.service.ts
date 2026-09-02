@@ -4,6 +4,7 @@ import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { open, SecretBoxError } from '../common/secret-box';
 import { PspBalanceService } from './psp-balance.service';
+import { latestPerPayment, MAX_EVENTS } from './payment-events';
 import {
   callPsp,
   describeWebPage,
@@ -528,21 +529,50 @@ export class PspSyncService {
     const endpoints = (conn.endpoints ?? {}) as Record<string, EndpointConfig>;
     const extraSpec = endpoints.transactions?.fields?.extras;
 
-    const [rows, total] = await Promise.all([
-      this.prisma.paymentEvent.findMany({
-        where,
-        orderBy: [{ occurredAt: 'desc' }, { receivedAt: 'desc' }],
-        take,
-        skip,
-      }),
-      this.prisma.paymentEvent.count({ where }),
-    ]);
+    // TWO QUERIES, and the first one reads only the key columns.
+    //
+    // The page cannot be taken straight from the database, because a LIMIT
+    // applies to events and the rows wanted are payments — twenty events might
+    // be eleven payments, and the count beside them was counting callbacks.
+    // So: read the keys of everything matching, collapse each payment to its
+    // latest state, and then fetch only the page's worth of full rows. The
+    // heavy `payload` column is read for a hundred rows, never for all of them.
+    const keys = await this.prisma.paymentEvent.findMany({
+      where,
+      orderBy: [{ occurredAt: 'desc' }, { receivedAt: 'desc' }],
+      take: MAX_EVENTS,
+      select: {
+        id: true,
+        paymentId: true,
+        externalId: true,
+        occurredAt: true,
+        receivedAt: true,
+      },
+    });
+    const latest = latestPerPayment(keys);
+    const page = latest.slice(skip, skip + take);
+
+    const found = await this.prisma.paymentEvent.findMany({
+      where: { id: { in: page.map((r) => r.id) } },
+    });
+    // Back into the collapsed order: `in` does not promise one, and a ledger
+    // that is nearly sorted is harder to trust than one that plainly is not.
+    const byId = new Map(found.map((r) => [r.id, r]));
+    const rows = page.flatMap((k) => {
+      const r = byId.get(k.id);
+      return r ? [r] : [];
+    });
 
     return {
-      total,
+      total: latest.length,
       limit: take,
       offset: skip,
       source: 'paymaxis',
+      /**
+       * Set when there were more events than one read will scan, so the page
+       * can say the ledger is cut short rather than implying it is all there.
+       */
+      truncated: keys.length >= MAX_EVENTS ? MAX_EVENTS : undefined,
       extraColumns: Object.keys(extraSpec ?? {}),
       rows: rows.map((r) => ({
         id: r.id,
@@ -692,11 +722,19 @@ export class PspSyncService {
         _max: { occurredAt: true },
       }),
       // Terminals whose transactions came in through Paymaxis, counted where
-      // they actually live.
-      this.prisma.paymentEvent.groupBy({
-        by: ['terminal'],
-        _count: { _all: true },
-        _max: { occurredAt: true },
+      // they actually live — and counted as PAYMENTS, not as the callbacks
+      // about them, so the card agrees with the table it opens.
+      this.prisma.paymentEvent.findMany({
+        orderBy: [{ occurredAt: 'desc' }, { receivedAt: 'desc' }],
+        take: MAX_EVENTS,
+        select: {
+          id: true,
+          terminal: true,
+          paymentId: true,
+          externalId: true,
+          occurredAt: true,
+          receivedAt: true,
+        },
       }),
       // The estimated balances, for every connection at once. Here rather than
       // in a second request because the dashboard shows the card and the
@@ -709,12 +747,23 @@ export class PspSyncService {
     const newest = new Map(
       latest.map((c) => [c.connectionId, c._max.occurredAt]),
     );
-    const pmCount = new Map(
-      viaPaymaxis.map((c) => [c.terminal, c._count._all]),
-    );
-    const pmNewest = new Map(
-      viaPaymaxis.map((c) => [c.terminal, c._max.occurredAt]),
-    );
+    // Per terminal, then collapsed within each — a payment id is unique across
+    // the table, but collapsing terminal by terminal keeps this the same
+    // question the ledger asks.
+    const perTerminal = new Map<string, typeof viaPaymaxis>();
+    for (const e of viaPaymaxis) {
+      const t = e.terminal ?? '';
+      const list = perTerminal.get(t) ?? [];
+      list.push(e);
+      perTerminal.set(t, list);
+    }
+    const pmCount = new Map<string, number>();
+    const pmNewest = new Map<string, Date | null>();
+    for (const [terminal, events] of perTerminal) {
+      const latestOf = latestPerPayment(events);
+      pmCount.set(terminal, latestOf.length);
+      pmNewest.set(terminal, latestOf[0]?.occurredAt ?? null);
+    }
     const balance = new Map(balances.map((b) => [b.connectionId, b]));
 
     return conns.map((c) => {
@@ -808,31 +857,50 @@ export class PspSyncService {
       select: { ledgerSource: true, terminal: true },
     });
     if (conn?.ledgerSource === 'paymaxis') {
-      const where = { terminal: conn.terminal };
-      const [count, oldest, newest, states] = await Promise.all([
-        this.prisma.paymentEvent.count({ where }),
-        this.prisma.paymentEvent.findFirst({
-          where: { ...where, occurredAt: { not: null } },
-          orderBy: { occurredAt: 'asc' },
-          select: { occurredAt: true },
-        }),
-        this.prisma.paymentEvent.findFirst({
-          where: { ...where, occurredAt: { not: null } },
-          orderBy: { occurredAt: 'desc' },
-          select: { occurredAt: true },
-        }),
-        this.prisma.paymentEvent.groupBy({
-          by: ['state'],
-          where,
-          _count: { _all: true },
-        }),
-      ]);
+      // Collapsed, like the ledger it heads. Counting the events would say
+      // "1,622 stored" over a table showing 811 payments, and put a payment
+      // under BOTH "pending" and "completed" in the status counts — which reads
+      // as a backlog that does not exist.
+      const rows = await this.prisma.paymentEvent.findMany({
+        where: { terminal: conn.terminal },
+        orderBy: [{ occurredAt: 'desc' }, { receivedAt: 'desc' }],
+        take: MAX_EVENTS,
+        select: {
+          id: true,
+          paymentId: true,
+          externalId: true,
+          occurredAt: true,
+          receivedAt: true,
+          state: true,
+        },
+      });
+      const latest = latestPerPayment(rows) as (typeof rows)[number][];
+
+      const dated = latest
+        .map((r) => r.occurredAt)
+        .filter((d): d is Date => d !== null);
+      const states = new Map<string, number>();
+      for (const r of latest) {
+        const s = r.state ?? '—';
+        states.set(s, (states.get(s) ?? 0) + 1);
+      }
+
       return {
-        count,
-        oldest: oldest?.occurredAt?.toISOString() ?? null,
-        newest: newest?.occurredAt?.toISOString() ?? null,
-        byStatus: states
-          .map((s) => ({ status: s.state ?? '—', count: s._count._all }))
+        count: latest.length,
+        oldest:
+          dated.length === 0
+            ? null
+            : new Date(
+                Math.min(...dated.map((d) => d.getTime())),
+              ).toISOString(),
+        newest:
+          dated.length === 0
+            ? null
+            : new Date(
+                Math.max(...dated.map((d) => d.getTime())),
+              ).toISOString(),
+        byStatus: [...states.entries()]
+          .map(([status, count]) => ({ status, count }))
           .sort((a, b) => b.count - a.count),
       };
     }

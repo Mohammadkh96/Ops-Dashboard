@@ -225,6 +225,12 @@ export type LedgerPage = {
   offset: number;
   /** Where these rows came from: the provider's API, or Paymaxis. */
   source?: string;
+  /**
+   * Set when the ledger was cut short at this many events. A Paymaxis ledger
+   * is collapsed from an event log, and there is a limit on how much of that
+   * log one read scans — said out loud rather than shown as a short list.
+   */
+  truncated?: number;
   /** Labels in the order they were configured, so the table can head them. */
   extraColumns: string[];
   rows: LedgerRow[];

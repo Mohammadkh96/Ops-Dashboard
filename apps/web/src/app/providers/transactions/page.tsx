@@ -318,6 +318,16 @@ function Ledger() {
         </div>
       ) : null}
 
+      {/* A short ledger that does not say it is short is a ledger somebody
+          draws conclusions from. */}
+      {ledger.data?.truncated ? (
+        <p className="rounded-lg border border-accent-orange/25 bg-accent-orange-soft px-3 py-2 text-xs text-accent-orange">
+          Only the most recent {ledger.data.truncated.toLocaleString()} events
+          were read, so older payments are missing from this list and from the
+          balance below. Narrow the dates to see further back.
+        </p>
+      ) : null}
+
       {/* Above the filters, because the balance is about the whole ledger and
           not about whatever is currently filtered — putting it under them
           would read as "the balance of these 40 rows". */}
