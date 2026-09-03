@@ -298,6 +298,18 @@ export class PspsController {
     return this.balanceService.anchorFromProvider(id, req.user?.email);
   }
 
+  /**
+   * Searches the stored records for the field that explains the last gap.
+   *
+   * Reads what is already in our own database and calls no provider, so a
+   * session. It is the same act as opening the ledger and adding a column up.
+   */
+  @UseGuards(JwtAuthGuard)
+  @Get(':id/explain-drift')
+  explainDrift(@Param('id') id: string) {
+    return this.balanceService.explainDrift(id);
+  }
+
   @Get(':id/anchors')
   anchors(@Param('id') id: string) {
     return this.balanceService.history(id);

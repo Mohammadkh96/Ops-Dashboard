@@ -8,6 +8,7 @@ import { Drawer } from "@/components/ui/drawer";
 import { cn } from "@/lib/utils";
 import {
   useAnchorFromProvider,
+  useExplainDrift,
   useSetAnchor,
   usePspAnchors,
   type BalanceView,
@@ -50,6 +51,126 @@ export function age(hours: number | null): string {
 
 /** How stale an anchor is allowed to get before the screen says so. */
 const STALE_HOURS = 24 * 7;
+
+/**
+ * Which field of the provider's own records adds up to the gap.
+ *
+ * The whole idea in one screen. The ledger is complete, so a deduction the
+ * balance cannot see was still REPORTED — on the record of the payment it came
+ * out of, in a field nobody mapped. Every numeric field of the interval is
+ * summed and ranked by how close it lands to the gap that was actually
+ * measured when the balance was last corrected.
+ *
+ * A field matching to the cent, out of twenty, is not a coincidence. It is the
+ * fee, and mapping it turns a corrected estimate into an exact one.
+ */
+function DriftExplainer({
+  connectionId,
+  currency,
+}: {
+  connectionId: string;
+  currency: string | null;
+}) {
+  const { data, isLoading, isError, error } = useExplainDrift(
+    connectionId,
+    true,
+  );
+
+  if (isLoading) {
+    return (
+      <p className="text-[11px] text-muted">Adding up every field…</p>
+    );
+  }
+  if (isError) {
+    return (
+      <p className="text-[11px] text-accent-orange">
+        {error instanceof Error ? error.message : String(error)}
+      </p>
+    );
+  }
+  if (!data) return null;
+
+  // How close counts as found. A cent either way over a whole interval is the
+  // same field; a dollar out is a different one that happens to be similar,
+  // and calling that a match would send somebody to map the wrong column.
+  const found = data.candidates.filter((c) => c.missBy <= 0.02);
+
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-border bg-card/40 px-3 py-2.5">
+      <span className="text-[11px] text-muted">
+        Looking for {money(Math.abs(data.target), currency)} across{" "}
+        {data.transactions.toLocaleString()} transaction
+        {data.transactions === 1 ? "" : "s"}, between the last two balances you
+        entered.
+      </span>
+
+      {found.length ? (
+        <span className="text-[11px] text-accent-green">
+          {found.length === 1 ? "This field adds up to it" : "These add up to it"}
+          . Map it as the Fee field under Configure → this provider →
+          Transactions, then re-sync: the estimate stops needing a correction.
+        </span>
+      ) : (
+        <span className="text-[11px] text-muted">
+          Nothing sums to the gap exactly, so it is probably not a single
+          reported field — a settlement out to the bank or portal handwork
+          leaves no per-transaction trace. The closest are listed anyway.
+        </span>
+      )}
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-[11px]">
+          <thead className="text-muted">
+            <tr className="text-left">
+              <th className="py-1 pr-3 font-medium">Field</th>
+              <th className="py-1 pr-3 text-right font-medium">Sums to</th>
+              <th className="py-1 pr-3 text-right font-medium">Off by</th>
+              <th className="py-1 text-right font-medium">Rows</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.candidates.map((c) => (
+              <tr
+                key={c.path}
+                className={cn(
+                  "border-t border-border",
+                  c.missBy <= 0.02 ? "text-accent-green" : "text-muted",
+                )}
+              >
+                <td className="py-1 pr-3 font-mono">{c.path}</td>
+                <td className="tnum py-1 pr-3 text-right">
+                  {c.total.toLocaleString(undefined, {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })}
+                </td>
+                <td className="tnum py-1 pr-3 text-right">
+                  {c.missBy.toLocaleString(undefined, {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  })}
+                </td>
+                <td className="tnum py-1 text-right">{c.nonZero}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* The trap that has already cost one round of this. ForumPay reports
+          several fees and some are denominated in the CRYPTO, not the fiat —
+          subtracting a crypto fee from a USD balance is not arithmetic. A
+          field that sums to the gap in USD is by construction the fiat one,
+          which is exactly why the match matters more than the name. */}
+      <span className="text-[11px] text-muted">
+        Map only a field in {currency ?? "the balance currency"}. A provider can
+        report the same fee denominated in the crypto, and subtracting that from
+        a fiat balance adds two different units together — which is why the
+        field that MATCHES matters more than the one that sounds right.
+      </span>
+    </div>
+  );
+}
 
 /**
  * The compact form, for a card.
@@ -132,6 +253,7 @@ export function BalancePanel({
 }) {
   const [open, setOpen] = useState(false);
   const [anchorError, setAnchorError] = useState<string | null>(null);
+  const [explain, setExplain] = useState(false);
   const fromProvider = useAnchorFromProvider();
 
   // `movement` as well as `balance`, and not only for tidiness: reading a
@@ -241,7 +363,27 @@ export function BalancePanel({
                     another measurement, which is what makes it sharper.
                   </span>
                 ) : null}
+                {/* Correcting for the gap is second best. The transactions are
+                    complete and right, so if a provider DEDUCTS something it
+                    reported it, on the record of the payment it came out of —
+                    and we keep every record whole. Which means the missing
+                    money is already here under a field nobody mapped, and it
+                    can be searched for rather than modelled. */}
+                <button
+                  type="button"
+                  onClick={() => setExplain(true)}
+                  className="self-start text-[11px] text-accent-blue underline underline-offset-2"
+                >
+                  Find which field this gap is made of
+                </button>
               </div>
+            ) : null}
+
+            {explain ? (
+              <DriftExplainer
+                connectionId={connectionId}
+                currency={currency}
+              />
             ) : null}
 
             {/* The provider's own answer, when there is one — and it is placed

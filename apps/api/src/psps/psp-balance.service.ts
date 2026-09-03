@@ -3,6 +3,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { latestPerPayment, MAX_EVENTS } from './payment-events';
+import { numericTotals } from './record-fields';
 
 /**
  * A balance for providers that will not tell us one.
@@ -1066,6 +1067,108 @@ export class PspBalanceService {
       },
       enteredBy,
     );
+  }
+
+  /**
+   * What the gap is made of, looked for in the data rather than reasoned about.
+   *
+   * The question this exists to end. The ledger is complete and the
+   * transactions are right, so the balance ought to be exact — and it is not,
+   * by 89.40 over a day. Something is being deducted that no rule subtracts.
+   *
+   * The insight is that a provider which deducts a fee REPORTS it, on the
+   * record of the payment it came out of. We store every record whole, exactly
+   * as it arrived. So the missing money is already in this database, under a
+   * field name nobody has mapped — and the sum of the right field, over the
+   * transactions of one measured interval, equals that interval's drift.
+   *
+   * Which turns guessing into searching. Every numeric field in every record of
+   * the interval is summed, and the sums are ranked by how close they land to
+   * the drift that was actually recorded when the anchor was corrected. A field
+   * that matches to the cent is not a coincidence in a list of twenty; it is
+   * the fee, and mapping it makes the estimate exact rather than corrected.
+   *
+   * The interval used is the last CLOSED one — between the two most recent
+   * anchors — because that is the only window whose true error is known. The
+   * open interval's drift is exactly what nobody can measure yet.
+   *
+   * Both signs are searched. A provider can report a deduction as 3.14 or as
+   * −3.14 and the field is equally the answer; only the mapping differs.
+   */
+  async explainDrift(connectionId: string) {
+    const conn = await this.prisma.pspConnection.findUnique({
+      where: { id: connectionId },
+      select: { id: true, ledgerSource: true },
+    });
+    if (!conn) throw new BadRequestException('No such PSP connection.');
+    if (conn.ledgerSource !== 'provider') {
+      throw new BadRequestException(
+        'This terminal’s transactions come from Paymaxis, which reports no per-payment fee, so there is no field here to find.',
+      );
+    }
+
+    const [curr, prev] = await this.prisma.pspBalanceAnchor.findMany({
+      where: { connectionId },
+      orderBy: { takenAt: 'desc' },
+      take: 2,
+    });
+    if (!curr || !prev) {
+      throw new BadRequestException(
+        'This needs two balances entered: the gap between them is the amount being searched for. Press “Update from portal”, and again next time the estimate has drifted.',
+      );
+    }
+    if (curr.drift === null) {
+      throw new BadRequestException(
+        'The most recent balance recorded no drift against the estimate it replaced, so there is no gap to explain.',
+      );
+    }
+
+    const target = Number(curr.drift);
+    const rows = await this.prisma.pspTransaction.findMany({
+      where: {
+        connectionId,
+        // Placed by settlement where the provider reports one, because that is
+        // when the money — and its fee — actually moved.
+        OR: [
+          { settledAt: { gt: prev.takenAt, lte: curr.takenAt } },
+          {
+            settledAt: null,
+            occurredAt: { gt: prev.takenAt, lte: curr.takenAt },
+          },
+        ],
+      },
+      select: { raw: true },
+    });
+
+    const totals = numericTotals(rows.map((r) => r.raw));
+    const candidates = totals
+      // A field of zeros explains nothing, and neither does one nobody filled.
+      .filter((t) => t.nonZero > 0)
+      .map((t) => ({
+        ...t,
+        total: round(t.total),
+        // Signed either way: a deduction reported as a positive number and one
+        // reported as a negative are the same finding.
+        missBy: round(
+          Math.min(Math.abs(t.total - target), Math.abs(-t.total - target)),
+        ),
+        /** Of the gap, how much this field would account for. */
+        covers:
+          target === 0
+            ? null
+            : round((Math.abs(t.total) / Math.abs(target)) * 100),
+      }))
+      .sort((a, b) => a.missBy - b.missBy)
+      .slice(0, 12);
+
+    return {
+      /** The gap being explained, and where it came from. */
+      target: round(target),
+      from: prev.takenAt.toISOString(),
+      to: curr.takenAt.toISOString(),
+      transactions: rows.length,
+      candidates,
+    };
   }
 
   /** Every anchor entered, newest first — the drift history. */

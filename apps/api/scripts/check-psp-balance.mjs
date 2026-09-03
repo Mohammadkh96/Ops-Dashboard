@@ -41,6 +41,7 @@ const {
   pickReported,
   fitDrift,
 } = require('../dist/src/psps/psp-balance.service');
+const { numericTotals, asNumber } = require('../dist/src/psps/record-fields');
 
 /**
  * Just enough Prisma: findUnique/findMany on two tables, and a groupBy that
@@ -787,6 +788,106 @@ section('when the correction stops being founded on anything');
     projected(19259.57 * 14) > fit.largest,
     { projected: projected(19259.57 * 14), largest: fit.largest },
   );
+}
+
+
+section('finding which field the gap is made of');
+{
+  // The premise: a provider that deducts a fee REPORTS it on the record of the
+  // payment it came out of, and we keep every record whole. So the missing
+  // money is already stored under a field nobody mapped.
+  //
+  // A ForumPay-shaped record. Two fee fields, one denominated in the fiat and
+  // one in the crypto — which is the trap, because both are called a fee and
+  // only one can be subtracted from a USD balance.
+  const rows = [
+    { payment_id: 'a', invoice_amount: '1000.00', processing_fee: '2.00', network_processing_fee: '0.00042', rate: '68.799' },
+    { payment_id: 'b', invoice_amount: '500.00', processing_fee: '1.00', network_processing_fee: '0.00031', rate: '68.801' },
+    { payment_id: 'c', invoice_amount: '250.00', processing_fee: '0.50', network_processing_fee: '0.00019', rate: '68.802' },
+  ];
+  const totals = numericTotals(rows);
+  const by = (path) => totals.find((t) => t.path === path);
+
+  ok('the fiat fee sums', by('processing_fee')?.total === 3.5, by('processing_fee'));
+  ok('and every row had one', by('processing_fee')?.nonZero === 3, by('processing_fee'));
+  // Both are summed and offered; which one is right is decided by which MATCHES
+  // the measured gap, not by which sounds like a fee. That is the whole point:
+  // "network_processing_fee" is the more fee-sounding name and it is the wrong one.
+  ok('so does the crypto one, separately', Math.abs(by('network_processing_fee').total - 0.00092) < 1e-9);
+  ok('and it is nowhere near the fiat gap of 3.50', Math.abs(by('network_processing_fee').total - 3.5) > 3);
+
+  // Ranking is what makes the answer readable: the field whose sum lands on the
+  // measured drift, out of everything the provider sends.
+  const target = 3.5;
+  const ranked = totals
+    .filter((t) => t.nonZero > 0)
+    .map((t) => ({ path: t.path, missBy: Math.min(Math.abs(t.total - target), Math.abs(-t.total - target)) }))
+    .sort((a, b) => a.missBy - b.missBy);
+  ok('the fiat fee ranks first', ranked[0].path === 'processing_fee', ranked.slice(0, 3));
+  ok('and lands exactly on the gap', ranked[0].missBy < 0.005, ranked[0]);
+
+  // A provider can report a deduction as a negative. Same finding, different
+  // mapping — so both signs have to be searched or half of them are missed.
+  const negative = numericTotals([{ fee: '-2.00' }, { fee: '-1.50' }]);
+  const missSigned = Math.min(
+    Math.abs(negative[0].total - 3.5),
+    Math.abs(-negative[0].total - 3.5),
+  );
+  ok('a fee reported negative still matches', missSigned < 0.005, negative[0]);
+}
+
+section('what is not a number, however much it looks like one');
+{
+  // The search tries EVERY field, so a lenient parser is a liability here in a
+  // way it is not once somebody has said "this field is the amount". A loose
+  // one turns an invoice reference into a candidate fee column.
+  ok('a plain number is', asNumber(3.14) === 3.14);
+  ok('a numeric string is', asNumber('3.14') === 3.14);
+  ok('a negative is', asNumber('-3.14') === -3.14);
+  ok('zero is', asNumber('0') === 0);
+  ok('a reference is not', asNumber('USD-2024-11') === null);
+  ok('a date is not', asNumber('2026-09-03') === null);
+  ok('a thousands separator is not, here', asNumber('1,234.56') === null);
+  ok('an address is not', asNumber('TSRFEggH3AZRWZFBxxSCXXCrfQ') === null);
+  ok('empty is not', asNumber('') === null);
+  ok('whitespace is not', asNumber('   ') === null);
+  ok('a boolean is not', asNumber(true) === null);
+  ok('null is not', asNumber(null) === null);
+  ok('an object is not', asNumber({ amount: 1 }) === null);
+  ok('infinity is not', asNumber(Infinity) === null);
+}
+
+section('records that do not all look alike');
+{
+  // A field present on some rows and absent on others is the normal case: a fee
+  // only exists on the payments that were charged one. It must sum over the
+  // rows that have it rather than being dropped for the rows that do not.
+  const mixed = numericTotals([
+    { fee: '2.00', kind: 'Sell' },
+    { kind: 'Buy' },
+    { fee: '1.50', kind: 'Sell' },
+  ]);
+  const fee = mixed.find((t) => t.path === 'fee');
+  ok('a field missing from some rows still sums', fee?.total === 3.5, fee);
+  ok('and reports how many rows had it', fee?.rows === 2, fee);
+
+  // Zeros count as present but not as evidence — a column of zeros explains no
+  // gap, and offering it as a candidate is noise.
+  const zeros = numericTotals([{ fee: '0' }, { fee: '0.00' }]);
+  const z = zeros.find((t) => t.path === 'fee');
+  ok('a field of zeros is present', z?.rows === 2, z);
+  ok('but nothing in it is non-zero', z?.nonZero === 0, z);
+
+  // Nested, because some providers wrap the money in an object.
+  const nested = numericTotals([
+    { fees: { processing: '2.00' } },
+    { fees: { processing: '1.50' } },
+  ]);
+  const n = nested.find((t) => t.path === 'fees.processing');
+  ok('a nested field is found by its dotted path', n?.total === 3.5, nested);
+
+  ok('no records is no candidates', numericTotals([]).length === 0);
+  ok('records with no numbers are no candidates', numericTotals([{ a: 'x' }]).length === 0);
 }
 
 console.log(failures ? `\n${failures} failed` : '\nall good');

@@ -584,6 +584,39 @@ export function useAnchorFromProvider() {
   });
 }
 
+/**
+ * What the last measured gap is made of, searched for in the stored records.
+ *
+ * A query rather than a mutation — it reads our own database and calls no
+ * provider — but not auto-run: it reads every record of an interval, and it is
+ * a question somebody asks deliberately when a balance is wrong, not something
+ * every page load should do.
+ */
+export type DriftExplanation = {
+  target: number;
+  from: string;
+  to: string;
+  transactions: number;
+  candidates: {
+    path: string;
+    total: number;
+    rows: number;
+    nonZero: number;
+    missBy: number;
+    covers: number | null;
+  }[];
+};
+
+export function useExplainDrift(id: string, enabled: boolean) {
+  return useQuery<DriftExplanation>({
+    queryKey: ["psp-explain-drift", id],
+    queryFn: () => apiFetch<DriftExplanation>(`/psps/${id}/explain-drift`),
+    enabled,
+    retry: false,
+    staleTime: 60_000,
+  });
+}
+
 export function useSetAnchor() {
   const queryClient = useQueryClient();
   return useMutation({

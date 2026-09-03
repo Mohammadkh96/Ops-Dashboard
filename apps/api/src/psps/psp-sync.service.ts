@@ -5,6 +5,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { open, SecretBoxError } from '../common/secret-box';
 import { PspBalanceService } from './psp-balance.service';
 import { latestPerPayment, MAX_EVENTS } from './payment-events';
+import { flatten } from './record-fields';
 import {
   callPsp,
   describeWebPage,
@@ -61,28 +62,6 @@ const ALL_BUDGET_MS = 40_000;
 const DEFAULT_PAGE_SIZE = 50;
 /** How many stored records to read when listing the fields a provider sends. */
 const SAMPLE = 200;
-
-/**
- * Every leaf in a record, as a dotted path.
- *
- * Depth-limited and array-summarised: a provider's record can nest, but a
- * column mapped twelve levels into the third element of an array is not a
- * column anybody is going to configure, and listing them all would bury the
- * dozen that matter.
- */
-function flatten(value: unknown, prefix = '', depth = 0): [string, unknown][] {
-  if (depth > 2 || value === null || typeof value !== 'object') {
-    return prefix ? [[prefix, value]] : [];
-  }
-  if (Array.isArray(value)) {
-    // The first element stands for the array: the shape repeats, and the path
-    // that is useful is the one into element zero.
-    return value.length ? flatten(value[0], `${prefix}.0`, depth + 1) : [];
-  }
-  return Object.entries(value as Record<string, unknown>).flatMap(([k, v]) =>
-    flatten(v, prefix ? `${prefix}.${k}` : k, depth + 1),
-  );
-}
 
 @Injectable()
 export class PspSyncService {
