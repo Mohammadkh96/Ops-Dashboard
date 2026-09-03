@@ -150,7 +150,110 @@ export type BalanceView = {
    * answer different questions and their difference means nothing.
    */
   rulesChanged: boolean;
+  /**
+   * What the PROVIDER says the balance is, when the provider can be asked.
+   *
+   * This is not another input to the estimate. It is the answer, and the
+   * estimate is the thing that was standing in for it.
+   *
+   * Whether any given provider supplies one is a question of fact, not of
+   * configuration effort, and the note at the top of this file records what was
+   * found the last time it was asked: Match2Pay publishes no read API at all,
+   * and ForumPay's GetBalance returned swept crypto wallets rather than the USD
+   * figure its portal shows. If that is still true for a terminal, this stays
+   * null and the estimate remains the only thing available — which is why the
+   * estimate is not being removed.
+   *
+   * But it is the question worth re-asking whenever a balance drifts, because
+   * the drift is unbounded and a reading is not: BEEM's /ledger/v1/wallets is
+   * exactly this, and a currency-denominated wallet on any provider would end
+   * the estimating for that terminal entirely.
+   *
+   * Null, too, when the last attempt to read failed. A stale reading is still
+   * returned WITH its age, because "the provider said this six hours ago" is a
+   * fact worth having and hiding it leaves only the estimate.
+   */
+  reported: {
+    amount: number;
+    currency: string | null;
+    /** Which wallet or sub-account, where a provider reports several. */
+    account: string | null;
+    /** When we read it, not when the provider computed it. */
+    at: string;
+    ageHours: number;
+  } | null;
+  /**
+   * Estimate minus reported: how far out we were, signed.
+   *
+   * Positive means the estimate claimed MORE than the provider holds, which is
+   * the direction an unrecorded deduction pushes it and the one worth noticing.
+   * Null unless both numbers exist and are in the same currency — a drift
+   * between USD and EUR is not a number.
+   */
+  drift: number | null;
 };
+
+/** A balance reading stored on the connection by the last successful test. */
+type StoredBalances = {
+  at?: string;
+  rows?: {
+    account?: string | null;
+    currency?: string | null;
+    amount?: number;
+  }[];
+};
+
+/**
+ * The provider's own figure for this balance, out of the last reading.
+ *
+ * Picked by currency rather than taken as the first row, because a provider
+ * with several wallets returns several rows and the first one is not
+ * necessarily the one this terminal's balance is denominated in. When nothing
+ * matches, nothing is returned: a balance in the wrong currency shown as this
+ * balance is worse than no balance at all.
+ */
+export function pickReported(
+  stored: unknown,
+  currency: string | null,
+): {
+  amount: number;
+  currency: string | null;
+  account: string | null;
+  at: string;
+} | null {
+  if (!stored || typeof stored !== 'object' || Array.isArray(stored))
+    return null;
+  const { at, rows } = stored as StoredBalances;
+  if (!at || !Array.isArray(rows) || !rows.length) return null;
+
+  const usable = rows.filter(
+    (
+      r,
+    ): r is {
+      account?: string | null;
+      currency?: string | null;
+      amount: number;
+    } => typeof r?.amount === 'number' && Number.isFinite(r.amount),
+  );
+  if (!usable.length) return null;
+
+  const want = (currency ?? '').trim().toUpperCase();
+  const matching = want
+    ? usable.filter((r) => (r.currency ?? '').trim().toUpperCase() === want)
+    : usable;
+
+  // Several wallets in the same currency is a total, not a choice — a provider
+  // holding USD in two places holds the sum of them.
+  if (!matching.length) return null;
+  const amount = round(matching.reduce((sum, r) => sum + r.amount, 0));
+
+  return {
+    amount,
+    currency: matching[0].currency?.trim().toUpperCase() ?? (want || null),
+    account: matching.length === 1 ? (matching[0].account ?? null) : null,
+    at,
+  };
+}
 
 /** Case-insensitive membership, because "Sell" and "sell" are one word. */
 function has(list: string[] | undefined, value: string | null): boolean {
@@ -330,6 +433,10 @@ export class PspBalanceService {
         terminal: true,
         ledgerSource: true,
         movementRules: true,
+        // The provider's own last answer, which beats anything derived from
+        // transactions when it exists.
+        balances: true,
+        lastError: true,
       },
     });
     if (!conn) throw new BadRequestException('No such PSP connection.');
@@ -353,6 +460,8 @@ export class PspBalanceService {
         terminal: true,
         ledgerSource: true,
         movementRules: true,
+        balances: true,
+        lastError: true,
       },
     });
 
@@ -378,11 +487,32 @@ export class PspBalanceService {
   }
 
   private async view(
-    conn: { id: string; terminal: string; ledgerSource: string },
+    conn: {
+      id: string;
+      terminal: string;
+      ledgerSource: string;
+      balances?: unknown;
+      lastError?: string | null;
+    },
     anchor: Anchor | null,
     rules: MovementRules | null,
   ): Promise<BalanceView> {
     const currency = rules?.currency ?? anchor?.currency ?? null;
+
+    // Read before the early return: a provider that answers is worth showing
+    // even when nobody has ever typed an anchor, and that is the commonest
+    // moment to want it — a terminal with a working balance endpoint and no
+    // anchor should show its balance, not an empty panel asking for one.
+    const picked = pickReported(conn.balances, currency);
+    const reported = picked
+      ? {
+          ...picked,
+          ageHours: Math.max(
+            0,
+            (Date.now() - new Date(picked.at).getTime()) / 3_600_000,
+          ),
+        }
+      : null;
     const zero = {
       net: 0,
       added: 0,
@@ -411,6 +541,8 @@ export class PspBalanceService {
         ageHours: null,
         basis: 'baseline',
         rulesChanged: false,
+        reported,
+        drift: null,
       };
     }
 
@@ -492,13 +624,25 @@ export class PspBalanceService {
       beforeAnchor: stored ? 0 : baseline.counted,
     };
 
+    const estimate = round(anchor.amount + m.net);
+
     return {
       connectionId: conn.id,
       anchor,
       rules,
-      estimate: round(anchor.amount + m.net),
+      estimate,
       currency,
       movement: m,
+      reported,
+      // Only across the same currency. A gap between a USD estimate and a EUR
+      // reading is not a gap, it is a category error with a minus sign in it.
+      drift:
+        reported &&
+        (!currency ||
+          !reported.currency ||
+          reported.currency === currency.trim().toUpperCase())
+          ? round(estimate - reported.amount)
+          : null,
       /** How the movement was worked out — the two are not equally reliable. */
       basis: stored ? ('baseline' as const) : ('date' as const),
       /**
@@ -705,6 +849,50 @@ export class PspBalanceService {
     });
 
     return { anchor: toAnchor(row), balance: await this.balance(connectionId) };
+  }
+
+  /**
+   * Re-anchors to what the provider last said, instead of to what someone read.
+   *
+   * The anchor exists because somebody has to supply a true figure. When the
+   * provider supplies one, there is no reason for that somebody to be a person
+   * at 4am with a portal open in another tab — and every reason for it not to
+   * be, because a typed figure can be typed wrong and a read one cannot.
+   *
+   * Goes through setAnchor rather than writing a row directly, so a provider
+   * reading is anchored exactly like a typed one: same baseline, same recorded
+   * drift, same history. The drift column then becomes an accuracy log of the
+   * estimate against a source that is not us, which is the only way to know
+   * whether the estimating is working.
+   *
+   * `takenAt` is when the reading was TAKEN, not now. The gap between reading a
+   * balance and storing it is small but not zero, and anchoring it as "now"
+   * would count whatever moved in between twice — once inside the provider's
+   * figure, once as movement since.
+   */
+  async anchorFromProvider(connectionId: string, enteredBy?: string) {
+    const current = await this.balance(connectionId);
+    if (!current.reported) {
+      throw new BadRequestException(
+        'This provider has not returned a balance. Configure its balance endpoint and press “Save and test balance” — if it answers, this button anchors to what it said.',
+      );
+    }
+    const { amount, currency, at } = current.reported;
+    if (!currency) {
+      throw new BadRequestException(
+        'The provider’s reading has no currency on it. Map the currency field on the balance endpoint, or set the currency in the movement rules.',
+      );
+    }
+    return this.setAnchor(
+      connectionId,
+      {
+        amount,
+        currency,
+        takenAt: at,
+        note: 'Read from the provider',
+      },
+      enteredBy,
+    );
   }
 
   /** Every anchor entered, newest first — the drift history. */

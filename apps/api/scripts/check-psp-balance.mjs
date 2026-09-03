@@ -38,6 +38,7 @@ const section = (t) => console.log(`\n── ${t} ──`);
 const {
   PspBalanceService,
   readRules,
+  pickReported,
 } = require('../dist/src/psps/psp-balance.service');
 
 /**
@@ -547,6 +548,73 @@ section('entering a figure that is not one');
   await rejects({ amount: 100 }, 'no currency is refused');
   await rejects({ amount: 100, currency: 'USD', takenAt: 'tuesday' }, 'an unreadable date is refused');
   ok('and nothing was written', store.anchors.length === 0, store.anchors);
+}
+
+
+section('what the provider itself says');
+{
+  // The reading stored by the last successful balance test, as psps.service
+  // writes it: { at, rows: [{ account, currency, amount }] }.
+  const at = '2026-09-03T06:00:00.000Z';
+
+  ok(
+    'a single matching row is the balance',
+    pickReported({ at, rows: [{ currency: 'USD', amount: 222984.36, account: null }] }, 'USD')
+      ?.amount === 222984.36,
+  );
+
+  // Picked by CURRENCY, not by position. A provider with several wallets
+  // returns several rows and the first is not necessarily the right one —
+  // ForumPay returns a row per crypto, all near zero, and taking row zero
+  // would put 0.0001 on a screen captioned "the provider says".
+  const many = {
+    at,
+    rows: [
+      { currency: 'BTC', amount: 0.00012, account: 'btc' },
+      { currency: 'USD', amount: 222984.36, account: 'usd' },
+      { currency: 'EUR', amount: 500, account: 'eur' },
+    ],
+  };
+  ok('the right currency is chosen out of several', pickReported(many, 'USD')?.amount === 222984.36);
+  ok('and its account comes with it', pickReported(many, 'USD')?.account === 'usd');
+  ok('case does not matter', pickReported(many, 'usd')?.amount === 222984.36);
+
+  // Two wallets in one currency is a total, not a choice.
+  ok(
+    'several rows in the balance currency are summed',
+    pickReported(
+      { at, rows: [{ currency: 'USD', amount: 100.5 }, { currency: 'USD', amount: 200.25 }] },
+      'USD',
+    )?.amount === 300.75,
+  );
+  ok(
+    'and no single account is claimed for a sum',
+    pickReported(
+      { at, rows: [{ currency: 'USD', amount: 1, account: 'a' }, { currency: 'USD', amount: 2, account: 'b' }] },
+      'USD',
+    )?.account === null,
+  );
+
+  // NOTHING is worse than the wrong thing here. A figure under the heading
+  // "the provider says" is the one number on the screen nobody will question.
+  ok('no row in the balance currency yields nothing', pickReported(many, 'GBP') === null);
+  ok('an unreadable amount is not a zero balance', pickReported({ at, rows: [{ currency: 'USD', amount: 'lots' }] }, 'USD') === null);
+  ok('an empty reading is nothing', pickReported({ at, rows: [] }, 'USD') === null);
+  ok('a reading with no timestamp is nothing', pickReported({ rows: [{ currency: 'USD', amount: 1 }] }, 'USD') === null);
+  ok('never read is nothing', pickReported(null, 'USD') === null);
+  ok('junk is nothing', pickReported('222984.36', 'USD') === null);
+  ok('an array is nothing', pickReported([{ currency: 'USD', amount: 1 }], 'USD') === null);
+
+  // A zero IS a balance. Dropping it would show an estimate beside a provider
+  // that has actually been emptied, which is the moment it matters most.
+  ok('zero is a balance', pickReported({ at, rows: [{ currency: 'USD', amount: 0 }] }, 'USD')?.amount === 0);
+
+  // With no currency configured there is nothing to match on, so everything is
+  // in scope — right for a provider that reports one wallet and no currency.
+  ok(
+    'with no currency asked for, one row still answers',
+    pickReported({ at, rows: [{ currency: null, amount: 42 }] }, null)?.amount === 42,
+  );
 }
 
 console.log(failures ? `\n${failures} failed` : '\nall good');

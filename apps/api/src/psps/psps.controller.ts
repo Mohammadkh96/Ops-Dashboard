@@ -282,6 +282,22 @@ export class PspsController {
 
   /** Every balance entered, with the drift each one revealed. Session. */
   @UseGuards(JwtAuthGuard)
+  /**
+   * Re-anchors to the provider's own last reading.
+   *
+   * A session, not the admin lock: it spends no credential and types no figure
+   * — it takes one the provider already gave us. Reading a balance off a portal
+   * and typing it in is desk work, and so is this.
+   */
+  @UseGuards(JwtAuthGuard)
+  @Post(':id/anchor-from-provider')
+  anchorFromProvider(
+    @Param('id') id: string,
+    @Req() req: { user?: { email?: string } },
+  ) {
+    return this.balanceService.anchorFromProvider(id, req.user?.email);
+  }
+
   @Get(':id/anchors')
   anchors(@Param('id') id: string) {
     return this.balanceService.history(id);

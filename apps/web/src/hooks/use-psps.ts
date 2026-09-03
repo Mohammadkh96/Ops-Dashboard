@@ -477,6 +477,22 @@ export type BalanceView = {
     /** Already inside the anchor figure — moved before it was taken. */
     beforeAnchor: number;
   };
+  /**
+   * What the PROVIDER says, when it has a balance endpoint that answers.
+   *
+   * Not another input to the estimate — the answer the estimate was standing
+   * in for. Null for the providers this whole apparatus exists for, which
+   * publish no readable balance at all.
+   */
+  reported: {
+    amount: number;
+    currency: string | null;
+    account: string | null;
+    at: string;
+    ageHours: number;
+  } | null;
+  /** Estimate minus reported, signed. Positive = we were claiming too much. */
+  drift: number | null;
   /** False when no rule can classify anything — see the note on the card. */
   configured: boolean;
   ageHours: number | null;
@@ -524,6 +540,29 @@ export function usePspAnchors(id: string | null) {
  * passphrase gets shared or the estimate never gets corrected, and an estimate
  * nobody re-anchors drifts for ever.
  */
+/**
+ * Re-anchors to the provider's own reading rather than a typed figure.
+ *
+ * Separate from useSetAnchor because there is nothing to type: the whole point
+ * is that no number passes through a person. Same invalidations — it writes an
+ * anchor exactly like the manual one, drift and all.
+ */
+export function useAnchorFromProvider() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<{ anchor: Anchor; balance: BalanceView }>(
+        `/psps/${id}/anchor-from-provider`,
+        { method: "POST" },
+      ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["psp-balance"] });
+      void queryClient.invalidateQueries({ queryKey: ["psp-anchors"] });
+      void queryClient.invalidateQueries({ queryKey: ["psp-directory"] });
+    },
+  });
+}
+
 export function useSetAnchor() {
   const queryClient = useQueryClient();
   return useMutation({

@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Drawer } from "@/components/ui/drawer";
 import { cn } from "@/lib/utils";
 import {
+  useAnchorFromProvider,
   useSetAnchor,
   usePspAnchors,
   type BalanceView,
@@ -101,6 +102,8 @@ export function BalancePanel({
   balance: BalanceView | undefined;
 }) {
   const [open, setOpen] = useState(false);
+  const [anchorError, setAnchorError] = useState<string | null>(null);
+  const fromProvider = useAnchorFromProvider();
 
   // `movement` as well as `balance`, and not only for tidiness: reading a
   // field off it unguarded THREW and took the whole transactions page down
@@ -109,7 +112,7 @@ export function BalancePanel({
   // must disappear, not remove the page it sits on. Any deploy where the
   // browser holds a newer app than the API can produce exactly that shape.
   if (!balance?.movement) return null;
-  const { anchor, movement, estimate, currency } = balance;
+  const { anchor, movement, estimate, currency, reported, drift } = balance;
   const stale = (balance.ageHours ?? 0) > STALE_HOURS;
   const ignored =
     movement.ignoredDirection + movement.ignoredStatus + movement.ignoredCurrency;
@@ -151,11 +154,78 @@ export function BalancePanel({
                 note={`${movement.counted.toLocaleString()} transaction${movement.counted === 1 ? "" : "s"} counting`}
               />
               <Figure
-                label="Estimated now"
+                label={reported ? "We estimate" : "Estimated now"}
                 value={estimate === null ? "—" : `≈ ${money(estimate, currency)}`}
                 note="estimated — not read from the provider"
               />
             </div>
+
+            {/* The provider's own answer, when there is one — and it is placed
+                BELOW the estimate rather than beside it because it is not a
+                fourth figure of the same kind. The three above are a
+                derivation; this is a reading, and it settles the question the
+                derivation was approximating. */}
+            {reported ? (
+              <div className="flex flex-col gap-2 rounded-lg border border-accent-green/25 bg-accent-green-soft/40 px-3 py-2.5">
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <span className="text-[10px] font-medium tracking-wider text-muted uppercase">
+                    The provider says
+                  </span>
+                  <span className="text-[11px] text-muted">
+                    read {age(reported.ageHours)}
+                    {reported.account ? ` · ${reported.account}` : ""}
+                  </span>
+                </div>
+                <span className="tnum text-2xl leading-none font-semibold">
+                  {money(reported.amount, reported.currency ?? currency)}
+                </span>
+                {/* The whole value of having both: not the reading, which is
+                    just true, but the gap — which is the size of everything
+                    the estimate cannot see, measured rather than argued about. */}
+                {drift !== null ? (
+                  <span className="text-[11px] text-muted">
+                    Our estimate is{" "}
+                    <span
+                      className={cn(
+                        "font-medium",
+                        Math.abs(drift) < 0.01
+                          ? "text-accent-green"
+                          : "text-accent-orange",
+                      )}
+                    >
+                      {Math.abs(drift) < 0.01
+                        ? "exact"
+                        : `${drift > 0 ? "over" : "under"} by ${money(Math.abs(drift), currency)}`}
+                    </span>
+                    {Math.abs(drift) >= 0.01
+                      ? " — fees, spread and anything done by hand in the portal, none of which reach the transactions."
+                      : "."}
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  disabled={fromProvider.isPending}
+                  onClick={() =>
+                    fromProvider.mutate(connectionId, {
+                      onError: (e: unknown) =>
+                        setAnchorError(
+                          e instanceof Error ? e.message : String(e),
+                        ),
+                    })
+                  }
+                  className="self-start text-[11px] text-accent-blue underline underline-offset-2 disabled:opacity-50"
+                >
+                  {fromProvider.isPending
+                    ? "Anchoring…"
+                    : "Anchor to this instead of typing it"}
+                </button>
+                {anchorError ? (
+                  <span className="text-[11px] text-accent-red">
+                    {anchorError}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
 
             {/* The arithmetic in the open. Somebody asked to trust the estimate
                 should be able to see what went into it. */}
