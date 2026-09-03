@@ -1,0 +1,14 @@
+-- Which field the fee was read from when an anchor's baseline was measured.
+--
+-- Without it, mapping a fee field on a terminal that already has an anchor
+-- subtracts every fee in the stored history from the movement since that
+-- anchor -- the baseline having been measured when no fee was mapped at all,
+-- and therefore holding zero. On a month of stored rows that is about a
+-- thousand dollars removed from a twenty-hour movement, with nothing on screen
+-- to say so: the existing like-for-like check compares add/subtract/status
+-- words, and a fee mapping is not one of those.
+--
+-- Null on every existing row, which is correct and is exactly the signal the
+-- service wants: an anchor that predates this column cannot say what it
+-- measured, so its fee difference is not trusted.
+ALTER TABLE "PspBalanceAnchor" ADD COLUMN "baselineFeePath" TEXT;

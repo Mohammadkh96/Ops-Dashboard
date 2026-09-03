@@ -882,6 +882,21 @@ model PspBalanceAnchor {
   /// The rules the two totals were measured under. Change which words count
   /// and the comparison is no longer like-for-like, which the screen says.
   baselineRules Json?
+  /// Which field the fee was read from when these totals were measured, or null
+  /// for none.
+  ///
+  /// Separate from baselineRules because it is not one of them: the fee comes
+  /// from the ENDPOINT mapping, and baselineRules only carries add/subtract/
+  /// statuses. That gap was a live trap. Map a fee field on a terminal that has
+  /// an anchor and the movement becomes `now.fees - baselineFees`, where the
+  /// baseline was measured with no fee at all — so a MONTH of fees gets
+  /// subtracted from a twenty-hour movement, the balance drops by about a
+  /// thousand dollars, and nothing on screen says why, because sameRules()
+  /// compares words and sees no change.
+  ///
+  /// Storing it makes the change detectable, which is all the screen needs to
+  /// hold the fee out of the arithmetic and ask for a fresh balance.
+  baselineFeePath String?
 
   // Descending, matching the migration and the only query that uses it: the
   // current anchor is the newest by takenAt. Declared rather than left implicit

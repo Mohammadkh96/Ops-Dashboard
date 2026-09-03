@@ -95,6 +95,13 @@ export type Anchor = {
   /** How much of baselineOut was the provider's cut. Display only. */
   baselineFees: number | null;
   baselineRules: MovementRules | null;
+  /**
+   * Which field the fee was read from when this baseline was measured.
+   *
+   * Null on anchors taken before this was recorded, which is treated as
+   * "cannot say" rather than "none" — see feeMappingChanged.
+   */
+  baselineFeePath: string | null;
 };
 
 export type BalanceView = {
@@ -156,6 +163,25 @@ export type BalanceView = {
    * answer different questions and their difference means nothing.
    */
   rulesChanged: boolean;
+  /**
+   * The FEE MAPPING changed after the baseline was measured.
+   *
+   * Its own flag rather than a case of rulesChanged, because it is a different
+   * kind of change with a much nastier failure. The movement's fee is
+   * `now.fees - baselineFees`; map a fee field on a terminal whose anchor was
+   * taken before that mapping existed and the baseline holds zero while "now"
+   * holds every fee in the stored history. A month of them then comes off a
+   * twenty-hour movement — roughly a thousand dollars, in the right direction
+   * to look like a correction, with no warning at all, because the like-for-
+   * like check compares add/subtract/status words and a fee mapping is none of
+   * those.
+   *
+   * When this is true the fee is held OUT of the arithmetic entirely rather
+   * than half-applied, and the screen asks for a fresh balance — after which
+   * the two totals are measured the same way and the fee starts counting
+   * properly.
+   */
+  feeMappingChanged: boolean;
   /**
    * What the PROVIDER says the balance is, when the provider can be asked.
    *
@@ -403,6 +429,36 @@ type Totals = {
 };
 
 /**
+ * Which field a connection currently reads the fee from, or null for none.
+ *
+ * Deliberately tolerant: `endpoints` is a JSON column typed as unknown, and a
+ * connection with no transactions endpoint, no fields, or no fee among them all
+ * mean the same thing here — nothing is being read.
+ */
+export function feePathOf(endpoints: unknown): string | null {
+  if (!endpoints || typeof endpoints !== 'object') return null;
+  const txn = (endpoints as Record<string, unknown>).transactions;
+  if (!txn || typeof txn !== 'object') return null;
+  const fields = (txn as Record<string, unknown>).fields;
+  if (!fields || typeof fields !== 'object') return null;
+  const fee = (fields as Record<string, unknown>).fee;
+  const t = typeof fee === 'string' ? fee.trim() : '';
+  return t || null;
+}
+
+/**
+ * The same groups with every fee zeroed.
+ *
+ * Used when the fee mapping has moved since a baseline was measured. Zeroing
+ * here rather than at the query keeps both sides of the subtraction going
+ * through the identical code path, which is the property that makes the
+ * difference mean anything at all.
+ */
+function withoutFees(groups: Group[]): Group[] {
+  return groups.map((g) => (g.fees === 0 ? g : { ...g, fees: 0 }));
+}
+
+/**
  * The rules, applied to a set of grouped transactions.
  *
  * One function, used twice: over everything counting NOW, and over everything
@@ -582,6 +638,9 @@ export class PspBalanceService {
         // transactions when it exists.
         balances: true,
         lastError: true,
+        // Only to read which field the fee comes from — a change there makes a
+        // stored baseline's fee total incomparable. See feeMappingChanged.
+        endpoints: true,
       },
     });
     if (!conn) throw new BadRequestException('No such PSP connection.');
@@ -611,6 +670,7 @@ export class PspBalanceService {
         movementRules: true,
         balances: true,
         lastError: true,
+        endpoints: true,
       },
     });
 
@@ -642,6 +702,7 @@ export class PspBalanceService {
       ledgerSource: string;
       balances?: unknown;
       lastError?: string | null;
+      endpoints?: unknown;
     },
     anchor: Anchor | null,
     rules: MovementRules | null,
@@ -692,6 +753,7 @@ export class PspBalanceService {
         ageHours: null,
         basis: 'baseline',
         rulesChanged: false,
+        feeMappingChanged: false,
         reported,
         drift: null,
         expectedDrift: null,
@@ -715,10 +777,24 @@ export class PspBalanceService {
     // that was confirmed and is later cancelled or refunded leaves the current
     // total, and the estimate goes DOWN. That is right, and it used to be
     // invisible.
-    const groups =
+    // Whether the fee is being read from the same place it was when the
+    // baseline was measured. Compared before anything is summed, because the
+    // answer decides whether the fee may be counted at all.
+    const feePathNow = feePathOf(conn.endpoints);
+    const anchorKnowsFeePath =
+      anchor.baselineFeePath !== null || anchor.baselineFees !== null;
+    const feeMappingChanged =
+      anchorKnowsFeePath && (anchor.baselineFeePath ?? null) !== feePathNow;
+
+    const rawGroups =
       conn.ledgerSource === 'paymaxis'
         ? await this.groupsFromPaymaxis(conn.terminal)
         : await this.groupsFromStore(conn.id);
+    // Held out entirely, not half-applied. A fee total measured under one
+    // mapping minus a total measured under another is not a fee — it is the
+    // whole history of one of them, and subtracting it would drop the balance
+    // by about a thousand dollars in a direction that looks like a correction.
+    const groups = feeMappingChanged ? withoutFees(rawGroups) : rawGroups;
     const now = applyRules(groups, rules, currency);
 
     // The baseline. Stored on the anchor when it was entered — or, for anchors
@@ -729,16 +805,22 @@ export class PspBalanceService {
         ? {
             in: anchor.baselineIn,
             out: anchor.baselineOut,
-            fees: anchor.baselineFees ?? 0,
+            fees: feeMappingChanged ? 0 : (anchor.baselineFees ?? 0),
             counted: 0,
           }
         : null;
     const baseline =
       stored ??
       applyRules(
-        conn.ledgerSource === 'paymaxis'
-          ? await this.groupsFromPaymaxis(conn.terminal, { until: since })
-          : await this.groupsFromStore(conn.id, { until: since }),
+        feeMappingChanged
+          ? withoutFees(
+              conn.ledgerSource === 'paymaxis'
+                ? await this.groupsFromPaymaxis(conn.terminal, { until: since })
+                : await this.groupsFromStore(conn.id, { until: since }),
+            )
+          : conn.ledgerSource === 'paymaxis'
+            ? await this.groupsFromPaymaxis(conn.terminal, { until: since })
+            : await this.groupsFromStore(conn.id, { until: since }),
         rules,
         currency,
       );
@@ -825,6 +907,7 @@ export class PspBalanceService {
        * Said rather than silently reported.
        */
       rulesChanged: stored ? !sameRules(anchor.baselineRules, rules) : false,
+      feeMappingChanged,
       configured: Boolean(rules?.add?.length || rules?.subtract?.length),
       ageHours: Math.max(0, (Date.now() - since.getTime()) / 3_600_000),
     };
@@ -989,7 +1072,12 @@ export class PspBalanceService {
     // difference means.
     const conn = await this.prisma.pspConnection.findUnique({
       where: { id: connectionId },
-      select: { terminal: true, ledgerSource: true, movementRules: true },
+      select: {
+        terminal: true,
+        ledgerSource: true,
+        movementRules: true,
+        endpoints: true,
+      },
     });
     if (!conn) throw new BadRequestException('No such PSP connection.');
     const rules = readRules(conn.movementRules);
@@ -1014,6 +1102,9 @@ export class PspBalanceService {
         baselineOut: round(baseline.out),
         baselineFees: round(baseline.fees),
         baselineRules: rules ?? Prisma.DbNull,
+        // Recorded so a later change of fee mapping is detectable. Without it
+        // the fee difference silently compares two different measurements.
+        baselineFeePath: feePathOf(conn.endpoints),
         // Signed: positive means we were claiming MORE than the portal shows,
         // which is the direction unrecorded fees push it and the one worth
         // noticing.
@@ -1101,8 +1192,22 @@ export class PspBalanceService {
       select: { id: true, ledgerSource: true },
     });
     if (!conn) throw new BadRequestException('No such PSP connection.');
+
+    // Soft, not thrown. This runs unattended now — the panel asks it the moment
+    // a drift exists rather than waiting for somebody to press a button — and a
+    // 400 on a terminal that simply has nothing to search would render as a red
+    // error under a balance that is working fine.
+    const nothing = (note: string) => ({
+      target: 0,
+      from: null,
+      to: null,
+      transactions: 0,
+      candidates: [] as never[],
+      note,
+    });
+
     if (conn.ledgerSource !== 'provider') {
-      throw new BadRequestException(
+      return nothing(
         'This terminal’s transactions come from Paymaxis, which reports no per-payment fee, so there is no field here to find.',
       );
     }
@@ -1113,12 +1218,12 @@ export class PspBalanceService {
       take: 2,
     });
     if (!curr || !prev) {
-      throw new BadRequestException(
+      return nothing(
         'This needs two balances entered: the gap between them is the amount being searched for. Press “Update from portal”, and again next time the estimate has drifted.',
       );
     }
     if (curr.drift === null) {
-      throw new BadRequestException(
+      return nothing(
         'The most recent balance recorded no drift against the estimate it replaced, so there is no gap to explain.',
       );
     }
@@ -1168,6 +1273,9 @@ export class PspBalanceService {
       to: curr.takenAt.toISOString(),
       transactions: rows.length,
       candidates,
+      note: rows.length
+        ? null
+        : 'No transactions are stored in that window, so there is nothing to add up. Sync the ledger and try again.',
     };
   }
 
@@ -1267,6 +1375,7 @@ function toAnchor(row: {
   baselineIn?: unknown;
   baselineOut?: unknown;
   baselineFees?: unknown;
+  baselineFeePath?: unknown;
   baselineRules?: unknown;
 }): Anchor {
   return {
@@ -1293,6 +1402,8 @@ function toAnchor(row: {
       row.baselineFees === null || row.baselineFees === undefined
         ? null
         : num(row.baselineFees),
+    baselineFeePath:
+      typeof row.baselineFeePath === 'string' ? row.baselineFeePath : null,
     baselineRules: readRules(row.baselineRules),
   };
 }

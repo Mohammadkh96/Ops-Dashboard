@@ -269,6 +269,115 @@ try {
       },
     });
 
+  section('mapping a fee AFTER a balance was entered');
+  {
+    // The trap this exists to close, and it sat directly in the path of the
+    // advice being given: "map the fee field and the estimate stops drifting".
+    //
+    // The movement's fee is now.fees MINUS the anchor's baselineFees. Map a fee
+    // on a terminal whose anchor was taken when no fee was mapped and the
+    // baseline holds ZERO while "now" holds every fee in the stored history. A
+    // month of them then comes off a twenty-hour movement — about a thousand
+    // dollars, in the direction that looks like the correction somebody was
+    // hoping for, with nothing on screen to say so: the like-for-like check
+    // compares add/subtract/status words, and a fee mapping is none of those.
+    const late = await prisma.pspConnection.create({
+      data: {
+        terminal: 'ForumPay_LateFee',
+        provider: 'forumpay',
+        label: 'ForumPay, fee mapped later',
+        ledgerSource: 'provider',
+        movementRules: {
+          currency: 'USD',
+          add: ['Sell'],
+          subtract: ['Buy'],
+          statuses: ['confirmed'],
+        },
+        // No fee mapped yet — the state every terminal is in today.
+        endpoints: { transactions: { path: '/GetTransactions/', fields: { amount: 'invoice_amount' } } },
+      },
+    });
+    const lateRow = (o) =>
+      prisma.pspTransaction.create({
+        data: {
+          connectionId: late.id,
+          terminal: late.terminal,
+          currency: 'USD',
+          status: 'confirmed',
+          raw: {},
+          occurredAt: new Date(),
+          ...o,
+        },
+      });
+
+    // A month of history already stored, each row carrying a fee in the raw
+    // record that nothing is reading yet.
+    for (let i = 0; i < 30; i++) {
+      await lateRow({ externalId: `hist-${i}`, direction: 'Sell', amount: '1000.00' });
+    }
+
+    const { anchor: taken } = await svc.setAnchor(late.id, {
+      amount: '100000.00',
+      currency: 'USD',
+      takenAt: new Date().toISOString(),
+    });
+    ok('the anchor records that no fee was mapped', taken.baselineFeePath === null, taken.baselineFeePath);
+
+    // One day passes: one more deposit.
+    await lateRow({ externalId: 'today', direction: 'Sell', amount: '500.00' });
+    const before = await svc.balance(late.id);
+    ok('a day of movement is just the deposit', Math.abs(before.movement.net - 500) < 0.005, before.movement);
+
+    // Now the operator does exactly what they were told: maps the fee field and
+    // re-syncs, which writes a fee onto every stored row including the month of
+    // history that is already inside the anchored figure.
+    await prisma.pspConnection.update({
+      where: { id: late.id },
+      data: {
+        endpoints: {
+          transactions: {
+            path: '/GetTransactions/',
+            fields: { amount: 'invoice_amount', fee: 'processing_fee' },
+          },
+        },
+      },
+    });
+    await prisma.pspTransaction.updateMany({
+      where: { connectionId: late.id },
+      data: { fee: '2.00' },
+    });
+
+    const after = await svc.balance(late.id);
+    // 31 rows x 2.00 = 62.00 of fees exist. Only the ONE row after the anchor
+    // is movement; the other 30 are inside the figure that was read off the
+    // portal. Subtracting all 62 would be the bug.
+    ok('the whole history of fees is NOT subtracted from one day of movement',
+       Math.abs(after.movement.net - 500) < 0.005, after.movement);
+    ok('the estimate does not drop by a month of fees',
+       Math.abs(after.estimate - before.estimate) < 0.005,
+       { before: before.estimate, after: after.estimate });
+    ok('and the screen says the mapping moved', after.feeMappingChanged === true, after);
+    // Held out entirely rather than half-applied: a fee measured under one
+    // mapping minus one measured under another is not a fee.
+    ok('no fee is claimed while the two sides disagree', after.movement.fees === 0, after.movement);
+
+    // Re-entering the balance measures both sides the same way again, and from
+    // then on the fee counts properly.
+    const { balance: reset } = await svc.setAnchor(late.id, {
+      amount: '100500.00',
+      currency: 'USD',
+      takenAt: new Date().toISOString(),
+    });
+    ok('re-anchoring clears the warning', reset.feeMappingChanged === false, reset);
+
+    await lateRow({ externalId: 'tomorrow', direction: 'Buy', amount: '200.00', fee: '2.00' });
+    const good = await svc.balance(late.id);
+    ok('and the fee then counts, once, on the new movement',
+       Math.abs(good.movement.fees - 2) < 0.005, good.movement);
+    ok('the payout and its fee both leave',
+       Math.abs(good.movement.subtracted - 202) < 0.005, good.movement);
+  }
+
   section('MT: both states of a payment carry the SAME occurredAt');
   {
     // Verbatim from the ledger screen: one second, two states. This is why no

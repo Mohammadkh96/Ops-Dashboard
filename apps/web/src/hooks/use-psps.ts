@@ -514,6 +514,12 @@ export type BalanceView = {
      */
     beyondExperience: boolean;
   } | null;
+  /**
+   * The FEE MAPPING moved since the baseline was measured, so the fee is held
+   * out of the arithmetic until the balance is entered again. See the service:
+   * half-applying it subtracts a whole history of fees from one day of movement.
+   */
+  feeMappingChanged: boolean;
   /** False when no rule can classify anything — see the note on the card. */
   configured: boolean;
   ageHours: number | null;
@@ -594,9 +600,11 @@ export function useAnchorFromProvider() {
  */
 export type DriftExplanation = {
   target: number;
-  from: string;
-  to: string;
+  from: string | null;
+  to: string | null;
   transactions: number;
+  /** Why there is nothing to show, when there is nothing to show. */
+  note?: string | null;
   candidates: {
     path: string;
     total: number;

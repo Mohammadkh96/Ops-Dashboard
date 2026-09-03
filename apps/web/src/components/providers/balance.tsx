@@ -90,6 +90,18 @@ function DriftExplainer({
   }
   if (!data) return null;
 
+  // Nothing to search is not a failure and must not read like one. It happens
+  // to every terminal until a balance has been corrected twice, and to every
+  // Paymaxis-sourced one for ever.
+  if (data.note || !data.candidates.length) {
+    return (
+      <p className="text-[11px] text-muted">
+        {data.note ??
+          "None of the stored fields carries a number, so there is nothing to add up."}
+      </p>
+    );
+  }
+
   // How close counts as found. A cent either way over a whole interval is the
   // same field; a dollar out is a different one that happens to be similar,
   // and calling that a match would send somebody to map the wrong column.
@@ -253,7 +265,6 @@ export function BalancePanel({
 }) {
   const [open, setOpen] = useState(false);
   const [anchorError, setAnchorError] = useState<string | null>(null);
-  const [explain, setExplain] = useState(false);
   const fromProvider = useAnchorFromProvider();
 
   // `movement` as well as `balance`, and not only for tidiness: reading a
@@ -363,23 +374,22 @@ export function BalancePanel({
                     another measurement, which is what makes it sharper.
                   </span>
                 ) : null}
-                {/* Correcting for the gap is second best. The transactions are
-                    complete and right, so if a provider DEDUCTS something it
-                    reported it, on the record of the payment it came out of —
-                    and we keep every record whole. Which means the missing
-                    money is already here under a field nobody mapped, and it
-                    can be searched for rather than modelled. */}
-                <button
-                  type="button"
-                  onClick={() => setExplain(true)}
-                  className="self-start text-[11px] text-accent-blue underline underline-offset-2"
-                >
-                  Find which field this gap is made of
-                </button>
               </div>
             ) : null}
 
-            {explain ? (
+            {/* Asked automatically, not on a button.
+                Correcting for the gap is second best. The transactions are
+                complete and right, so if a provider DEDUCTS something it
+                reported it — on the record of the payment it came out of — and
+                we keep every record whole. So the missing money is already
+                here, under a field nobody mapped, and it can be SEARCHED for
+                rather than modelled.
+                Behind a button that answer sat unread, because the person who
+                needs it is looking at a wrong balance at 4am and has no reason
+                to guess that a link marked "find which field" is the thing that
+                explains it. It costs one query over one interval; it can pay
+                for itself by being on screen. */}
+            {expectedDrift ? (
               <DriftExplainer
                 connectionId={connectionId}
                 currency={currency}
@@ -504,6 +514,23 @@ export function BalancePanel({
                 settles after it was entered will not be counted. Press{" "}
                 <span className="font-medium">Update from portal</span> once to
                 fix that permanently.
+              </p>
+            ) : null}
+
+            {/* Mapping a fee is the change most likely to be made from here —
+                it is what the field search below tells somebody to do — and it
+                is the one the like-for-like rules check cannot see. Until the
+                balance is entered again the fee is held out of the arithmetic
+                entirely, because half-applying it takes a whole history of fees
+                off a single day of movement. */}
+            {balance.feeMappingChanged ? (
+              <p className="flex items-start gap-1.5 text-[11px] text-accent-orange">
+                <Info className="mt-px size-3.5 shrink-0" />
+                The fee field changed after this balance was entered, so fees
+                are not being counted yet — the figure it was measured against
+                had none. Press{" "}
+                <span className="font-medium">Update from portal</span> once and
+                the fee starts counting from there.
               </p>
             ) : null}
 
