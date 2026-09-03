@@ -191,6 +191,37 @@ export type BalanceView = {
    * between USD and EUR is not a number.
    */
   drift: number | null;
+  /**
+   * What past corrections say this estimate is probably out by.
+   *
+   * The remaining answer for a provider that will not report a balance — which,
+   * having now been asked, is what ForumPay is: its GetBalance returns twenty
+   * swept wallets at 0.00000000 and no fiat row at all. There is nothing to
+   * read, so the estimate is all there is, and the only improvement left is to
+   * stop ignoring that it is known to lean one way.
+   *
+   * Kept SEPARATE from `estimate`, deliberately. The estimate is a stated
+   * derivation — this anchor, plus these transactions, nothing else — and that
+   * is exactly what makes it checkable by hand against the ledger underneath
+   * it. Folding a fitted correction into it would make it uncheckable and would
+   * quietly move a number the desk has learned to read. So it is offered
+   * beside, with its sample size attached, and a person decides.
+   *
+   * Null until two anchors have been taken under the same rules: there is no
+   * error to measure before an estimate has been corrected at least once.
+   */
+  expectedDrift: {
+    /** Intervals behind the rate. Two is a hint, not a rate. */
+    samples: number;
+    /** Fraction of gross volume. Positive = the estimate runs high. */
+    rate: number;
+    /** Volume the rate was fitted over — the weight to put on it. */
+    fittedOver: number;
+    /** rate × the volume since this anchor, in the balance currency. */
+    expected: number;
+    /** The estimate with that taken off. */
+    adjusted: number;
+  } | null;
 };
 
 /** A balance reading stored on the connection by the last successful test. */
@@ -414,6 +445,91 @@ function applyRules(
   return t;
 }
 
+/**
+ * How wrong this method has been, per unit of money that moved.
+ *
+ * The estimate misses fees, spread, settlements out and portal handwork. Every
+ * one of those is a deduction, so the error has a SIGN: over twenty hours it
+ * ran USD 89.40 above ForumPay's portal, and over the interval before that,
+ * 352.20 above. A bias that always points the same way is not noise to be
+ * tolerated — it is a measurable quantity that nobody was measuring, sitting in
+ * the drift column of every anchor ever entered.
+ *
+ * THE MEASUREMENT. Each anchor records the drift against the estimate it
+ * replaced, and the cumulative in/out totals at the moment it was taken. The
+ * difference between two consecutive anchors' totals is exactly the volume that
+ * flowed between them, so `drift ÷ volume` is the rate at which this method
+ * loses money, expressed in the only unit that projects forward.
+ *
+ * POOLED, not averaged. Total drift over total volume, so a fortnight of
+ * trading counts for more than an afternoon of it. Averaging the per-interval
+ * rates would let one quiet day with a rounding error in it outvote everything.
+ *
+ * WHAT IS THROWN AWAY, and why each has to be:
+ *   • an interval whose anchors were measured under different rules — the
+ *     volumes are then counts of different things and their difference is not
+ *     a volume
+ *   • an anchor with no baseline, from before baselines existed, which has no
+ *     volume to attribute its drift to
+ *   • a zero or negative volume, which is not an interval anything flowed in
+ *
+ * WHAT THIS IS NOT. It is not a fee schedule and does not pretend to be one; a
+ * provider that changes its pricing invalidates it, and so does a manual
+ * withdrawal to the bank, which is a deduction with no volume behind it at all.
+ * It is a correction fitted to past error, and it is only ever shown WITH the
+ * number of intervals behind it — two corrections is a hint, not a rate.
+ */
+export function fitDrift(anchors: Anchor[]): {
+  /** Anchor-to-anchor intervals the rate was fitted over. */
+  samples: number;
+  /** Drift as a fraction of gross volume. Positive = we run high. */
+  rate: number;
+  /** The volume behind the fit — the weight to put on it. */
+  volume: number;
+  /** Total drift observed across those intervals. */
+  drift: number;
+} | null {
+  let totalDrift = 0;
+  let totalVolume = 0;
+  let samples = 0;
+
+  // Newest first, so each anchor pairs with the one after it in the array.
+  for (let i = 0; i + 1 < anchors.length; i++) {
+    const curr = anchors[i];
+    const prev = anchors[i + 1];
+    if (curr.drift === null) continue;
+    if (curr.baselineIn === null || curr.baselineOut === null) continue;
+    if (prev.baselineIn === null || prev.baselineOut === null) continue;
+    if (!sameRules(curr.baselineRules, prev.baselineRules)) continue;
+
+    const volume =
+      curr.baselineIn - prev.baselineIn + (curr.baselineOut - prev.baselineOut);
+    if (!(volume > 0)) continue;
+
+    totalDrift += curr.drift;
+    totalVolume += volume;
+    samples++;
+  }
+
+  if (!samples || totalVolume <= 0) return null;
+  return {
+    samples,
+    rate: totalDrift / totalVolume,
+    volume: round(totalVolume),
+    drift: round(totalDrift),
+  };
+}
+
+/**
+ * How many past anchors the drift rate is fitted over.
+ *
+ * Bounded because the rate is a claim about how this provider behaves NOW. A
+ * correction from six months ago is evidence about a fee schedule that may not
+ * exist any more, and letting it in makes the rate slower to notice a change
+ * than the desk is.
+ */
+const DRIFT_WINDOW = 12;
+
 @Injectable()
 export class PspBalanceService {
   constructor(private readonly prisma: PrismaService) {}
@@ -441,15 +557,19 @@ export class PspBalanceService {
     });
     if (!conn) throw new BadRequestException('No such PSP connection.');
 
-    const [anchorRow] = await this.prisma.pspBalanceAnchor.findMany({
+    // A history, not just the latest. The one before last is what makes the
+    // last one's drift measurable — see fitDrift. Bounded because the rate is
+    // about how this provider behaves NOW, and a correction from six months ago
+    // is evidence about a fee schedule that may no longer exist.
+    const anchorRows = await this.prisma.pspBalanceAnchor.findMany({
       where: { connectionId },
       orderBy: { takenAt: 'desc' },
-      take: 1,
+      take: DRIFT_WINDOW,
     });
 
     const rules = readRules(conn.movementRules);
-    const anchor = anchorRow ? toAnchor(anchorRow) : null;
-    return this.view(conn, anchor, rules);
+    const history = anchorRows.map(toAnchor);
+    return this.view(conn, history[0] ?? null, rules, history);
   }
 
   /** The same figure for every connection at once, for the dashboard. */
@@ -471,18 +591,18 @@ export class PspBalanceService {
     const anchors = await this.prisma.pspBalanceAnchor.findMany({
       orderBy: { takenAt: 'desc' },
     });
-    const latest = new Map<string, (typeof anchors)[number]>();
-    for (const a of anchors)
-      if (!latest.has(a.connectionId)) latest.set(a.connectionId, a);
+    const history = new Map<string, Anchor[]>();
+    for (const a of anchors) {
+      const list = history.get(a.connectionId) ?? [];
+      if (list.length < DRIFT_WINDOW) list.push(toAnchor(a));
+      history.set(a.connectionId, list);
+    }
 
     return Promise.all(
-      conns.map((c) =>
-        this.view(
-          c,
-          latest.get(c.id) ? toAnchor(latest.get(c.id)!) : null,
-          readRules(c.movementRules),
-        ),
-      ),
+      conns.map((c) => {
+        const list = history.get(c.id) ?? [];
+        return this.view(c, list[0] ?? null, readRules(c.movementRules), list);
+      }),
     );
   }
 
@@ -496,6 +616,8 @@ export class PspBalanceService {
     },
     anchor: Anchor | null,
     rules: MovementRules | null,
+    /** Newest first, including `anchor`. Only used to fit the drift rate. */
+    history: Anchor[] = [],
   ): Promise<BalanceView> {
     const currency = rules?.currency ?? anchor?.currency ?? null;
 
@@ -543,6 +665,7 @@ export class PspBalanceService {
         rulesChanged: false,
         reported,
         drift: null,
+        expectedDrift: null,
       };
     }
 
@@ -626,6 +749,25 @@ export class PspBalanceService {
 
     const estimate = round(anchor.amount + m.net);
 
+    // Only against a stored baseline, and only while the rules still match the
+    // ones it was fitted under. A rate measured over totals that counted
+    // different things is not a rate, and applying it would dress up a
+    // meaningless number as a correction.
+    const fitted =
+      stored && !sameRules(anchor.baselineRules, rules)
+        ? null
+        : fitDrift(history);
+    const volumeSince = m.added + m.subtracted;
+    const expectedDrift = fitted
+      ? {
+          samples: fitted.samples,
+          rate: fitted.rate,
+          fittedOver: fitted.volume,
+          expected: round(fitted.rate * volumeSince),
+          adjusted: round(estimate - fitted.rate * volumeSince),
+        }
+      : null;
+
     return {
       connectionId: conn.id,
       anchor,
@@ -643,6 +785,7 @@ export class PspBalanceService {
           reported.currency === currency.trim().toUpperCase())
           ? round(estimate - reported.amount)
           : null,
+      expectedDrift,
       /** How the movement was worked out — the two are not equally reliable. */
       basis: stored ? ('baseline' as const) : ('date' as const),
       /**

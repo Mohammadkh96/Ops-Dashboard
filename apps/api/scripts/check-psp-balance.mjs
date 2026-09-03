@@ -39,6 +39,7 @@ const {
   PspBalanceService,
   readRules,
   pickReported,
+  fitDrift,
 } = require('../dist/src/psps/psp-balance.service');
 
 /**
@@ -615,6 +616,130 @@ section('what the provider itself says');
     'with no currency asked for, one row still answers',
     pickReported({ at, rows: [{ currency: null, amount: 42 }] }, null)?.amount === 42,
   );
+}
+
+
+section('fitting how wrong this method has been');
+{
+  // An anchor as fitDrift reads one: what it corrected by, and the cumulative
+  // in/out totals at the moment it was taken.
+  const rules = { add: ['sell'], subtract: ['buy'], statuses: ['confirmed'] };
+  const at = (n) => ({
+    drift: n.drift,
+    baselineIn: n.in,
+    baselineOut: n.out,
+    baselineRules: rules,
+  });
+
+  // Newest first, as the service passes them. Two anchors, one interval:
+  // 20,000 in and 10,000 out flowed between them, and the estimate finished
+  // 150 high.
+  const one = [at({ drift: 150, in: 30000, out: 15000 }), at({ drift: null, in: 10000, out: 5000 })];
+  const fit = fitDrift(one);
+  ok('one interval is one sample', fit?.samples === 1, fit);
+  ok('the volume is the difference of the totals', fit?.volume === 30000, fit);
+  ok('and the rate is drift over volume', Math.abs(fit.rate - 150 / 30000) < 1e-12, fit);
+
+  // POOLED, not averaged. A big interval has to outweigh a small one, or a
+  // quiet afternoon with a rounding error outvotes a fortnight of trading.
+  // Totals are CUMULATIVE, so an interval's volume is the step between two
+  // rows — not the row itself. Getting that backwards is how the first draft of
+  // this check built a "tiny" interval a hundred thousand wide.
+  const pooled = fitDrift([
+    at({ drift: 10, in: 50050, out: 49950 }),   // step of 100 — the outlier, 10%
+    at({ drift: 900, in: 50000, out: 49900 }),  // step of 99,900 — about 0.9%
+    at({ drift: null, in: 0, out: 0 }),
+  ]);
+  const mean = (10 / 100 + 900 / 99900) / 2;
+  ok('two intervals', pooled?.samples === 2, pooled);
+  ok('over the volume of both', pooled?.volume === 100000, pooled);
+  ok(
+    'the rate is total drift over total volume, not the mean of the rates',
+    Math.abs(pooled.rate - 910 / 100000) < 1e-9 && Math.abs(pooled.rate - mean) > 0.04,
+    { pooled, mean },
+  );
+
+  // The estimate can also run UNDER — nothing here assumes a direction.
+  const under = fitDrift([at({ drift: -60, in: 20000, out: 10000 }), at({ drift: null, in: 0, out: 0 })]);
+  ok('a negative drift gives a negative rate', under.rate < 0, under);
+
+  section('what the fit refuses to count');
+  {
+    // Fewer than two anchors is no interval at all: an anchor has to be
+    // CORRECTED before there is any error to measure.
+    ok('one anchor is not a measurement', fitDrift([at({ drift: 150, in: 1, out: 1 })]) === null);
+    ok('no anchors is not a measurement', fitDrift([]) === null);
+
+    // A baseline-less anchor predates baselines and has no volume to attribute
+    // its drift to. Counting it would divide a real drift by somebody else's volume.
+    ok(
+      'an anchor with no baseline is skipped',
+      fitDrift([
+        { drift: 150, baselineIn: null, baselineOut: null, baselineRules: rules },
+        at({ drift: null, in: 0, out: 0 }),
+      ]) === null,
+    );
+
+    // Rules changed mid-interval: the two totals count different things, so
+    // their difference is not a volume. This is the one that would silently
+    // produce a large wrong rate rather than no rate.
+    ok(
+      'an interval spanning a rules change is skipped',
+      fitDrift([
+        { drift: 150, baselineIn: 30000, baselineOut: 15000, baselineRules: rules },
+        { drift: null, baselineIn: 10000, baselineOut: 5000, baselineRules: { add: ['deposit'], subtract: ['payout'] } },
+      ]) === null,
+    );
+
+    // No volume, no rate — dividing a drift by zero volume is an infinity that
+    // would land on a screen as a balance.
+    ok(
+      'a zero-volume interval is skipped',
+      fitDrift([at({ drift: 150, in: 100, out: 100 }), at({ drift: null, in: 100, out: 100 })]) === null,
+    );
+    ok(
+      'and so is a negative one',
+      fitDrift([at({ drift: 150, in: 10, out: 10 }), at({ drift: null, in: 100, out: 100 })]) === null,
+    );
+
+    // An anchor with no recorded drift is the FIRST one ever entered: there was
+    // no estimate for it to be wrong against.
+    ok(
+      'an anchor with no drift is skipped',
+      fitDrift([at({ drift: null, in: 30000, out: 15000 }), at({ drift: null, in: 0, out: 0 })]) === null,
+    );
+
+    // A baseline-less anchor kills BOTH intervals touching it, not one: a
+    // volume needs a total at each end. So the good pair has to sit clear of it.
+    const mixed = fitDrift([
+      at({ drift: 150, in: 30000, out: 15000 }),
+      at({ drift: 20, in: 10000, out: 5000 }),
+      { drift: null, baselineIn: null, baselineOut: null, baselineRules: rules },
+    ]);
+    ok('one good interval past a bad one still counts', mixed?.samples === 1, mixed);
+    ok('and measures only that interval', mixed?.volume === 30000, mixed);
+  }
+
+  section('the numbers actually on the screen');
+  {
+    // ForumPay SL as reported: 10,177.71 in and 9,081.86 out since the anchor,
+    // and the portal 89.40 below the estimate. If that gap had been fitted from
+    // a previous interval of the same shape, the correction should reproduce it.
+    const volumeSince = 10177.71 + 9081.86;
+    const fitted = fitDrift([
+      at({ drift: 89.4, in: volumeSince, out: 0 }),
+      at({ drift: null, in: 0, out: 0 }),
+    ]);
+    const expected = fitted.rate * volumeSince;
+    ok(
+      'a correction fitted on one period reproduces it on an identical one',
+      Math.abs(expected - 89.4) < 0.01,
+      { rate: fitted.rate, expected },
+    );
+    // And the size of it: a fraction of a percent of what moved, which is what
+    // a fee looks like and is the sanity check on the whole idea.
+    ok('and the rate is fee-sized', fitted.rate > 0 && fitted.rate < 0.01, fitted.rate);
+  }
 }
 
 console.log(failures ? `\n${failures} failed` : '\nall good');

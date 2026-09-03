@@ -112,7 +112,8 @@ export function BalancePanel({
   // must disappear, not remove the page it sits on. Any deploy where the
   // browser holds a newer app than the API can produce exactly that shape.
   if (!balance?.movement) return null;
-  const { anchor, movement, estimate, currency, reported, drift } = balance;
+  const { anchor, movement, estimate, currency, reported, drift, expectedDrift } =
+    balance;
   const stale = (balance.ageHours ?? 0) > STALE_HOURS;
   const ignored =
     movement.ignoredDirection + movement.ignoredStatus + movement.ignoredCurrency;
@@ -159,6 +160,47 @@ export function BalancePanel({
                 note="estimated — not read from the provider"
               />
             </div>
+
+            {/* For a provider that will not report a balance — ForumPay's
+                GetBalance returns twenty swept wallets at zero and no fiat row
+                — the estimate is all there is. So the last improvement
+                available is to stop ignoring that it leans: every past
+                correction says by how much, per unit of money that moved.
+
+                Beside the estimate, never inside it. The estimate is
+                "this anchor plus these transactions", which is checkable by
+                hand against the ledger below; folding a fitted number into it
+                would end that and move a figure the desk has learned to read. */}
+            {expectedDrift && Math.abs(expectedDrift.expected) >= 0.01 ? (
+              <div className="flex flex-col gap-1 rounded-lg border border-border bg-card/40 px-3 py-2.5">
+                <span className="text-[11px] text-muted">
+                  On past form this estimate runs{" "}
+                  <span className="font-medium text-accent-orange">
+                    {expectedDrift.expected > 0 ? "high" : "low"} by about{" "}
+                    {money(Math.abs(expectedDrift.expected), currency)}
+                  </span>{" "}
+                  by now — so the balance is likely nearer{" "}
+                  <span className="tnum font-medium text-primary">
+                    {money(expectedDrift.adjusted, currency)}
+                  </span>
+                  .
+                </span>
+                {/* The sample size travels with the number, always. Two
+                    corrections is a hint; presenting it as a rate is how a
+                    guess becomes a figure somebody quotes to a provider. */}
+                <span className="text-[11px] text-muted">
+                  {(Math.abs(expectedDrift.rate) * 100).toFixed(3)}% of what
+                  moves, measured over {expectedDrift.samples} correction
+                  {expectedDrift.samples === 1 ? "" : "s"} and{" "}
+                  {money(expectedDrift.fittedOver, currency)} of volume
+                  {expectedDrift.samples < 3
+                    ? " — too few to rely on yet, but it is the direction the error has taken every time"
+                    : ""}
+                  . Fees, spread and portal handwork, none of which reach the
+                  transactions.
+                </span>
+              </div>
+            ) : null}
 
             {/* The provider's own answer, when there is one — and it is placed
                 BELOW the estimate rather than beside it because it is not a

@@ -493,6 +493,21 @@ export type BalanceView = {
   } | null;
   /** Estimate minus reported, signed. Positive = we were claiming too much. */
   drift: number | null;
+  /**
+   * What past corrections say the estimate is probably out by now.
+   *
+   * Deliberately not folded into `estimate` — see the service. The estimate
+   * stays a stated derivation you can check against the ledger; this is a
+   * correction fitted to how wrong that derivation has been, shown with the
+   * number of intervals behind it so a two-sample hint cannot pass for a rate.
+   */
+  expectedDrift: {
+    samples: number;
+    rate: number;
+    fittedOver: number;
+    expected: number;
+    adjusted: number;
+  } | null;
   /** False when no rule can classify anything — see the note on the card. */
   configured: boolean;
   ageHours: number | null;
