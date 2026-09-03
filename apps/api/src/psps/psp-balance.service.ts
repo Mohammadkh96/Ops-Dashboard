@@ -7,8 +7,13 @@ import { latestPerPayment, MAX_EVENTS } from './payment-events';
 /**
  * A balance for providers that will not tell us one.
  *
- * ForumPay's portal shows a USD figure that no documented endpoint returns —
- * GetBalance answers with swept crypto wallets, all of them near zero.
+ * ForumPay's portal shows a USD figure and GetBalance does not return it.
+ * Asked directly, it answers with twenty swept wallets — BCH, BTC, USDT and
+ * USDC across four chains — every one of them 0.00000000, and no fiat row at
+ * all. ForumPay have since confirmed in as many words that NO endpoint returns
+ * the fiat balance. That is recorded here so nobody investigates it a third
+ * time: it is not a mapping problem and there is no path to fix it.
+ *
  * Match2Pay publishes exactly two endpoints and both of them CREATE money
  * movements; there is no read API for anyone. So for these terminals there is
  * nothing to fetch, and the only figure available is the one a person reads off
@@ -221,6 +226,17 @@ export type BalanceView = {
     expected: number;
     /** The estimate with that taken off. */
     adjusted: number;
+    /**
+     * The projected drift has outgrown the largest correction ever measured.
+     *
+     * Past this point the rate is being extrapolated beyond everything it was
+     * fitted on, so the corrected figure is no better founded than the
+     * uncorrected one and the honest move is to go and read the portal. The
+     * threshold comes from the data rather than from a constant somebody chose,
+     * which matters because the right staleness for a provider doing twenty
+     * thousand a day is not the right one for a provider doing two hundred.
+     */
+    beyondExperience: boolean;
   } | null;
 };
 
@@ -488,10 +504,20 @@ export function fitDrift(anchors: Anchor[]): {
   volume: number;
   /** Total drift observed across those intervals. */
   drift: number;
+  /**
+   * The biggest single correction ever actually made, as a magnitude.
+   *
+   * The edge of experience. A projected drift larger than this is the rate
+   * being extrapolated past everything it was fitted on, and that is the point
+   * at which somebody should open the portal rather than trust the correction —
+   * a threshold the data supplies, rather than a number invented here.
+   */
+  largest: number;
 } | null {
   let totalDrift = 0;
   let totalVolume = 0;
   let samples = 0;
+  let largest = 0;
 
   // Newest first, so each anchor pairs with the one after it in the array.
   for (let i = 0; i + 1 < anchors.length; i++) {
@@ -508,6 +534,7 @@ export function fitDrift(anchors: Anchor[]): {
 
     totalDrift += curr.drift;
     totalVolume += volume;
+    largest = Math.max(largest, Math.abs(curr.drift));
     samples++;
   }
 
@@ -517,6 +544,7 @@ export function fitDrift(anchors: Anchor[]): {
     rate: totalDrift / totalVolume,
     volume: round(totalVolume),
     drift: round(totalDrift),
+    largest: round(largest),
   };
 }
 
@@ -765,6 +793,8 @@ export class PspBalanceService {
           fittedOver: fitted.volume,
           expected: round(fitted.rate * volumeSince),
           adjusted: round(estimate - fitted.rate * volumeSince),
+          beyondExperience:
+            Math.abs(fitted.rate * volumeSince) > fitted.largest,
         }
       : null;
 

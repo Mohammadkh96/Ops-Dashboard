@@ -60,12 +60,35 @@ const STALE_HOURS = 24 * 7;
  */
 export function BalanceLine({ balance }: { balance: BalanceView | null }) {
   if (!balance?.anchor || balance.estimate === null) return null;
-  const stale = (balance.ageHours ?? 0) > STALE_HOURS;
+  const { expectedDrift } = balance;
+
+  // The card and the panel must not disagree. The panel's own headline is the
+  // drift-corrected figure, and a card showing the uncorrected one beside it is
+  // two numbers for one balance — which is the thing that sends somebody to a
+  // provider's portal to find out which of our screens is lying.
+  //
+  // Corrected wins, when there is a correction: showing a figure we have
+  // MEASURED to be ninety dollars high, while holding the measurement, is not
+  // caution. It is publishing a known error.
+  const corrected =
+    expectedDrift && Math.abs(expectedDrift.expected) >= 0.01
+      ? expectedDrift
+      : null;
+  const shown = corrected ? corrected.adjusted : balance.estimate;
+
+  // Stale by what it COSTS, not by the calendar. A week was the old threshold
+  // and at the rate ForumPay actually drifts it is several hundred dollars —
+  // while a quiet provider is fine after a month. The data sets the line:
+  // once the projected drift outgrows the largest correction ever made, the
+  // correction is extrapolating and the portal is the only honest answer.
+  const stale = corrected
+    ? corrected.beyondExperience
+    : (balance.ageHours ?? 0) > STALE_HOURS;
 
   return (
     <div className="flex flex-col gap-0.5">
       <span className="tnum text-lg leading-none font-semibold">
-        ≈ {money(balance.estimate, balance.currency)}
+        ≈ {money(shown, balance.currency)}
       </span>
       <span
         className={cn(
@@ -73,8 +96,14 @@ export function BalanceLine({ balance }: { balance: BalanceView | null }) {
           stale ? "text-accent-orange" : "text-muted",
         )}
       >
-        estimated · anchored {age(balance.ageHours)}
+        {corrected ? "estimated, drift-corrected" : "estimated"} · anchored{" "}
+        {age(balance.ageHours)}
       </span>
+      {stale && corrected ? (
+        <span className="text-[11px] text-accent-orange">
+          Drifted further than we have ever measured — read the portal
+        </span>
+      ) : null}
       {/* Said out loud, because an estimate that cannot classify anything looks
           exactly like a balance that has not moved. */}
       {!balance.configured ? (
@@ -199,6 +228,19 @@ export function BalancePanel({
                   . Fees, spread and portal handwork, none of which reach the
                   transactions.
                 </span>
+                {/* The correction has its own expiry, and it is not a date.
+                    Past the largest gap ever actually measured, the rate is
+                    being extrapolated beyond everything it was fitted on and
+                    the corrected figure is no better founded than the raw one. */}
+                {expectedDrift.beyondExperience ? (
+                  <span className="flex items-start gap-1.5 text-[11px] text-accent-orange">
+                    <Info className="mt-px size-3.5 shrink-0" />
+                    That is further than this estimate has ever been corrected
+                    by, so the figure above is extrapolating. Read the portal
+                    and press Update from portal — it also gives the correction
+                    another measurement, which is what makes it sharper.
+                  </span>
+                ) : null}
               </div>
             ) : null}
 

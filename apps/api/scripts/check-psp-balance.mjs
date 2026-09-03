@@ -742,5 +742,52 @@ section('fitting how wrong this method has been');
   }
 }
 
+
+section('when the correction stops being founded on anything');
+{
+  const rules = { add: ['sell'], subtract: ['buy'], statuses: ['confirmed'] };
+  const at = (n) => ({
+    drift: n.drift,
+    baselineIn: n.in,
+    baselineOut: n.out,
+    baselineRules: rules,
+  });
+
+  // The edge of experience: the biggest gap ever actually corrected. Past it,
+  // the rate is being extrapolated beyond everything it was fitted on, and the
+  // corrected figure is no better founded than the raw one.
+  const fit = fitDrift([
+    at({ drift: 352.2, in: 40000, out: 30000 }),
+    at({ drift: 89.4, in: 12000, out: 8000 }),
+    at({ drift: null, in: 0, out: 0 }),
+  ]);
+  ok('two corrections', fit?.samples === 2, fit);
+  ok('the largest is the largest, not the latest', fit?.largest === 352.2, fit);
+
+  // Magnitude, not signed — an estimate that once ran 500 UNDER is still
+  // evidence about how far this method strays.
+  const mixedSign = fitDrift([
+    at({ drift: -500, in: 40000, out: 30000 }),
+    at({ drift: 10, in: 12000, out: 8000 }),
+    at({ drift: null, in: 0, out: 0 }),
+  ]);
+  ok('a large negative correction still counts as experience', mixedSign?.largest === 500, mixedSign);
+
+  // And the threshold the screen uses, both ways round. Inside experience the
+  // corrected figure stands; outside it the screen has to send somebody to the
+  // portal instead of quietly extrapolating.
+  const projected = (volume) => Math.abs(fit.rate * volume);
+  ok(
+    'a normal day is within what has been measured',
+    projected(19259.57) < fit.largest,
+    { projected: projected(19259.57), largest: fit.largest },
+  );
+  ok(
+    'a fortnight of the same is not',
+    projected(19259.57 * 14) > fit.largest,
+    { projected: projected(19259.57 * 14), largest: fit.largest },
+  );
+}
+
 console.log(failures ? `\n${failures} failed` : '\nall good');
 process.exit(failures ? 1 : 0);

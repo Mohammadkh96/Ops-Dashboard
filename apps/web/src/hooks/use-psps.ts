@@ -507,6 +507,12 @@ export type BalanceView = {
     fittedOver: number;
     expected: number;
     adjusted: number;
+    /**
+     * The projected drift has outgrown the largest correction ever measured, so
+     * the rate is being extrapolated past everything it was fitted on. What
+     * "stale" means for a balance — set by the data, not by a calendar.
+     */
+    beyondExperience: boolean;
   } | null;
   /** False when no rule can classify anything — see the note on the card. */
   configured: boolean;
