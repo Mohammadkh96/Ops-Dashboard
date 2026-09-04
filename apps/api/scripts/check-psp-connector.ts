@@ -17,6 +17,7 @@ import {
   sealedLength,
   SecretBoxError,
 } from '../src/common/secret-box';
+import { readRules, sameRules } from '../src/psps/psp-balance.service';
 import {
   at,
   describeStatus,
@@ -689,6 +690,56 @@ section('what is not a provider error');
   ok('an empty string is not', providerError({ err: '   ' }) === null);
   ok('a non-string is not', providerError({ error: 0 }) === null);
   ok('nothing at all is not', providerError(null) === null);
+}
+
+section('a setting this build does not know');
+{
+  // The failure this prevents costs an afternoon and looks like a broken save
+  // button. The web app and the API deploy separately, so a screen offering a
+  // setting the API has never heard of sends it, gets a 200, and reloads with
+  // the box empty — identical to "saving does not work".
+  //
+  // readRules is the normaliser, and normalising is right; what was wrong was
+  // doing it silently. These assert what it keeps and what it drops, so the
+  // set of known keys and the guard in psps.service cannot drift apart
+  // unnoticed.
+  const full = readRules({
+    currency: 'usd',
+    add: ['Sell'],
+    subtract: ['Buy'],
+    statuses: ['confirmed'],
+    signed: true,
+    feeRateIn: 0.7,
+    feeRateOut: 0.2,
+    feeFlatIn: 1.02,
+    feeFlatOut: 2.14,
+  });
+  ok('the percentages survive', full?.feeRateIn === 0.7 && full?.feeRateOut === 0.2, full);
+  ok('the flat charges survive', full?.feeFlatIn === 1.02 && full?.feeFlatOut === 2.14, full);
+  ok('the currency is upper-cased', full?.currency === 'USD', full?.currency);
+  ok('the words survive', full?.add?.[0] === 'Sell' && full?.subtract?.[0] === 'Buy', full);
+
+  // A rules object carrying ONLY a fee setting is still rules. It used to be
+  // treated as empty, which meant a terminal configured with nothing but a fee
+  // stored null and estimated nothing.
+  ok('a flat charge alone is enough to be rules', readRules({ feeFlatOut: 2.14 }) !== null);
+  ok('a rate alone is enough to be rules', readRules({ feeRateIn: 0.7 }) !== null);
+  ok('and an empty object is not', readRules({}) === null);
+
+  // Two settings that differ are not the same question, so a baseline measured
+  // under one cannot be compared with a total measured under the other.
+  ok(
+    'changing a flat charge is a change of rules',
+    !sameRules(readRules({ add: ['Sell'], feeFlatOut: 2.14 }), readRules({ add: ['Sell'], feeFlatOut: 2.5 })),
+  );
+  ok(
+    'changing a percentage is a change of rules',
+    !sameRules(readRules({ add: ['Sell'], feeRateIn: 0.7 }), readRules({ add: ['Sell'], feeRateIn: 0.9 })),
+  );
+  ok(
+    'and re-ordering words is not',
+    sameRules(readRules({ add: ['Sell', 'Refund'] }), readRules({ add: ['refund', 'sell'] })),
+  );
 }
 
 console.log(

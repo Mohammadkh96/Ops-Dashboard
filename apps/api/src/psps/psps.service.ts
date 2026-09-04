@@ -249,9 +249,50 @@ export class PspsService {
       data.endpoints = input.endpoints;
     }
     if (input.movementRules !== undefined) {
-      // Normalised on the way in rather than trusted: these words decide which
-      // way money moves on a screen the desk reads, and a stray object shape
-      // stored here would come back out as a balance nobody could explain.
+      // A SETTING THIS BUILD DOES NOT KNOW is refused, loudly, rather than
+      // dropped.
+      //
+      // Normalising on the way in is right — these words decide which way money
+      // moves on a screen the desk reads — but normalising SILENTLY has a
+      // failure mode that costs an afternoon: the web app and the API deploy
+      // separately, so a screen offering a setting the API has never heard of
+      // sends it, gets a cheerful 200, and reloads showing the box empty. That
+      // is indistinguishable from "the save button is broken", and it is what
+      // happens every single time a field is added and one of the two deploys
+      // lags or fails.
+      //
+      // Naming the key turns that into a sentence somebody can act on.
+      if (
+        input.movementRules &&
+        typeof input.movementRules === 'object' &&
+        !Array.isArray(input.movementRules)
+      ) {
+        const known = new Set([
+          'currency',
+          'add',
+          'subtract',
+          'statuses',
+          'signed',
+          'feeRateIn',
+          'feeRateOut',
+          'feeFlatIn',
+          'feeFlatOut',
+        ]);
+        const unknown = Object.entries(
+          input.movementRules as Record<string, unknown>,
+        )
+          .filter(
+            ([k, v]) =>
+              !known.has(k) && v !== undefined && v !== null && v !== '',
+          )
+          .map(([k]) => k);
+        if (unknown.length) {
+          throw new BadRequestException(
+            `This API does not know the balance setting${unknown.length > 1 ? 's' : ''} ${unknown.join(', ')}, so saving would have dropped ${unknown.length > 1 ? 'them' : 'it'} without saying so. The screen is newer than the API — redeploy the API and try again.`,
+          );
+        }
+      }
+
       // `null` clears them, which is how a balance stops estimating.
       const rules = readRules(input.movementRules);
       if (rules && rules.add?.length && rules.subtract?.length) {
