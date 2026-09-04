@@ -44,6 +44,30 @@ export class AuthController {
     return req.user;
   }
 
+  /**
+   * A fresh token for somebody still here.
+   *
+   * A session that expires on a wall clock logs out the person using it, which
+   * is the wrong thing to measure. What matters is whether anyone is still
+   * there — so the browser asks for a new token while the tab is in use, and
+   * the session rolls forward as long as it keeps asking.
+   *
+   * Behind the ordinary guard, which is what makes it safe: an EXPIRED token
+   * cannot renew itself, because the guard rejects it before this runs. So it
+   * extends a live session and cannot resurrect a dead one. Somebody who really
+   * has been away past the expiry signs in again, as they should.
+   *
+   * Re-read from the database rather than re-signing the old claims: a role
+   * changed or an account deactivated an hour ago must not survive in a token
+   * for another day because nobody signed out.
+   */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Post('refresh')
+  refresh(@Request() req: { user: { userId: string } }) {
+    return this.authService.refresh(req.user.userId);
+  }
+
   // ── the admin lock ────────────────────────────────────────────────────
   //
   // A second password in front of the Admin tab. Being signed in and being able

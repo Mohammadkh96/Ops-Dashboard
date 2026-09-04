@@ -74,6 +74,50 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [attempt]);
 
+  /**
+   * Keeps a session alive for as long as somebody is actually there.
+   *
+   * A token that expires on a wall clock signs out the person using it, which
+   * is the wrong thing to measure — and the desk's experience of it was a
+   * dashboard that had to be reloaded to come back to life. So while a tab is
+   * open and visible the browser quietly asks for a fresh one, and the session
+   * rolls forward.
+   *
+   * On becoming visible as well as on a timer, because that is the moment it
+   * matters: a laptop that slept through the night fires no intervals, and the
+   * first thing that happens on waking is a person looking at the screen.
+   *
+   * Failure here is deliberately silent. A renewal that does not land leaves
+   * the existing token exactly as it was — still valid until it is not — and
+   * an error banner about a background request nobody made would be noise. A
+   * 401 is already handled everywhere by the API client.
+   */
+  useEffect(() => {
+    if (isDemoMode || !user) return;
+    let active = true;
+
+    const renew = () => {
+      if (!getToken() || document.visibilityState !== "visible") return;
+      void apiFetch<LoginResponse>("/auth/refresh", { method: "POST" }, { retries: 1 })
+        .then((res) => {
+          if (active && res?.accessToken) setToken(res.accessToken);
+        })
+        .catch(() => undefined);
+    };
+
+    // Half an hour: often enough that a day-long token is never close to
+    // expiring while somebody works, rare enough to be invisible.
+    const timer = setInterval(renew, 30 * 60 * 1000);
+    document.addEventListener("visibilitychange", renew);
+    renew();
+
+    return () => {
+      active = false;
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", renew);
+    };
+  }, [user]);
+
   const login = async (email: string, password: string) => {
     const res = await apiFetch<LoginResponse>(
       "/auth/login",

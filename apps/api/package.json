@@ -29,6 +29,7 @@
     "check:googleflow": "npm run build && node scripts/check-google-flow.mjs",
     "check:handoverread": "npm run build && node scripts/check-handover-read.mjs",
     "check:adminlock": "npm run build && node scripts/check-admin-lock.mjs",
+    "check:session": "npm run build && node scripts/check-session.mjs",
     "check:adminusers": "npm run build && node scripts/check-admin-users.mjs",
     "check:import": "tsx scripts/check-import-export.ts",
     "check:overview": "tsx scripts/check-success-rate.ts",

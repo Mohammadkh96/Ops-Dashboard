@@ -35,8 +35,18 @@ import { JwtStrategy } from './strategies/jwt.strategy';
       useFactory: () => ({
         secret: jwtSecret(),
         signOptions: {
+          // A day, not a shift, and it slides. Eight hours is exactly one
+          // shift, so a session minted at the start of one expired in the
+          // middle of the next — and the desk's experience of that was a
+          // dashboard that had to be reloaded to work again.
+          //
+          // The browser renews this while a tab is in use (see /auth/refresh),
+          // so somebody working is never signed out; a day is what covers the
+          // gap between finishing one evening and starting the next morning.
+          // Longer than that on a token held in a browser buys nothing anyone
+          // asked for and costs something if a laptop is lost.
           expiresIn: (process.env.JWT_EXPIRES_IN ??
-            '8h') as `${number}${'s' | 'm' | 'h' | 'd'}`,
+            '24h') as `${number}${'s' | 'm' | 'h' | 'd'}`,
         },
       }),
     }),
