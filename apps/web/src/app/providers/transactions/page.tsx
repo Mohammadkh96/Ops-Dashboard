@@ -12,6 +12,7 @@ import { useToast } from "@/components/ui/toast";
 import { parseCsv } from "@/lib/csv";
 import { BalancePanel } from "@/components/providers/balance";
 import {
+  fetchAllLedgerRows,
   usePspAutoSync,
   usePspBalance,
   usePspImport,
@@ -83,6 +84,7 @@ function Ledger() {
   const id = useSearchParams().get("id");
 
   const [offset, setOffset] = useState(0);
+  const [exporting, setExporting] = useState(false);
   const [status, setStatus] = useState("");
   const [direction, setDirection] = useState("");
   const [from, setFrom] = useState("");
@@ -378,13 +380,48 @@ function Ledger() {
         >
           Clear
         </Button>
+        {/* Everything the filter matches, not the page on screen. It used to
+            be the page, which made "filter to last month and export" produce a
+            hundred rows out of fifteen thousand without saying so — and a
+            reconciliation run against that file would have agreed with itself
+            and been wrong. */}
         <Button
           variant="secondary"
           size="sm"
-          onClick={() => downloadCsv(rows, extraColumns)}
+          disabled={exporting || !id}
+          onClick={() => {
+            if (!id) return;
+            setExporting(true);
+            fetchAllLedgerRows(id, {
+              status: status || undefined,
+              direction: direction || undefined,
+              from: from || undefined,
+              to: to || undefined,
+              search: search || undefined,
+            })
+              .then((all) => {
+                downloadCsv(all.rows, extraColumns);
+                if (all.truncated) {
+                  toast({
+                    kind: "warning",
+                    title: `Exported ${all.rows.length.toLocaleString()} of ${all.total.toLocaleString()} rows`,
+                    description:
+                      "The export stops at 25,000 rows. Narrow the dates and export again — a short file that looks complete is worse than two files.",
+                  });
+                }
+              })
+              .catch((e: unknown) =>
+                toast({
+                  kind: "warning",
+                  title: "Could not export",
+                  description: e instanceof Error ? e.message : String(e),
+                }),
+              )
+              .finally(() => setExporting(false));
+          }}
         >
           <Download className="size-3.5" />
-          CSV
+          {exporting ? "Exporting…" : "CSV"}
         </Button>
       </div>
 

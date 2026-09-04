@@ -330,6 +330,38 @@ export function usePspLedger(id: string | null, q: LedgerQuery) {
   });
 }
 
+/**
+ * Every row a filter matches, not just the page on screen.
+ *
+ * For the export, and it is not a nicety. The CSV button sat beside the filters
+ * and wrote out the hundred rows being displayed — so "filter to last month and
+ * export" produced a hundred rows out of fifteen thousand, silently, and any
+ * reconciliation done against it would have agreed with itself and been wrong.
+ *
+ * Paged rather than asked for in one request because the API caps a page, and
+ * bounded because this is a browser holding it all in memory: at the cap it
+ * stops and says so, which is the difference between a short file and a short
+ * file that looks complete.
+ */
+export async function fetchAllLedgerRows(
+  id: string,
+  q: LedgerQuery,
+  max = 25_000,
+): Promise<{ rows: LedgerRow[]; total: number; truncated: boolean }> {
+  const page = 500;
+  const out: LedgerRow[] = [];
+  let total = 0;
+  for (let offset = 0; offset < max; offset += page) {
+    const got = await apiFetch<LedgerPage>(
+      `/psps/${id}/ledger${ledgerParams({ ...q, limit: page, offset })}`,
+    );
+    total = got.total;
+    out.push(...got.rows);
+    if (out.length >= got.total || !got.rows.length) break;
+  }
+  return { rows: out, total, truncated: out.length < total };
+}
+
 export function usePspLedgerSummary(id: string | null) {
   return useQuery<LedgerSummary>({
     queryKey: ["psp-ledger-summary", id],
