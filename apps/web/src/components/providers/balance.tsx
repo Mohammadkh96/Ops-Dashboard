@@ -350,6 +350,24 @@ export function BalancePanel({
                 {/* The sample size travels with the number, always. Two
                     corrections is a hint; presenting it as a rate is how a
                     guess becomes a figure somebody quotes to a provider. */}
+                {/* The difference between ForumPay and Match2Pay, said out
+                    loud, because the recipe for one is actively wrong for the
+                    other. ForumPay's gap is a fee and dividing it by volume
+                    solves it. Match2Pay's was 5.5% of volume on a quiet
+                    weekend and 2.50 the window before — that is a balance
+                    being revalued, not a provider charging, and a percentage
+                    of throughput models it worst when the desk is quietest. */}
+                {!expectedDrift.looksLikeFee ? (
+                  <span className="flex items-start gap-1.5 text-[11px] text-accent-orange">
+                    <Info className="mt-px size-3.5 shrink-0" />
+                    That is {(Math.abs(expectedDrift.rate) * 100).toFixed(1)}%
+                    of what moved, which no provider charges — so this gap is
+                    not a fee and a percentage will not fix it. Something is
+                    moving this balance other than the transactions: a holding
+                    being revalued, or money moved inside the portal. Re-anchor
+                    more often rather than modelling it.
+                  </span>
+                ) : null}
                 <span className="text-[11px] text-muted">
                   {(Math.abs(expectedDrift.rate) * 100).toFixed(3)}% of what
                   moves, measured over {expectedDrift.samples} correction

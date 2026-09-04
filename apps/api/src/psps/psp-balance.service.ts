@@ -283,6 +283,23 @@ export type BalanceView = {
     /** The estimate with that taken off. */
     adjusted: number;
     /**
+     * Whether this drift behaves like a charge on what moved at all.
+     *
+     * The question ForumPay and Match2Pay answer differently, and the reason
+     * one recipe must not be carried to the other. ForumPay's gap is 0.3-0.5%
+     * of volume across windows whose mix swung by a factor of two — a fee, and
+     * a solvable one. Match2Pay's most recent gap is USD 23.35 against USD
+     * 426.66 of volume, which is 5.5%: no payment provider charges that, and
+     * the same terminal drifted only USD 2.50 the window before. A number that
+     * does not scale with volume is not a rate, and projecting it as one would
+     * be worst exactly when the desk is quietest.
+     *
+     * What it IS, for a provider whose balance is a valuation of crypto
+     * holdings rather than a fiat ledger, is the market moving. Nothing in a
+     * transaction list can see that, and no percentage of throughput models it.
+     */
+    looksLikeFee: boolean;
+    /**
      * The projected drift has outgrown the largest correction ever measured.
      *
      * Past this point the rate is being extrapolated beyond everything it was
@@ -750,6 +767,17 @@ export function fitDrift(anchors: Anchor[]): {
  */
 const DRIFT_WINDOW = 12;
 
+/**
+ * The most a drift can be, as a share of what moved, and still be a fee.
+ *
+ * Two percent is far above any payment provider's cut — ForumPay's is 0.7% and
+ * 0.2% — and far below what a drift looks like when it is driven by something
+ * other than throughput. It exists to separate those two cases, not to shave
+ * the boundary: a gap of 5.5% of volume, as Match2Pay showed on a quiet
+ * weekend, is a different phenomenon rather than an expensive provider.
+ */
+const MAX_FEE_RATE = 0.02;
+
 @Injectable()
 export class PspBalanceService {
   constructor(private readonly prisma: PrismaService) {}
@@ -1042,6 +1070,7 @@ export class PspBalanceService {
           adjusted: round(estimate - fitted.rate * volumeSince),
           beyondExperience:
             Math.abs(fitted.rate * volumeSince) > fitted.largest,
+          looksLikeFee: Math.abs(fitted.rate) <= MAX_FEE_RATE,
         }
       : null;
 

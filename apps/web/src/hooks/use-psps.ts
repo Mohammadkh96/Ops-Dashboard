@@ -520,6 +520,13 @@ export type BalanceView = {
      * "stale" means for a balance — set by the data, not by a calendar.
      */
     beyondExperience: boolean;
+    /**
+     * Whether this drift behaves like a charge on what moved. False when it
+     * does not scale with volume at all — a balance that is a valuation rather
+     * than a ledger, which no percentage of throughput can model. See the
+     * service.
+     */
+    looksLikeFee: boolean;
   } | null;
   /**
    * The FEE MAPPING moved since the baseline was measured, so the fee is held
