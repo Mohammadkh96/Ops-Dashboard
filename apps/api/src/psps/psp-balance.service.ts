@@ -800,12 +800,49 @@ export class PspBalanceService {
     // The baseline. Stored on the anchor when it was entered — or, for anchors
     // entered before that column existed, reconstructed from the date window so
     // nothing changes under somebody until they re-enter the balance.
+    // THE STORED BASELINE, PLUS WHAT ARRIVED LATE.
+    //
+    // baselineIn/baselineOut are a snapshot of what was STORED the moment the
+    // balance was entered — and a row can reach us long after its money moved.
+    // A full sync, a CSV import, or a provider reporting a payout a day late
+    // all add rows that belong BEFORE the anchor. Absent from the snapshot and
+    // present in "now", each one reads as movement since, when in truth it is
+    // already inside the figure somebody copied off the portal. One late payout
+    // is enough to move a balance by tens of thousands.
+    //
+    // So the snapshot is topped up with exactly those rows. The discriminator
+    // is not the date on its own — a payment PENDING at the anchor and settling
+    // afterwards carries a date before the anchor too, on a provider that
+    // stamps settlement at the original time, and that one IS movement. What
+    // separates them is whether we already held the row, which firstSeenAt
+    // answers and nothing else does.
+    const arrived =
+      anchor.baselineIn !== null && anchor.baselineOut !== null
+        ? applyRules(
+            feeMappingChanged
+              ? withoutFees(
+                  await this.groupsFromStore(conn.id, {
+                    arrivedAfter: new Date(anchor.enteredAt),
+                    until: since,
+                  }),
+                )
+              : await this.groupsFromStore(conn.id, {
+                  arrivedAfter: new Date(anchor.enteredAt),
+                  until: since,
+                }),
+            rules,
+            currency,
+          )
+        : null;
+
     const stored =
       anchor.baselineIn !== null && anchor.baselineOut !== null
         ? {
-            in: anchor.baselineIn,
-            out: anchor.baselineOut,
-            fees: feeMappingChanged ? 0 : (anchor.baselineFees ?? 0),
+            in: anchor.baselineIn + (arrived?.in ?? 0),
+            out: anchor.baselineOut + (arrived?.out ?? 0),
+            fees: feeMappingChanged
+              ? 0
+              : (anchor.baselineFees ?? 0) + (arrived?.fees ?? 0),
             counted: 0,
           }
         : null;
@@ -928,25 +965,41 @@ export class PspBalanceService {
    */
   private async groupsFromStore(
     connectionId: string,
-    opts: { until?: Date } = {},
+    opts: { until?: Date; arrivedAfter?: Date } = {},
   ): Promise<Group[]> {
+    // Everything whose money had moved by `until`. Stated positively — SQL's
+    // three-valued logic makes the negation drop every row with a null
+    // settledAt, which is every row until somebody maps the field.
+    const movedBy = (until: Date) => [
+      { settledAt: { lte: until } },
+      { settledAt: null, occurredAt: { lte: until } },
+      // A row that cannot be placed in time belongs in the baseline rather
+      // than outside it. It is in the current total either way, so leaving it
+      // out here would make it look like movement — a payment with an
+      // unreadable date would silently inflate the balance, having never
+      // moved at all.
+      { settledAt: null, occurredAt: null },
+    ];
+
     const rows = await this.prisma.pspTransaction.groupBy({
       by: ['direction', 'status', 'currency'],
-      where: opts.until
+      where: opts.arrivedAfter
         ? {
             connectionId,
+            // Rows we did NOT hold when the balance was entered...
+            firstSeenAt: { gt: opts.arrivedAfter },
+            // ...whose money had already moved by the time it was true.
+            // Undated rows are deliberately excluded here: they are already
+            // inside the stored baseline's own undated handling, and adding
+            // them again would double them.
             OR: [
               { settledAt: { lte: opts.until } },
               { settledAt: null, occurredAt: { lte: opts.until } },
-              // A row that cannot be placed in time belongs in the baseline
-              // rather than outside it. It is in the current total either way,
-              // so leaving it out here would make it look like movement — a
-              // payment with an unreadable date would silently inflate the
-              // balance, having never moved at all.
-              { settledAt: null, occurredAt: null },
             ],
           }
-        : { connectionId },
+        : opts.until
+          ? { connectionId, OR: movedBy(opts.until) }
+          : { connectionId },
       _sum: { amount: true, fee: true },
       _count: { _all: true },
     });

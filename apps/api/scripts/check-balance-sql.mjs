@@ -378,6 +378,103 @@ try {
        Math.abs(good.movement.subtracted - 202) < 0.005, good.movement);
   }
 
+  section('a transaction that arrives AFTER the anchor but happened BEFORE it');
+  {
+    // The hole in a stored baseline, and the one that can move a balance by
+    // tens of thousands rather than tens.
+    //
+    // baselineIn/baselineOut are a snapshot of what was STORED when the balance
+    // was entered. A row that reaches us later but whose money moved earlier is
+    // absent from that snapshot and present in "now" — so it reads as movement
+    // since the anchor, when in truth it is already inside the figure somebody
+    // copied off the portal. A full sync, a CSV import, or a provider that
+    // simply reported a payout late all produce exactly this.
+    //
+    // It has to be told apart from the case the baseline exists FOR: a payment
+    // pending at the anchor and confirmed afterwards, which IS movement. The
+    // discriminator is not the date alone — it is whether we already held the
+    // row. firstSeenAt says that.
+    const late = await prisma.pspConnection.create({
+      data: {
+        terminal: 'ForumPay_LateArrival',
+        provider: 'forumpay',
+        label: 'ForumPay, a row that arrives late',
+        ledgerSource: 'provider',
+        movementRules: {
+          currency: 'USD',
+          add: ['Sell'],
+          subtract: ['Buy'],
+          statuses: ['confirmed'],
+        },
+      },
+    });
+    const at = (iso, o) =>
+      prisma.pspTransaction.create({
+        data: {
+          connectionId: late.id,
+          terminal: late.terminal,
+          currency: 'USD',
+          status: 'confirmed',
+          raw: {},
+          occurredAt: new Date(iso),
+          settledAt: new Date(iso),
+          ...o,
+        },
+      });
+
+    const day = (n) => `2026-09-0${n}T09:00:00.000Z`;
+    await at(day(1), { externalId: 'old-1', direction: 'Sell', amount: '1000.00' });
+
+    // The balance is read off the portal on the 2nd. It already contains
+    // everything that had moved by then, including a payout on the 1st that we
+    // had not yet been told about.
+    await svc.setAnchor(late.id, {
+      amount: '100000.00',
+      currency: 'USD',
+      takenAt: '2026-09-02T09:42:00.000Z',
+    });
+
+    // A day later a sync brings in that payout, dated the 1st.
+    await at(day(1), { externalId: 'late-payout', direction: 'Buy', amount: '30000.00' });
+
+    const b = await svc.balance(late.id);
+    ok('a payout that happened before the anchor is not movement',
+       Math.abs(b.movement.subtracted) < 0.005, b.movement);
+    ok('so the estimate does not fall by it',
+       Math.abs(b.estimate - 100000) < 0.005, b.estimate);
+
+    // And the case this must not break: a payment we ALREADY held, pending at
+    // the anchor, that settles afterwards. Same dates, different history.
+    const pending = await prisma.pspTransaction.create({
+      data: {
+        connectionId: late.id,
+        terminal: late.terminal,
+        currency: 'USD',
+        status: 'waiting',
+        raw: {},
+        externalId: 'pending-at-anchor',
+        direction: 'Sell',
+        amount: '500.00',
+        occurredAt: new Date(day(2)),
+      },
+    });
+    await svc.setAnchor(late.id, {
+      amount: '100000.00',
+      currency: 'USD',
+      takenAt: '2026-09-03T09:00:00.000Z',
+    });
+    await prisma.pspTransaction.update({
+      where: { id: pending.id },
+      // Confirms later, but ForumPay stamps it settled at the ORIGINAL time —
+      // before the anchor. By date alone this looks retroactive; it is not.
+      data: { status: 'confirmed', settledAt: new Date(day(2)) },
+    });
+
+    const c = await svc.balance(late.id);
+    ok('but a payment we already held, settling later, still counts',
+       Math.abs(c.movement.added - 500) < 0.005, c.movement);
+  }
+
   section('MT: both states of a payment carry the SAME occurredAt');
   {
     // Verbatim from the ledger screen: one second, two states. This is why no
@@ -504,10 +601,18 @@ try {
     // Imported FIRST, then anchored — which is the order that matters. The
     // baseline is what is already counting, so anchoring first would leave it
     // at nothing and the whole import would land as movement.
+    //
+    // And anchored AS OF THE EXPORT'S CUTOFF, not as of the moment it was
+    // typed. That distinction used to be invisible and is now load-bearing: a
+    // balance is true at the instant the figure was true, and BEEM's running
+    // balance comes out of an export that ends when the export ends. Date it
+    // "now" and every payment between the cutoff and now is treated as already
+    // inside it — which is exactly right for a figure read at "now", and
+    // exactly wrong for one read off a two-day-old file.
     const { balance: b } = await svc.setAnchor(beem.id, {
       amount: '25160.845871',
       currency: 'USDC',
-      takenAt: new Date().toISOString(),
+      takenAt: '2026-08-30T20:16:57.000Z',
     });
     ok('anchoring after the import starts movement at zero',
        b.movement.net === 0, b.movement);
@@ -532,11 +637,27 @@ try {
        after.movement.subtracted === 0 && after.movement.added === 500,
        after.movement);
 
+    // The other half of the same rule, and the failure it prevents: a row that
+    // arrives later but whose money moved BEFORE the figure was true is already
+    // inside that figure. Counting it again is how one late payout moves a
+    // balance by tens of thousands.
+    await prisma.pspTransaction.create({
+      data: {
+        connectionId: beem.id, terminal: beem.terminal,
+        externalId: 'PAYMENT_OUT-late', direction: 'PAYMENT_OUT',
+        status: 'COMPLETE', currency: 'USDC', amount: '-9000.00',
+        occurredAt: new Date('2026-08-29T10:00:00Z'), raw: {},
+      },
+    });
+    const late = await svc.balance(beem.id);
+    ok('a payout dated before the anchor does not move it',
+       Math.abs(late.movement.net - 500) < 0.005, late.movement);
+
     const dir = await new PspSyncService(prisma, svc).directory();
     const card = dir.find((d) => d.id === beem.id);
     ok('its card opens even with no endpoint configured',
        card?.hasTransactions === true, card);
-    ok('and reports what it holds', card?.stored === 5, card?.stored);
+    ok('and reports what it holds', card?.stored === 6, card?.stored);
   }
 
   console.log(failures ? `\n${failures} failed` : '\nall good');
