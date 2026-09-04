@@ -71,6 +71,35 @@ export type MovementRules = {
    * they read the same either way.
    */
   signed?: boolean;
+  /**
+   * What the provider takes, as a percentage, when it never tells us per
+   * payment.
+   *
+   * ForumPay does not. It reports no fiat fee on a transaction and publishes no
+   * balance, so for a month the estimate simply ran high — and it ran high in a
+   * shape that turned out to be exactly solvable. Two corrections against the
+   * portal, over windows whose inflow share differed by nearly a factor of two:
+   *
+   *   0.70% x 10,177.71 in + 0.20% x  9,081.86 out =  89.41   (portal said 89.40)
+   *   0.70% x 15,623.18 in + 0.20% x 39,372.14 out = 188.11   (portal said 188.08)
+   *
+   * Two equations in two unknowns always fit, so the fit alone is worth
+   * nothing. What makes it real is that the payout rate landed on 0.1999% and
+   * ForumPay had been separately observed charging 3.14 on a 1,570.45 payout —
+   * 0.1999% — a number that was not used to derive it. A coincidence would not
+   * survive that, nor the mix moving from 53% inbound to 28%.
+   *
+   * SEPARATE RATES, not one rate on volume, because they are not one charge. A
+   * provider prices taking money in and sending money out differently, and a
+   * single blended rate fitted to one week's mix is wrong the moment the mix
+   * changes — which is precisely what a heavy payout day is.
+   *
+   * A MODEL, and labelled one everywhere it shows. It is not a reading, and it
+   * stops being true the day the provider changes its pricing; the drift
+   * recorded at every re-anchor is what says so.
+   */
+  feeRateIn?: number;
+  feeRateOut?: number;
 };
 
 /** One anchor, as the API reports it. */
@@ -336,6 +365,20 @@ function has(list: string[] | undefined, value: string | null): boolean {
   return list.some((x) => x.trim().toLowerCase() === v);
 }
 
+/**
+ * A percentage, as a person would type one: 0.7 means 0.7%.
+ *
+ * Bounded at 100 and at zero. A negative fee is a rebate nobody has, and a
+ * fee over 100% is a typo — most likely 0.7 entered as a fraction and then
+ * multiplied, or a decimal point in the wrong place. Either would quietly
+ * remove the whole balance, so neither is accepted.
+ */
+function rate(v: unknown): number | undefined {
+  const n = typeof v === 'number' ? v : Number(v);
+  if (!Number.isFinite(n) || n <= 0 || n > 100) return undefined;
+  return n;
+}
+
 /** Whatever was stored, read as rules. Nothing here trusts the JSON's shape. */
 export function readRules(value: unknown): MovementRules | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -353,12 +396,16 @@ export function readRules(value: unknown): MovementRules | null {
     subtract: words(r.subtract),
     statuses: words(r.statuses),
     signed: r.signed === true,
+    feeRateIn: rate(r.feeRateIn),
+    feeRateOut: rate(r.feeRateOut),
   };
   const empty =
     !rules.currency &&
     !rules.add?.length &&
     !rules.subtract?.length &&
-    !rules.statuses?.length;
+    !rules.statuses?.length &&
+    rules.feeRateIn === undefined &&
+    rules.feeRateOut === undefined;
   return empty ? null : rules;
 }
 
@@ -377,6 +424,8 @@ export function sameRules(
 ): boolean {
   const norm = (r: MovementRules | null) =>
     JSON.stringify({
+      feeRateIn: r?.feeRateIn ?? null,
+      feeRateOut: r?.feeRateOut ?? null,
       currency: r?.currency ?? null,
       add: [...(r?.add ?? [])].map((w) => w.toLowerCase()).sort(),
       subtract: [...(r?.subtract ?? [])].map((w) => w.toLowerCase()).sort(),
@@ -435,6 +484,51 @@ type Totals = {
  * connection with no transactions endpoint, no fields, or no fee among them all
  * mean the same thing here — nothing is being read.
  */
+/**
+ * How the fee is being arrived at, as one comparable string.
+ *
+ * Covers both ways it can be: a field mapped on the endpoint, and a modelled
+ * percentage in the rules. Either changing makes a stored baseline's fee total
+ * incomparable with the current one, and the failure is identical — a whole
+ * history of fees subtracted from one day of movement. One signature catches
+ * both, and the anchor stores it.
+ */
+/**
+ * Which authority decides the fee for a connection.
+ *
+ * From the CONFIGURATION, never from the data. Inferring it from the data was
+ * tried twice and is wrong both ways round: per group it lets one payment with
+ * a reported fee suppress the model for everything grouped with it, and per
+ * reading it flips the meaning of a balance the first time a provider happens
+ * to report one fee.
+ *
+ * Reported is the default and the fallback, because a provider that states its
+ * own cut is the authority on it. Percentages are used only when they are set
+ * AND no field is mapped — configuring both is a contradiction, and resolving
+ * it toward the provider's own figure is the safe direction: at worst a
+ * modelled charge goes uncounted, where the other way round charges the same
+ * payment twice.
+ */
+export function feeModeOf(
+  endpoints: unknown,
+  rules: MovementRules | null,
+): FeeMode {
+  if (feePathOf(endpoints)) return 'reported';
+  return rules?.feeRateIn || rules?.feeRateOut ? 'modelled' : 'reported';
+}
+
+export function feeSignature(
+  endpoints: unknown,
+  rules: MovementRules | null,
+): string | null {
+  const parts = [
+    feePathOf(endpoints) ?? '',
+    rules?.feeRateIn ? String(rules.feeRateIn) : '',
+    rules?.feeRateOut ? String(rules.feeRateOut) : '',
+  ];
+  return parts.some(Boolean) ? parts.join('|') : null;
+}
+
 export function feePathOf(endpoints: unknown): string | null {
   if (!endpoints || typeof endpoints !== 'object') return null;
   const txn = (endpoints as Record<string, unknown>).transactions;
@@ -447,15 +541,31 @@ export function feePathOf(endpoints: unknown): string | null {
 }
 
 /**
- * The same groups with every fee zeroed.
+ * What the provider takes on this group, when it never says.
  *
- * Used when the fee mapping has moved since a baseline was measured. Zeroing
- * here rather than at the query keeps both sides of the subtraction going
- * through the identical code path, which is the property that makes the
- * difference mean anything at all.
+ * Applied to the AMOUNT, not to the net, and by direction: a deposit is charged
+ * the inbound rate and a payout the outbound one. Those are different numbers
+ * on every provider that has been looked at, and a single blended rate fitted
+ * to one week is wrong as soon as the mix changes — which a heavy payout day
+ * is, by definition.
+ *
+ * Magnitudes throughout. A signed ledger reports an outflow as a negative and
+ * a percentage of a negative is a credit, which would turn a charge into a gain
+ * on exactly the rows that cost the most.
  */
-function withoutFees(groups: Group[]): Group[] {
-  return groups.map((g) => (g.fees === 0 ? g : { ...g, fees: 0 }));
+function modelFee(g: Group, rules: MovementRules | null): number {
+  const inRate = rules?.feeRateIn ?? 0;
+  const outRate = rules?.feeRateOut ?? 0;
+  if (!inRate && !outRate) return 0;
+
+  const amount = Math.abs(g.sum);
+  if (!amount) return 0;
+
+  // Which side this group sits on. With signed amounts the data decides;
+  // otherwise the word does.
+  const inbound = rules?.signed ? g.sum >= 0 : has(rules?.add, g.direction);
+
+  return (amount * (inbound ? inRate : outRate)) / 100;
 }
 
 /**
@@ -466,10 +576,28 @@ function withoutFees(groups: Group[]): Group[] {
  * Using the same code for both is the point — two totals computed by two
  * routines would differ for reasons nobody could find.
  */
+/**
+ * How the fee is arrived at for one reading.
+ *
+ * "reported"  — the provider tells us, per payment, and is the authority on it.
+ * "modelled"  — it does not, so the configured percentages stand in.
+ * "none"      — the two sides of the subtraction disagree about which of those
+ *               was in force, so no fee may be claimed at all until a fresh
+ *               balance is entered.
+ *
+ * An explicit mode rather than something inferred from the data, because the
+ * first attempt DID infer it — per group, skipping the model wherever a
+ * reported fee was present — and a group is an aggregate of many rows. One
+ * payment carrying a reported fee then suppressed the model for every other
+ * payment grouped with it, quietly removing most of the charge.
+ */
+export type FeeMode = 'reported' | 'modelled' | 'none';
+
 function applyRules(
   groups: Group[],
   rules: MovementRules | null,
   currency: string | null,
+  feeMode: FeeMode = 'modelled',
 ): Totals {
   const t: Totals = {
     in: 0,
@@ -497,8 +625,15 @@ function applyRules(
       // A fee leaves the balance whichever way the payment went — the provider
       // charges for taking a deposit and for sending a payout alike — so it is
       // an outflow regardless of direction, never netted against the amount.
-      t.fees += g.fees;
-      t.out += g.fees;
+      //
+      const fee =
+        feeMode === 'reported'
+          ? g.fees
+          : feeMode === 'modelled'
+            ? modelFee(g, rules)
+            : 0;
+      t.fees += fee;
+      t.out += fee;
       if (rules?.signed) {
         // The provider already put the sign in the amount, so which list the
         // word sits in decides only WHETHER it counts. Split by sign for the
@@ -780,22 +915,25 @@ export class PspBalanceService {
     // Whether the fee is being read from the same place it was when the
     // baseline was measured. Compared before anything is summed, because the
     // answer decides whether the fee may be counted at all.
-    const feePathNow = feePathOf(conn.endpoints);
+    const feePathNow = feeSignature(conn.endpoints, rules);
     const anchorKnowsFeePath =
       anchor.baselineFeePath !== null || anchor.baselineFees !== null;
     const feeMappingChanged =
       anchorKnowsFeePath && (anchor.baselineFeePath ?? null) !== feePathNow;
 
-    const rawGroups =
+    const groups =
       conn.ledgerSource === 'paymaxis'
         ? await this.groupsFromPaymaxis(conn.terminal)
         : await this.groupsFromStore(conn.id);
-    // Held out entirely, not half-applied. A fee total measured under one
-    // mapping minus a total measured under another is not a fee — it is the
-    // whole history of one of them, and subtracting it would drop the balance
-    // by about a thousand dollars in a direction that looks like a correction.
-    const groups = feeMappingChanged ? withoutFees(rawGroups) : rawGroups;
-    const now = applyRules(groups, rules, currency);
+    // Which authority is in force for this reading. A fee field mapped on the
+    // endpoint means the provider reports its own cut and is the authority on
+    // it; otherwise the configured percentages stand in. And when the two sides
+    // of the subtraction were measured under different answers to that
+    // question, neither may be used.
+    const feeMode: FeeMode = feeMappingChanged
+      ? 'none'
+      : feeModeOf(conn.endpoints, rules);
+    const now = applyRules(groups, rules, currency, feeMode);
 
     // The baseline. Stored on the anchor when it was entered — or, for anchors
     // entered before that column existed, reconstructed from the date window so
@@ -819,19 +957,13 @@ export class PspBalanceService {
     const arrived =
       anchor.baselineIn !== null && anchor.baselineOut !== null
         ? applyRules(
-            feeMappingChanged
-              ? withoutFees(
-                  await this.groupsFromStore(conn.id, {
-                    arrivedAfter: new Date(anchor.enteredAt),
-                    until: since,
-                  }),
-                )
-              : await this.groupsFromStore(conn.id, {
-                  arrivedAfter: new Date(anchor.enteredAt),
-                  until: since,
-                }),
+            await this.groupsFromStore(conn.id, {
+              arrivedAfter: new Date(anchor.enteredAt),
+              until: since,
+            }),
             rules,
             currency,
+            feeMode,
           )
         : null;
 
@@ -849,17 +981,12 @@ export class PspBalanceService {
     const baseline =
       stored ??
       applyRules(
-        feeMappingChanged
-          ? withoutFees(
-              conn.ledgerSource === 'paymaxis'
-                ? await this.groupsFromPaymaxis(conn.terminal, { until: since })
-                : await this.groupsFromStore(conn.id, { until: since }),
-            )
-          : conn.ledgerSource === 'paymaxis'
-            ? await this.groupsFromPaymaxis(conn.terminal, { until: since })
-            : await this.groupsFromStore(conn.id, { until: since }),
+        conn.ledgerSource === 'paymaxis'
+          ? await this.groupsFromPaymaxis(conn.terminal, { until: since })
+          : await this.groupsFromStore(conn.id, { until: since }),
         rules,
         currency,
+        feeMode,
       );
 
     const added = round(now.in - baseline.in);
@@ -1140,6 +1267,7 @@ export class PspBalanceService {
         : await this.groupsFromStore(connectionId),
       rules,
       rules?.currency ?? currency,
+      feeModeOf(conn.endpoints, rules),
     );
 
     const row = await this.prisma.pspBalanceAnchor.create({
@@ -1157,7 +1285,7 @@ export class PspBalanceService {
         baselineRules: rules ?? Prisma.DbNull,
         // Recorded so a later change of fee mapping is detectable. Without it
         // the fee difference silently compares two different measurements.
-        baselineFeePath: feePathOf(conn.endpoints),
+        baselineFeePath: feeSignature(conn.endpoints, rules),
         // Signed: positive means we were claiming MORE than the portal shows,
         // which is the direction unrecorded fees push it and the one worth
         // noticing.

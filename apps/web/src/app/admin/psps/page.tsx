@@ -1440,6 +1440,76 @@ function MovementRulesEditor({
             </span>
           </label>
 
+          {/* What the provider takes and never says.
+              ForumPay does not report a fiat fee on a transaction and publishes
+              no balance, so for a month its estimate simply ran high — and in a
+              shape that turned out to be exactly solvable from two corrections
+              against its portal: 0.70% of what comes in, 0.20% of what goes
+              out, landing within three cents of a 198,000 balance.
+              Two rates rather than one on volume, because they are not one
+              charge: a provider prices taking money in and sending it out
+              differently, and a blended rate fitted to one week's mix is wrong
+              the moment a heavy payout day arrives. */}
+          <div className="flex flex-col gap-1">
+            <span className="text-[11px] font-medium">
+              What this provider takes, when it never tells us
+            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="flex items-center gap-1.5">
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max="100"
+                  value={rules.feeRateIn ?? ""}
+                  onChange={(e) =>
+                    set({
+                      feeRateIn: e.target.value
+                        ? Number(e.target.value)
+                        : undefined,
+                    })
+                  }
+                  placeholder="0.70"
+                  className="w-20 rounded-lg border border-border bg-card px-2 py-1.5 text-xs outline-none focus:border-border-strong"
+                />
+                <span className="text-[11px] text-muted">% of money in</span>
+              </label>
+              <label className="flex items-center gap-1.5">
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max="100"
+                  value={rules.feeRateOut ?? ""}
+                  onChange={(e) =>
+                    set({
+                      feeRateOut: e.target.value
+                        ? Number(e.target.value)
+                        : undefined,
+                    })
+                  }
+                  placeholder="0.20"
+                  className="w-20 rounded-lg border border-border bg-card px-2 py-1.5 text-xs outline-none focus:border-border-strong"
+                />
+                <span className="text-[11px] text-muted">% of money out</span>
+              </label>
+            </div>
+            <span className="text-[11px] text-muted">
+              A MODEL, not a reading — it stops being true the day the provider
+              changes its pricing, and the drift recorded at each re-anchor is
+              what says so. Leave both empty where the provider reports its own
+              fee per payment; map that field instead, because its figure beats
+              any percentage of ours.
+            </span>
+            {/* Setting a rate has the same shape as mapping a fee late: the
+                stored baseline holds fees measured at the old one. */}
+            <span className="text-[11px] text-accent-orange">
+              After changing either of these, press “Update from portal” once.
+              Until you do, no fee is counted at all — the balance these are
+              measured against was taken under the old ones.
+            </span>
+          </div>
+
           <label className="flex flex-col gap-1">
             <span className="text-[11px] font-medium">Currency</span>
             <input

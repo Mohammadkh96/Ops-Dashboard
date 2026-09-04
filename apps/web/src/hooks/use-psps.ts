@@ -62,6 +62,13 @@ export type MovementRules = {
    * does. Then add and subtract mean only "counts" — see the service.
    */
   signed?: boolean;
+  /**
+   * What the provider takes as a percentage, where it never reports a fee.
+   * Separate rates because taking money in and sending it out are priced
+   * differently — see the service.
+   */
+  feeRateIn?: number;
+  feeRateOut?: number;
 };
 
 /** A provider connection. Never carries the credential — only whether one is stored. */

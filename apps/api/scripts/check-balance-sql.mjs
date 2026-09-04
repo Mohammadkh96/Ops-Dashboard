@@ -67,7 +67,7 @@ try {
 
   const { PrismaClient } = require('../dist/generated/prisma/client');
   const { PrismaPg } = require('@prisma/adapter-pg');
-  const { PspBalanceService } = require('../dist/src/psps/psp-balance.service');
+  const { PspBalanceService, readRules } = require('../dist/src/psps/psp-balance.service');
   const { PspSyncService } = require('../dist/src/psps/psp-sync.service');
   prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: url }) });
 
@@ -473,6 +473,113 @@ try {
     const c = await svc.balance(late.id);
     ok('but a payment we already held, settling later, still counts',
        Math.abs(c.movement.added - 500) < 0.005, c.movement);
+  }
+
+  section("ForumPay: the cut it takes and never reports");
+  {
+    // The real numbers, and the whole reason this exists. ForumPay reports no
+    // fiat fee per payment and publishes no balance, so for a month the
+    // estimate simply ran high. Two corrections against their portal, over
+    // windows whose inflow share differed by nearly a factor of two, solve it:
+    //
+    //   0.70% x 10,177.71 in + 0.20% x  9,081.86 out =  89.41  (portal: 89.40)
+    //   0.70% x 15,623.18 in + 0.20% x 39,372.14 out = 188.11  (portal: 188.08)
+    //
+    // Corroborated by a number that was NOT used to derive it: ForumPay was
+    // separately seen charging 3.14 on a 1,570.45 payout, which is 0.1999%.
+    const rated = await prisma.pspConnection.create({
+      data: {
+        terminal: 'ForumPay_Rates',
+        provider: 'forumpay',
+        label: 'ForumPay with modelled rates',
+        ledgerSource: 'provider',
+        movementRules: {
+          currency: 'USD',
+          add: ['Sell'],
+          subtract: ['Buy'],
+          statuses: ['confirmed'],
+          feeRateIn: 0.7,
+          feeRateOut: 0.2,
+        },
+      },
+    });
+    const put = (o) =>
+      prisma.pspTransaction.create({
+        data: {
+          connectionId: rated.id,
+          terminal: rated.terminal,
+          currency: 'USD',
+          status: 'confirmed',
+          raw: {},
+          occurredAt: new Date(),
+          settledAt: new Date(),
+          ...o,
+        },
+      });
+
+    await svc.setAnchor(rated.id, {
+      amount: '221977.91',
+      currency: 'USD',
+      takenAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+
+    // The second window as it actually stood on the dashboard.
+    await put({ externalId: 'in', direction: 'Sell', amount: '15623.18' });
+    await put({ externalId: 'out', direction: 'Buy', amount: '39372.14' });
+
+    const b = await svc.balance(rated.id);
+    ok('the deposit rate is charged on deposits',
+       Math.abs(b.movement.fees - (0.007 * 15623.18 + 0.002 * 39372.14)) < 0.005,
+       b.movement);
+    // The number on the operator's screen, against the number on ForumPay's.
+    ok('and the estimate lands on the portal figure',
+       Math.abs(b.estimate - 198040.87) < 0.05, b.estimate);
+    ok('the fee is an outflow, not a smaller deposit',
+       Math.abs(b.movement.added - 15623.18) < 0.005, b.movement);
+
+    // Configuring percentages says "this provider does not report its cut". A
+    // stray reported fee must NOT then be added on top, or the same payment is
+    // charged twice — once by the provider and once by us.
+    await put({ externalId: 'reported', direction: 'Buy', amount: '1000.00', fee: '5.00' });
+    const c = await svc.balance(rated.id);
+    ok('a stray reported fee is not charged on top of the model',
+       Math.abs(c.movement.fees - (b.movement.fees + 0.002 * 1000)) < 0.005,
+       { before: b.movement.fees, after: c.movement.fees });
+
+    // Changing a rate is the same trap as mapping a fee field late: the stored
+    // baseline holds fees measured at the OLD rate.
+    await prisma.pspConnection.update({
+      where: { id: rated.id },
+      data: {
+        movementRules: {
+          currency: 'USD',
+          add: ['Sell'],
+          subtract: ['Buy'],
+          statuses: ['confirmed'],
+          feeRateIn: 0.9,
+          feeRateOut: 0.2,
+        },
+      },
+    });
+    const d = await svc.balance(rated.id);
+    ok('changing a rate is caught like changing the mapping',
+       d.feeMappingChanged === true, d.feeMappingChanged);
+    ok('and no fee is claimed until the balance is entered again',
+       d.movement.fees === 0, d.movement);
+  }
+
+  section('a fee rate that is not a rate');
+  {
+    const bad = (v) => readRules({ add: ['Sell'], feeRateIn: v })?.feeRateIn;
+    ok('a percentage is read as one', bad(0.7) === 0.7);
+    ok('zero is not a rate', bad(0) === undefined);
+    ok('a negative is not a rate', bad(-1) === undefined);
+    // 0.7 typed as a fraction and then read as a percent is 0.007% - harmless.
+    // The dangerous typo is the other way: a decimal point misplaced, or a
+    // fraction multiplied, which would take the whole balance out.
+    ok('over 100% is a typo, not a fee', bad(700) === undefined);
+    ok('a word is not a rate', bad('lots') === undefined);
+    ok('nothing is not a rate', bad(undefined) === undefined);
   }
 
   section('MT: both states of a payment carry the SAME occurredAt');
