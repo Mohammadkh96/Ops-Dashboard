@@ -1078,7 +1078,23 @@ export class PspBalanceService {
       anchor.baselineIn !== null && anchor.baselineOut !== null
         ? {
             in: anchor.baselineIn + (arrived?.in ?? 0),
-            out: anchor.baselineOut + (arrived?.out ?? 0),
+            // THE FEE IS INSIDE baselineOut. applyRules adds it there —
+            // `t.out += fee` — so a stored baselineOut is payments-out PLUS
+            // every fee that counted at the moment the balance was entered.
+            //
+            // Which means holding the fee out of `now` is only half the job.
+            // Leaving it inside the baseline makes the subtraction
+            //   now.out (no fees) − baselineOut (with fees)
+            // short by the whole history of them, and an outflow that should
+            // have been about 2,000 came out as MINUS 3,807 — money added to a
+            // balance by an hour of payouts. The estimate then ran nearly six
+            // thousand high, and the correction before it was off by 5,676 in
+            // exactly the same direction, which is this bug already baked into
+            // an anchor.
+            out:
+              anchor.baselineOut -
+              (feeMappingChanged ? (anchor.baselineFees ?? 0) : 0) +
+              (arrived?.out ?? 0),
             fees: feeMappingChanged
               ? 0
               : (anchor.baselineFees ?? 0) + (arrived?.fees ?? 0),

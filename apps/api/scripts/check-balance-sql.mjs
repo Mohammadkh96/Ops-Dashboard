@@ -724,6 +724,103 @@ try {
        Math.abs(b.movement.fees - 9 * 2.141) < 0.01, b.movement.fees);
   }
 
+  section('a fee held out must come out of the baseline too');
+  {
+    // Straight off the screen. ForumPay SL, anchored an hour earlier, showed
+    //     in 400.02   out -3,807.23   movement +4,207.25
+    // A NEGATIVE outflow: an hour of payouts adding money to the balance.
+    //
+    // applyRules puts the fee inside `out` (t.out += fee), so a stored
+    // baselineOut is payments-out PLUS every fee counted at the anchor. Holding
+    // the fee out of `now` while leaving it inside the baseline makes the
+    // subtraction short by the whole history of them.
+    const fp = await prisma.pspConnection.create({
+      data: {
+        terminal: 'ForumPay_FeeHeldOut',
+        provider: 'forumpay',
+        label: 'ForumPay, fee mapping changed after anchoring',
+        ledgerSource: 'provider',
+        movementRules: {
+          currency: 'USD',
+          add: ['Sell'],
+          subtract: ['Buy'],
+          statuses: ['confirmed'],
+        },
+        endpoints: {
+          transactions: {
+            path: '/GetTransactions/',
+            fields: { amount: 'invoice_amount', fee: 'processing_fee' },
+          },
+        },
+      },
+    });
+    const put = (id, dir, amt, fee) =>
+      prisma.pspTransaction.create({
+        data: {
+          connectionId: fp.id,
+          terminal: fp.terminal,
+          externalId: id,
+          direction: dir,
+          status: 'confirmed',
+          currency: 'USD',
+          amount: amt,
+          fee,
+          raw: {},
+          occurredAt: new Date(),
+          settledAt: new Date(),
+        },
+      });
+
+    // A month of history, each payout carrying a fee. Deliberately MORE fee
+    // history than the hour's payouts — which is the real proportion: ForumPay
+    // had about 5,865 of fees behind it against 2,057 of payouts in the hour,
+    // and that is what turned the outflow negative rather than merely short.
+    for (let i = 0; i < 200; i++) await put(`hist-${i}`, 'Buy', '100.00', '30.00');
+
+    const { anchor: a } = await svc.setAnchor(fp.id, {
+      amount: '198040.87',
+      currency: 'USD',
+      takenAt: new Date(Date.now() - 3_600_000).toISOString(),
+    });
+    ok('the baseline carries the fees inside its outflow',
+       Math.abs((a.baselineOut ?? 0) - (200 * 100 + 200 * 30)) < 0.005, a.baselineOut);
+    ok('and records them separately too', Math.abs((a.baselineFees ?? 0) - 6000) < 0.005, a.baselineFees);
+
+    // An hour of real payouts: 2,057.38 out, 400.02 in.
+    await put('out-1', 'Buy', '807.38', '4.65');
+    await put('out-2', 'Buy', '700.00', '0.11');
+    await put('out-3', 'Buy', '200.00', '4.64');
+    await put('out-4', 'Buy', '350.00', '4.65');
+    await put('in-1', 'Sell', '150.00', '2.68');
+    await put('in-2', 'Sell', '250.02', '2.68');
+
+    // Now the fee mapping is changed, which is what the operator had just done.
+    await prisma.pspConnection.update({
+      where: { id: fp.id },
+      data: {
+        endpoints: {
+          transactions: {
+            path: '/GetTransactions/',
+            fields: { amount: 'invoice_amount', fee: 'fee' },
+          },
+        },
+      },
+    });
+
+    const b = await svc.balance(fp.id);
+    ok('the fee mapping change is noticed', b.feeMappingChanged === true, b.feeMappingChanged);
+    // THE assertion. Four payouts leave money; they cannot add it.
+    ok('an hour of payouts is an OUTflow', b.movement.subtracted > 0, b.movement);
+    ok('of exactly what was paid out, fees held aside',
+       Math.abs(b.movement.subtracted - 2057.38) < 0.005, b.movement);
+    ok('and the deposits are unaffected',
+       Math.abs(b.movement.added - 400.02) < 0.005, b.movement);
+    ok('so the balance FALLS over an hour of net payouts',
+       b.estimate < 198040.87, b.estimate);
+    ok('by the net of the two',
+       Math.abs(b.estimate - (198040.87 + 400.02 - 2057.38)) < 0.005, b.estimate);
+  }
+
   section('MT: both states of a payment carry the SAME occurredAt');
   {
     // Verbatim from the ledger screen: one second, two states. This is why no
