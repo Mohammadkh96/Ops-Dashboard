@@ -625,11 +625,16 @@ section('fitting how wrong this method has been');
   // An anchor as fitDrift reads one: what it corrected by, and the cumulative
   // in/out totals at the moment it was taken.
   const rules = { add: ['sell'], subtract: ['buy'], statuses: ['confirmed'] };
+  // Newest first, a day apart. The span matters now: an interval with no
+  // readable time between its two anchors cannot be measured per hour, so it
+  // is skipped — and a fixture with no dates would silently measure nothing.
+  let clock = Date.parse('2026-09-04T00:00:00Z');
   const at = (n) => ({
     drift: n.drift,
     baselineIn: n.in,
     baselineOut: n.out,
     baselineRules: rules,
+    takenAt: new Date((clock -= 86_400_000) + 86_400_000).toISOString(),
   });
 
   // Newest first, as the service passes them. Two anchors, one interval:
@@ -747,11 +752,16 @@ section('fitting how wrong this method has been');
 section('when the correction stops being founded on anything');
 {
   const rules = { add: ['sell'], subtract: ['buy'], statuses: ['confirmed'] };
+  // Newest first, a day apart. The span matters now: an interval with no
+  // readable time between its two anchors cannot be measured per hour, so it
+  // is skipped — and a fixture with no dates would silently measure nothing.
+  let clock = Date.parse('2026-09-04T00:00:00Z');
   const at = (n) => ({
     drift: n.drift,
     baselineIn: n.in,
     baselineOut: n.out,
     baselineRules: rules,
+    takenAt: new Date((clock -= 86_400_000) + 86_400_000).toISOString(),
   });
 
   // The edge of experience: the biggest gap ever actually corrected. Past it,
@@ -888,6 +898,53 @@ section('records that do not all look alike');
 
   ok('no records is no candidates', numericTotals([]).length === 0);
   ok('records with no numbers are no candidates', numericTotals([{ a: 'x' }]).length === 0);
+}
+
+
+section('a balance that moves on its own, not on its throughput');
+{
+  const rules = { add: ['DEPOSIT'], subtract: ['WITHDRAWAL'], statuses: ['Completed'] };
+  const at = (n) => ({
+    drift: n.drift,
+    baselineIn: n.in,
+    baselineOut: n.out,
+    baselineRules: rules,
+    takenAt: n.takenAt,
+  });
+
+  // Match2Pay as observed. Its USD figure is a valuation of crypto holdings,
+  // so it drifts with the market and barely notices the payments: 23.35 of
+  // drift against 426.66 of volume over 44 hours, and 2.50 the window before.
+  const mt = fitDrift([
+    at({ drift: 23.35, in: 168.19, out: 258.47, takenAt: '2026-09-04T05:42:00.000Z' }),
+    at({ drift: 2.50, in: 0, out: 0, takenAt: '2026-09-02T09:42:00.000Z' }),
+    at({ drift: null, in: 0, out: 0, takenAt: '2026-08-31T09:42:00.000Z' }),
+  ]);
+  ok('it spans the hours between the anchors', Math.abs((mt?.hours ?? 0) - 44) < 0.01, mt?.hours);
+  ok('and 5.5% of volume is not a fee', Math.abs(mt.rate) > 0.02, mt.rate);
+  ok('per hour is the readable unit', Math.abs(mt.perHour - 23.35 / 44) < 0.001, mt.perHour);
+
+  // ForumPay, for contrast: the same fit, a rate a provider could charge.
+  const fp = fitDrift([
+    at({ drift: 188.08, in: 15623.18, out: 39372.14, takenAt: '2026-09-04T05:42:00.000Z' }),
+    at({ drift: null, in: 0, out: 0, takenAt: '2026-09-02T09:42:00.000Z' }),
+  ]);
+  ok('ForumPay fits inside the fee ceiling', Math.abs(fp.rate) <= 0.02, fp.rate);
+
+  // The failure the two bases exist to prevent, stated in money. A volume rate
+  // fitted on a busy window predicts almost nothing on a quiet one — which is
+  // precisely when a valuation-driven balance has drifted most.
+  const quietVolume = 50;
+  ok(
+    'a volume rate would predict almost nothing on a quiet day',
+    mt.rate * quietVolume < 3,
+    mt.rate * quietVolume,
+  );
+  ok(
+    'while the time basis still expects a day of movement',
+    Math.abs(mt.perHour * 24 - 12.7) < 0.2,
+    mt.perHour * 24,
+  );
 }
 
 console.log(failures ? `\n${failures} failed` : '\nall good');

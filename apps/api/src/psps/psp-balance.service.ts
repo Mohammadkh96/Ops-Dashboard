@@ -274,8 +274,20 @@ export type BalanceView = {
   expectedDrift: {
     /** Intervals behind the rate. Two is a hint, not a rate. */
     samples: number;
+    /**
+     * Which quantity the drift is projected from.
+     *
+     * "volume" — a charge on what moved, so a rate on throughput projects it.
+     * "time"   — a balance that moves on its own, where throughput is nearly
+     *            irrelevant and hours are what accumulate.
+     */
+    basis: 'volume' | 'time';
     /** Fraction of gross volume. Positive = the estimate runs high. */
     rate: number;
+    /** Drift per day, which is the readable form when the basis is time. */
+    perDay: number;
+    /** Hours the fit spans. */
+    fittedOverHours: number;
     /** Volume the rate was fitted over — the weight to put on it. */
     fittedOver: number;
     /** rate × the volume since this anchor, in the balance currency. */
@@ -713,6 +725,11 @@ export function fitDrift(anchors: Anchor[]): {
   volume: number;
   /** Total drift observed across those intervals. */
   drift: number;
+  /** Hours the fit spans, so a drift driven by time rather than volume can be
+   * expressed in the unit that actually drives it. */
+  hours: number;
+  /** Drift per hour. Meaningful when a balance moves without transactions. */
+  perHour: number;
   /**
    * The biggest single correction ever actually made, as a magnitude.
    *
@@ -727,6 +744,7 @@ export function fitDrift(anchors: Anchor[]): {
   let totalVolume = 0;
   let samples = 0;
   let largest = 0;
+  let totalHours = 0;
 
   // Newest first, so each anchor pairs with the one after it in the array.
   for (let i = 0; i + 1 < anchors.length; i++) {
@@ -741,17 +759,25 @@ export function fitDrift(anchors: Anchor[]): {
       curr.baselineIn - prev.baselineIn + (curr.baselineOut - prev.baselineOut);
     if (!(volume > 0)) continue;
 
+    const hours =
+      (new Date(curr.takenAt).getTime() - new Date(prev.takenAt).getTime()) /
+      3_600_000;
+    if (!(hours > 0)) continue;
+
     totalDrift += curr.drift;
     totalVolume += volume;
+    totalHours += hours;
     largest = Math.max(largest, Math.abs(curr.drift));
     samples++;
   }
 
-  if (!samples || totalVolume <= 0) return null;
+  if (!samples || totalVolume <= 0 || totalHours <= 0) return null;
   return {
     samples,
     rate: totalDrift / totalVolume,
     volume: round(totalVolume),
+    hours: totalHours,
+    perHour: totalDrift / totalHours,
     drift: round(totalDrift),
     largest: round(largest),
   };
@@ -1061,16 +1087,41 @@ export class PspBalanceService {
         ? null
         : fitDrift(history);
     const volumeSince = m.added + m.subtracted;
+    // WHICH THING DRIVES THE DRIFT, decided by whether a fee-shaped answer is
+    // even arithmetically possible.
+    //
+    // ForumPay's gap is 0.3-0.5% of what moved, so it scales with throughput
+    // and a rate projects it. Match2Pay's most recent gap was 5.5% of what
+    // moved — no provider charges that, and the window before it drifted 2.50
+    // on a comparable trickle. Its USD figure is a valuation of crypto
+    // holdings, so it moves when the market moves and barely notices the
+    // payments at all.
+    //
+    // Projecting a valuation-driven drift as a percentage of volume is not a
+    // slightly worse model, it is an inverted one: it predicts near-nothing on
+    // a quiet weekend, which is exactly when such a balance has drifted most.
+    // So above the fee ceiling the same history is re-read per HOUR, which is
+    // the unit that actually moves it.
+    const hoursSince = Math.max(0, (Date.now() - since.getTime()) / 3_600_000);
+    const looksLikeFee = fitted ? Math.abs(fitted.rate) <= MAX_FEE_RATE : true;
+    const expected = fitted
+      ? looksLikeFee
+        ? fitted.rate * volumeSince
+        : fitted.perHour * hoursSince
+      : 0;
+
     const expectedDrift = fitted
       ? {
           samples: fitted.samples,
+          basis: looksLikeFee ? ('volume' as const) : ('time' as const),
           rate: fitted.rate,
+          perDay: round(fitted.perHour * 24),
           fittedOver: fitted.volume,
-          expected: round(fitted.rate * volumeSince),
-          adjusted: round(estimate - fitted.rate * volumeSince),
-          beyondExperience:
-            Math.abs(fitted.rate * volumeSince) > fitted.largest,
-          looksLikeFee: Math.abs(fitted.rate) <= MAX_FEE_RATE,
+          fittedOverHours: round(fitted.hours),
+          expected: round(expected),
+          adjusted: round(estimate - expected),
+          beyondExperience: Math.abs(expected) > fitted.largest,
+          looksLikeFee,
         }
       : null;
 
@@ -1399,7 +1450,12 @@ export class PspBalanceService {
   async explainDrift(connectionId: string) {
     const conn = await this.prisma.pspConnection.findUnique({
       where: { id: connectionId },
-      select: { id: true, ledgerSource: true },
+      select: {
+        id: true,
+        terminal: true,
+        ledgerSource: true,
+        movementRules: true,
+      },
     });
     if (!conn) throw new BadRequestException('No such PSP connection.');
 
@@ -1413,14 +1469,9 @@ export class PspBalanceService {
       to: null,
       transactions: 0,
       candidates: [] as never[],
+      statuses: [] as never[],
       note,
     });
-
-    if (conn.ledgerSource !== 'provider') {
-      return nothing(
-        'This terminal’s transactions come from Paymaxis, which reports no per-payment fee, so there is no field here to find.',
-      );
-    }
 
     const [curr, prev] = await this.prisma.pspBalanceAnchor.findMany({
       where: { connectionId },
@@ -1439,21 +1490,114 @@ export class PspBalanceService {
     }
 
     const target = Number(curr.drift);
-    const rows = await this.prisma.pspTransaction.findMany({
-      where: {
-        connectionId,
-        // Placed by settlement where the provider reports one, because that is
-        // when the money — and its fee — actually moved.
-        OR: [
-          { settledAt: { gt: prev.takenAt, lte: curr.takenAt } },
-          {
-            settledAt: null,
-            occurredAt: { gt: prev.takenAt, lte: curr.takenAt },
-          },
-        ],
-      },
-      select: { raw: true },
-    });
+    const rules = readRules(conn.movementRules);
+
+    const rows =
+      conn.ledgerSource === 'paymaxis'
+        ? await this.windowFromPaymaxis(
+            conn.terminal,
+            prev.takenAt,
+            curr.takenAt,
+          )
+        : (
+            await this.prisma.pspTransaction.findMany({
+              where: {
+                connectionId,
+                // Placed by settlement where the provider reports one, because
+                // that is when the money — and its fee — actually moved.
+                OR: [
+                  { settledAt: { gt: prev.takenAt, lte: curr.takenAt } },
+                  {
+                    settledAt: null,
+                    occurredAt: { gt: prev.takenAt, lte: curr.takenAt },
+                  },
+                ],
+              },
+              select: {
+                raw: true,
+                status: true,
+                direction: true,
+                amount: true,
+                currency: true,
+              },
+            })
+          ).map((r) => ({
+            raw: r.raw,
+            status: r.status,
+            direction: r.direction,
+            amount: num(r.amount),
+            currency: r.currency,
+          }));
+
+    // WHAT IF WE COUNTED THIS TOO.
+    //
+    // The other half of the question, and the only half that applies to a
+    // terminal whose ledger arrives through Paymaxis — there is no per-payment
+    // fee to find there, but there is a far larger suspect: a status that is
+    // not being counted and should be.
+    //
+    // Match2Pay is the case. Roughly 38% of its stored payments sit in
+    // "Awaiting Webhook", which is where a payment stays for ever when its
+    // completion callback never arrives. A WITHDRAWAL that completed and lost
+    // its callback took money out that our ledger never subtracted — an
+    // estimate too high, by exactly the value of the lost callbacks. Both MT
+    // terminals drifted about 9% of their outflow in the same window, on
+    // volumes that differ nineteen-fold, which is what an integration-wide
+    // callback loss looks like and is not what any fee looks like.
+    //
+    // So: for every status NOT currently counted, what would including it do
+    // to the gap. The one that closes it is the answer.
+    const counted = (st: string | null) =>
+      !rules?.statuses?.length || has(rules.statuses, st);
+    const buckets = new Map<
+      string,
+      {
+        status: string | null;
+        direction: string | null;
+        sum: number;
+        count: number;
+      }
+    >();
+    for (const r of rows) {
+      if (counted(r.status)) continue;
+      if (
+        rules?.currency &&
+        (r.currency ?? '').toUpperCase() !== rules.currency
+      )
+        continue;
+      const key = JSON.stringify([r.status, r.direction]);
+      const b = buckets.get(key) ?? {
+        status: r.status,
+        direction: r.direction,
+        sum: 0,
+        count: 0,
+      };
+      b.sum += r.amount ?? 0;
+      b.count++;
+      buckets.set(key, b);
+    }
+
+    const statuses = [...buckets.values()]
+      .map((b) => {
+        // Counting an outflow lowers the estimate and so closes a positive
+        // gap; counting an inflow raises it and widens one.
+        const inbound = rules?.signed
+          ? b.sum >= 0
+          : has(rules?.add, b.direction);
+        const magnitude = Math.abs(b.sum);
+        const remaining = inbound ? target + magnitude : target - magnitude;
+        return {
+          status: b.status,
+          direction: b.direction,
+          count: b.count,
+          sum: round(magnitude),
+          /** The gap that would be left if these were counted. */
+          leaves: round(remaining),
+          closes: round(Math.abs(target) - Math.abs(remaining)),
+        };
+      })
+      .sort((a, b) => Math.abs(a.leaves) - Math.abs(b.leaves))
+      .slice(0, 12);
 
     const totals = numericTotals(rows.map((r) => r.raw));
     const candidates = totals
@@ -1483,10 +1627,62 @@ export class PspBalanceService {
       to: curr.takenAt.toISOString(),
       transactions: rows.length,
       candidates,
+      statuses,
       note: rows.length
         ? null
         : 'No transactions are stored in that window, so there is nothing to add up. Sync the ledger and try again.',
     };
+  }
+
+  /**
+   * The payments that moved in one window, from what Paymaxis imported.
+   *
+   * Collapsed to the latest state per payment first, for the reason the whole
+   * ledger is: PaymentEvent is an event log, and MT's PENDING and COMPLETED
+   * rows carry the SAME occurredAt. Counting events would put one payment in
+   * two status buckets and report a backlog that does not exist.
+   */
+  private async windowFromPaymaxis(
+    terminal: string,
+    from: Date,
+    to: Date,
+  ): Promise<
+    {
+      raw: unknown;
+      status: string | null;
+      direction: string | null;
+      amount: number | null;
+      currency: string | null;
+    }[]
+  > {
+    const rows = await this.prisma.paymentEvent.findMany({
+      where: { terminal, occurredAt: { gt: from, lte: to } },
+      orderBy: [{ occurredAt: 'desc' }, { receivedAt: 'desc' }],
+      take: MAX_EVENTS,
+      select: {
+        id: true,
+        paymentId: true,
+        externalId: true,
+        occurredAt: true,
+        receivedAt: true,
+        type: true,
+        state: true,
+        currency: true,
+        amount: true,
+      },
+    });
+    return latestPerPayment(rows).map((r) => {
+      const e = r as (typeof rows)[number];
+      return {
+        // Paymaxis events carry no provider record of their own here, so there
+        // is no field to search — only the status question.
+        raw: undefined,
+        status: e.state,
+        direction: e.type,
+        amount: num(e.amount),
+        currency: e.currency,
+      };
+    });
   }
 
   /** Every anchor entered, newest first — the drift history. */

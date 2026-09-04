@@ -627,6 +627,22 @@ export type DriftExplanation = {
     missBy: number;
     covers: number | null;
   }[];
+  /**
+   * What including an uncounted status would do to the gap.
+   *
+   * The other half of the question, and the only half that applies to a
+   * Paymaxis-sourced terminal: there is no per-payment fee to find, but a
+   * withdrawal stuck in "Awaiting Webhook" took money out that was never
+   * subtracted. See the service.
+   */
+  statuses: {
+    status: string | null;
+    direction: string | null;
+    count: number;
+    sum: number;
+    leaves: number;
+    closes: number;
+  }[];
 };
 
 export function useExplainDrift(id: string, enabled: boolean) {

@@ -91,13 +91,23 @@ function DriftExplainer({
   if (!data) return null;
 
   // Nothing to search is not a failure and must not read like one. It happens
-  // to every terminal until a balance has been corrected twice, and to every
-  // Paymaxis-sourced one for ever.
-  if (data.note || !data.candidates.length) {
+  // to every terminal until a balance has been corrected twice.
+  if (data.note) {
+    return <p className="text-[11px] text-muted">{data.note}</p>;
+  }
+
+  // A status that is not being counted and should be. Ranked by what would be
+  // LEFT of the gap after counting it, because that is the question — not which
+  // bucket is biggest, but which one explains the money.
+  const wouldClose = data.statuses.filter(
+    (st) => st.closes > 0 && Math.abs(st.leaves) < Math.abs(data.target) * 0.25,
+  );
+
+  if (!data.candidates.length && !data.statuses.length) {
     return (
       <p className="text-[11px] text-muted">
-        {data.note ??
-          "None of the stored fields carries a number, so there is nothing to add up."}
+        Nothing in the stored records adds up to this gap — neither a reported
+        field nor an uncounted status.
       </p>
     );
   }
@@ -116,7 +126,72 @@ function DriftExplainer({
         entered.
       </span>
 
-      {found.length ? (
+      {/* Put FIRST when it explains the gap, because it is the larger and
+          more actionable finding of the two. A withdrawal that completed and
+          lost its callback took real money out; a missing fee field is a
+          rounding error beside it. */}
+      {wouldClose.length ? (
+        <div className="flex flex-col gap-1">
+          <span className="text-[11px] text-accent-orange">
+            Money moved that nothing here counted. Including{" "}
+            <span className="font-medium">
+              {wouldClose[0].status ?? "these"}
+            </span>{" "}
+            {wouldClose[0].direction ? `${wouldClose[0].direction} ` : ""}rows
+            would leave {money(Math.abs(wouldClose[0].leaves), currency)} of the
+            gap instead of {money(Math.abs(data.target), currency)}.
+          </span>
+          <span className="text-[11px] text-muted">
+            A payment sits in a status like that when its completion callback
+            never arrived — the money left the provider, and our ledger never
+            subtracted it. Chase the missing callbacks before counting the
+            status, though: counting it also counts the ones that genuinely did
+            not complete.
+          </span>
+          <div className="overflow-x-auto">
+            <table className="w-full text-[11px]">
+              <thead className="text-muted">
+                <tr className="text-left">
+                  <th className="py-1 pr-3 font-medium">Status</th>
+                  <th className="py-1 pr-3 font-medium">Direction</th>
+                  <th className="py-1 pr-3 text-right font-medium">Worth</th>
+                  <th className="py-1 pr-3 text-right font-medium">Rows</th>
+                  <th className="py-1 text-right font-medium">Gap left</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.statuses.slice(0, 6).map((st) => (
+                  <tr
+                    key={`${st.status}-${st.direction}`}
+                    className={cn(
+                      "border-t border-border",
+                      st.closes > 0 ? "text-primary" : "text-muted",
+                    )}
+                  >
+                    <td className="py-1 pr-3">{st.status ?? "—"}</td>
+                    <td className="py-1 pr-3">{st.direction ?? "—"}</td>
+                    <td className="tnum py-1 pr-3 text-right">
+                      {st.sum.toLocaleString(undefined, {
+                        minimumFractionDigits: 2,
+                        maximumFractionDigits: 2,
+                      })}
+                    </td>
+                    <td className="tnum py-1 pr-3 text-right">{st.count}</td>
+                    <td className="tnum py-1 text-right">
+                      {st.leaves.toLocaleString(undefined, {
+                        minimumFractionDigits: 2,
+                        maximumFractionDigits: 2,
+                      })}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
+      {!data.candidates.length ? null : found.length ? (
         <span className="text-[11px] text-accent-green">
           {found.length === 1 ? "This field adds up to it" : "These add up to it"}
           . Map it as the Fee field under Configure → this provider →
@@ -130,7 +205,7 @@ function DriftExplainer({
         </span>
       )}
 
-      <div className="overflow-x-auto">
+      <div className={cn("overflow-x-auto", !data.candidates.length && "hidden")}>
         <table className="w-full text-[11px]">
           <thead className="text-muted">
             <tr className="text-left">
