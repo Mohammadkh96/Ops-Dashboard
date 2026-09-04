@@ -63,6 +63,28 @@ const DEFAULT_PAGE_SIZE = 50;
 /** How many stored records to read when listing the fields a provider sends. */
 const SAMPLE = 200;
 
+/**
+ * The instant a "to" date stops meaning what a person meant by it.
+ *
+ * A date input labelled "to" and set to the 4th means "through the 4th". Read
+ * literally, "2026-09-04" is midnight AT THE START of the 4th, so `lte` that
+ * excludes the entire day the person asked for — and does it silently.
+ *
+ * This is not theoretical tidiness. Exporting a ledger "to 4 September" to
+ * reconcile it against a provider's own record produced a file with nothing at
+ * all from the 4th in it, while the provider's file had a full day. Ten
+ * completed withdrawals appeared to be missing that were never missing, and
+ * the wrong conclusion was one step away.
+ *
+ * A date with a time in it is left exactly as written: somebody who typed an
+ * instant meant that instant.
+ */
+function endOfDay(value: string): Date {
+  const d = new Date(value);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value.trim())) return d;
+  return new Date(d.getTime() + 24 * 60 * 60 * 1000 - 1);
+}
+
 @Injectable()
 export class PspSyncService {
   private readonly log = new Logger(PspSyncService.name);
@@ -497,7 +519,7 @@ export class PspSyncService {
     if (q.from || q.to) {
       where.occurredAt = {
         ...(q.from ? { gte: new Date(q.from) } : {}),
-        ...(q.to ? { lte: new Date(q.to) } : {}),
+        ...(q.to ? { lte: endOfDay(q.to) } : {}),
       };
     }
     if (q.search?.trim()) {
@@ -600,7 +622,7 @@ export class PspSyncService {
     if (q.from || q.to) {
       where.occurredAt = {
         ...(q.from ? { gte: new Date(q.from) } : {}),
-        ...(q.to ? { lte: new Date(q.to) } : {}),
+        ...(q.to ? { lte: endOfDay(q.to) } : {}),
       };
     }
     if (q.search?.trim()) {

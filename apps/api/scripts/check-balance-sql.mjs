@@ -582,6 +582,60 @@ try {
     ok('nothing is not a rate', bad(undefined) === undefined);
   }
 
+  section('"to 4 September" includes the 4th');
+  {
+    // A date input labelled "to" and set to the 4th means through the 4th.
+    // Read literally it is midnight at the START of the 4th, so `lte` that
+    // dropped the whole day — silently, which is the part that matters.
+    //
+    // It cost a real conclusion. A ledger exported "to 4 September" to
+    // reconcile against Match2Pay's own file came out with nothing from the
+    // 4th in it while theirs had a full day, and ten completed withdrawals
+    // looked missing that were never missing.
+    const dated = await prisma.pspConnection.create({
+      data: {
+        terminal: 'ForumPay_Dates',
+        provider: 'forumpay',
+        label: 'ForumPay, date filtering',
+        ledgerSource: 'provider',
+      },
+    });
+    const on = (iso, id) =>
+      prisma.pspTransaction.create({
+        data: {
+          connectionId: dated.id,
+          terminal: dated.terminal,
+          externalId: id,
+          currency: 'USD',
+          status: 'confirmed',
+          direction: 'Buy',
+          amount: '10.00',
+          raw: {},
+          occurredAt: new Date(iso),
+        },
+      });
+    await on('2026-09-03T12:00:00Z', 'third');
+    await on('2026-09-04T00:00:00Z', 'fourth-midnight');
+    await on('2026-09-04T05:57:00Z', 'fourth-morning');
+    await on('2026-09-04T23:59:59Z', 'fourth-last-second');
+    await on('2026-09-05T00:00:01Z', 'fifth');
+
+    const sync = new PspSyncService(prisma, svc);
+    const got = await sync.list(dated.id, { from: '2026-09-03', to: '2026-09-04' });
+    const ids = got.rows.map((r) => r.externalId).sort();
+    ok('the whole of the named day is included',
+       ids.join(',') === 'fourth-last-second,fourth-midnight,fourth-morning,third',
+       ids);
+    ok('and the next day is not', !ids.includes('fifth'), ids);
+
+    // An explicit instant is still honoured exactly — somebody who typed a
+    // time meant that time.
+    const precise = await sync.list(dated.id, { to: '2026-09-04T01:00:00Z' });
+    ok('a time given explicitly is not widened to a day',
+       precise.rows.every((r) => r.externalId !== 'fourth-morning'),
+       precise.rows.map((r) => r.externalId));
+  }
+
   section('MT: both states of a payment carry the SAME occurredAt');
   {
     // Verbatim from the ledger screen: one second, two states. This is why no
