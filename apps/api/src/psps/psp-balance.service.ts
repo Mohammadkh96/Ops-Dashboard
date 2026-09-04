@@ -143,6 +143,9 @@ export type Anchor = {
   baselineOut: number | null;
   /** How much of baselineOut was the provider's cut. Display only. */
   baselineFees: number | null;
+  /** How many payments made up each side of the totals. Null before 0026. */
+  baselineCountIn: number | null;
+  baselineCountOut: number | null;
   baselineRules: MovementRules | null;
   /**
    * Which field the fee was read from when this baseline was measured.
@@ -343,6 +346,23 @@ export type BalanceView = {
      */
     beyondExperience: boolean;
   } | null;
+  /**
+   * What the provider appears to be charging, solved from past corrections.
+   *
+   * The end of doing this arithmetic by hand. Every correction records what the
+   * estimate was, what the portal said, and the money and payments in between —
+   * which is enough to fit both shapes a charge comes in and see which explains
+   * the history. Offered as numbers to type into the Balance rules, with the
+   * error and the sample count attached so a two-point fit cannot pass itself
+   * off as a measurement.
+   */
+  suggestedCharge: {
+    percentage: FittedCharge | null;
+    flat: FittedCharge | null;
+    better: 'percentage' | 'flat' | null;
+    /** Whether what is configured already matches what was fitted. */
+    alreadySet: boolean;
+  } | null;
 };
 
 /** A balance reading stored on the connection by the last successful test. */
@@ -537,6 +557,9 @@ type Group = {
 
 /** What a set of transactions comes to, once the rules have been applied. */
 type Totals = {
+  /** How many payments made up each side — see fitCharges. */
+  countIn: number;
+  countOut: number;
   in: number;
   out: number;
   /** How much of `out` was the provider's cut rather than a payment. */
@@ -684,6 +707,8 @@ function applyRules(
   const t: Totals = {
     in: 0,
     out: 0,
+    countIn: 0,
+    countOut: 0,
     fees: 0,
     counted: 0,
     ignoredDirection: 0,
@@ -721,12 +746,19 @@ function applyRules(
         // word sits in decides only WHETHER it counts. Split by sign for the
         // in/out figures, so the screen reads the same as it does for a
         // provider that reports magnitudes.
-        if (g.sum >= 0) t.in += g.sum;
-        else t.out += -g.sum;
+        if (g.sum >= 0) {
+          t.in += g.sum;
+          t.countIn += g.count;
+        } else {
+          t.out += -g.sum;
+          t.countOut += g.count;
+        }
       } else if (has(rules?.add, g.direction)) {
         t.in += g.sum;
+        t.countIn += g.count;
       } else {
         t.out += g.sum;
+        t.countOut += g.count;
       }
     } else {
       t.ignoredDirection += g.count;
@@ -834,6 +866,178 @@ export function fitDrift(anchors: Anchor[]): {
     drift: round(totalDrift),
     largest: round(largest),
   };
+}
+
+/** One anchor-to-anchor interval, reduced to what a charge could depend on. */
+type Interval = {
+  /** Money in and out over the interval, and how many payments made each. */
+  in: number;
+  out: number;
+  countIn: number;
+  countOut: number;
+  /** How far the estimate finished above the portal. */
+  drift: number;
+};
+
+/** A two-parameter charge fitted to the corrections it has to explain. */
+export type FittedCharge = {
+  /** What the provider takes on money in, and on money out. */
+  onIn: number;
+  onOut: number;
+  /** Root-mean-square error, in the balance currency. Lower is a better fit. */
+  rms: number;
+  /** How many corrections it was fitted over. */
+  samples: number;
+};
+
+/**
+ * Least squares for `a·x + b·y = d` over several observations.
+ *
+ * Two unknowns, so two corrections fit exactly and prove nothing; the third
+ * onwards is where the residual starts meaning something, which is why the rms
+ * travels with the answer everywhere it goes.
+ *
+ * Returns null when x and y are collinear across every interval — a terminal
+ * whose inflow and outflow always move together cannot say which of them is
+ * being charged, and inventing a split would be arithmetic dressed as evidence.
+ */
+function leastSquares(
+  points: { x: number; y: number; d: number }[],
+): { a: number; b: number; rms: number } | null {
+  let xx = 0;
+  let xy = 0;
+  let yy = 0;
+  let xd = 0;
+  let yd = 0;
+  for (const p of points) {
+    xx += p.x * p.x;
+    xy += p.x * p.y;
+    yy += p.y * p.y;
+    xd += p.x * p.d;
+    yd += p.y * p.d;
+  }
+  const det = xx * yy - xy * xy;
+  // Scaled against the magnitudes involved rather than compared with zero: a
+  // determinant of 1e-6 is singular for cents and healthy for millions.
+  if (!Number.isFinite(det) || Math.abs(det) < 1e-9 * Math.max(1, xx * yy)) {
+    return null;
+  }
+  const a = (xd * yy - yd * xy) / det;
+  const b = (xx * yd - xy * xd) / det;
+
+  let sq = 0;
+  for (const p of points) sq += (a * p.x + b * p.y - p.d) ** 2;
+  return { a, b, rms: Math.sqrt(sq / points.length) };
+}
+
+/**
+ * What the provider is charging, solved from the corrections already recorded.
+ *
+ * The arithmetic that has been done by hand four times in this project, and got
+ * a different answer each time because it was being done against one window and
+ * one shape at a time.
+ *
+ * TWO SHAPES, fitted separately and compared on their residual:
+ *
+ *   a percentage of the money — ForumPay, which came out at 0.70% of deposits
+ *   and 0.20% of payouts and then reproduced an independent pair of readings to
+ *   within three cents on a 198,000 balance;
+ *
+ *   a flat amount per payment — Match2Pay, where a blockchain charges the same
+ *   gas to move 20 dollars as 2,000. That one masquerades as a percentage and a
+ *   wildly unstable one: 2.14 against an average 46-dollar withdrawal reads as
+ *   4.6%, then 9% on a quieter weekend, fitting nothing twice. Every attempt to
+ *   model it as a rate failed, and the failure looked like bad data rather than
+ *   the wrong question.
+ *
+ * Whichever explains the history with the smaller error is the one offered.
+ * Both are reported, so the choice can be disagreed with.
+ */
+export function fitCharges(anchors: Anchor[]): {
+  percentage: FittedCharge | null;
+  flat: FittedCharge | null;
+  /** Which of the two explained the corrections better. */
+  better: 'percentage' | 'flat' | null;
+} {
+  const intervals: Interval[] = [];
+  for (let i = 0; i + 1 < anchors.length; i++) {
+    const curr = anchors[i];
+    const prev = anchors[i + 1];
+    if (curr.drift === null) continue;
+    if (curr.baselineIn === null || curr.baselineOut === null) continue;
+    if (prev.baselineIn === null || prev.baselineOut === null) continue;
+    if (!sameRules(curr.baselineRules, prev.baselineRules)) continue;
+
+    const inAmt = curr.baselineIn - prev.baselineIn;
+    const outAmt = curr.baselineOut - prev.baselineOut;
+    if (inAmt < 0 || outAmt < 0 || inAmt + outAmt <= 0) continue;
+
+    // Counts are absent on anchors taken before they were recorded. The
+    // interval still serves the percentage fit; only the flat one needs them.
+    const cIn =
+      curr.baselineCountIn !== null && prev.baselineCountIn !== null
+        ? curr.baselineCountIn - prev.baselineCountIn
+        : NaN;
+    const cOut =
+      curr.baselineCountOut !== null && prev.baselineCountOut !== null
+        ? curr.baselineCountOut - prev.baselineCountOut
+        : NaN;
+
+    intervals.push({
+      in: inAmt,
+      out: outAmt,
+      countIn: cIn,
+      countOut: cOut,
+      drift: curr.drift,
+    });
+  }
+
+  if (intervals.length < 2)
+    return { percentage: null, flat: null, better: null };
+
+  const pct = leastSquares(
+    intervals.map((i) => ({ x: i.in, y: i.out, d: i.drift })),
+  );
+  const counted = intervals.filter(
+    (i) => Number.isFinite(i.countIn) && Number.isFinite(i.countOut),
+  );
+  const per =
+    counted.length >= 2
+      ? leastSquares(
+          counted.map((i) => ({ x: i.countIn, y: i.countOut, d: i.drift })),
+        )
+      : null;
+
+  // A NEGATIVE charge is not a charge. A provider paying us to take deposits is
+  // the fit absorbing noise into a parameter it cannot otherwise explain, and
+  // offering it as a setting would put a rebate into a balance. Rejected here
+  // rather than shown with a caveat, because the caveat is what gets skipped.
+  const usable = (
+    r: { a: number; b: number; rms: number } | null,
+    n: number,
+  ) =>
+    r && r.a >= 0 && r.b >= 0
+      ? { onIn: r.a, onOut: r.b, rms: r.rms, samples: n }
+      : null;
+
+  const percentage = usable(
+    pct && { a: pct.a * 100, b: pct.b * 100, rms: pct.rms },
+    intervals.length,
+  );
+  const flat = usable(per, counted.length);
+
+  const better =
+    percentage && flat
+      ? percentage.rms <= flat.rms
+        ? ('percentage' as const)
+        : ('flat' as const)
+      : percentage
+        ? ('percentage' as const)
+        : flat
+          ? ('flat' as const)
+          : null;
+
+  return { percentage, flat, better };
 }
 
 /**
@@ -999,6 +1203,7 @@ export class PspBalanceService {
         reported,
         drift: null,
         expectedDrift: null,
+        suggestedCharge: null,
       };
     }
 
@@ -1099,6 +1304,8 @@ export class PspBalanceService {
               ? 0
               : (anchor.baselineFees ?? 0) + (arrived?.fees ?? 0),
             counted: 0,
+            countIn: 0,
+            countOut: 0,
           }
         : null;
     const baseline =
@@ -1212,6 +1419,26 @@ export class PspBalanceService {
           ? round(estimate - reported.amount)
           : null,
       expectedDrift,
+      suggestedCharge: (() => {
+        const charges = fitCharges(history);
+        if (!charges.better) return null;
+        const best =
+          charges.better === 'percentage' ? charges.percentage : charges.flat;
+        if (!best) return null;
+        const configured =
+          charges.better === 'percentage'
+            ? [rules?.feeRateIn ?? 0, rules?.feeRateOut ?? 0]
+            : [rules?.feeFlatIn ?? 0, rules?.feeFlatOut ?? 0];
+        return {
+          ...charges,
+          // Within a hundredth is the same setting typed to two decimals, which
+          // is all the form accepts — so the screen stops asking once it has
+          // been done rather than nagging about a rounding difference.
+          alreadySet:
+            Math.abs(configured[0] - best.onIn) < 0.005 &&
+            Math.abs(configured[1] - best.onOut) < 0.005,
+        };
+      })(),
       /** How the movement was worked out — the two are not equally reliable. */
       basis: stored ? ('baseline' as const) : ('date' as const),
       /**
@@ -1431,6 +1658,10 @@ export class PspBalanceService {
         baselineIn: round(baseline.in),
         baselineOut: round(baseline.out),
         baselineFees: round(baseline.fees),
+        // Needed to tell a percentage apart from a flat charge later — see
+        // fitCharges. Nothing else reads them.
+        baselineCountIn: baseline.countIn,
+        baselineCountOut: baseline.countOut,
         baselineRules: rules ?? Prisma.DbNull,
         // Recorded so a later change of fee mapping is detectable. Without it
         // the fee difference silently compares two different measurements.
@@ -1850,6 +2081,8 @@ function toAnchor(row: {
   baselineIn?: unknown;
   baselineOut?: unknown;
   baselineFees?: unknown;
+  baselineCountIn?: unknown;
+  baselineCountOut?: unknown;
   baselineFeePath?: unknown;
   baselineRules?: unknown;
 }): Anchor {
@@ -1877,6 +2110,10 @@ function toAnchor(row: {
       row.baselineFees === null || row.baselineFees === undefined
         ? null
         : num(row.baselineFees),
+    baselineCountIn:
+      typeof row.baselineCountIn === 'number' ? row.baselineCountIn : null,
+    baselineCountOut:
+      typeof row.baselineCountOut === 'number' ? row.baselineCountOut : null,
     baselineFeePath:
       typeof row.baselineFeePath === 'string' ? row.baselineFeePath : null,
     baselineRules: readRules(row.baselineRules),

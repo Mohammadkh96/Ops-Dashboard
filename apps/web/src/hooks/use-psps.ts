@@ -502,6 +502,15 @@ export type Anchor = {
  * hand in the portal. Every place it appears carries the word "estimated" and
  * the age of the anchor it sits on.
  */
+/** A two-parameter charge fitted to the corrections it has to explain. */
+export type FittedCharge = {
+  onIn: number;
+  onOut: number;
+  /** Root-mean-square error in the balance currency. Lower fits better. */
+  rms: number;
+  samples: number;
+};
+
 export type BalanceView = {
   connectionId: string;
   anchor: Anchor | null;
@@ -565,6 +574,16 @@ export type BalanceView = {
      * service.
      */
     looksLikeFee: boolean;
+  } | null;
+  /**
+   * What the provider appears to charge, solved from past corrections — both
+   * shapes fitted and compared. See the service.
+   */
+  suggestedCharge: {
+    percentage: FittedCharge | null;
+    flat: FittedCharge | null;
+    better: "percentage" | "flat" | null;
+    alreadySet: boolean;
   } | null;
   /**
    * The FEE MAPPING moved since the baseline was measured, so the fee is held

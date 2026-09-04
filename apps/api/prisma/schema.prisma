@@ -879,6 +879,17 @@ model PspBalanceAnchor {
   /// arithmetic — fees are inside baselineOut already — but it lets the screen
   /// say how much of an outflow was fees rather than payments.
   baselineFees Decimal? @db.Decimal(20, 8)
+  /// How many payments made up each side of the totals above.
+  ///
+  /// Stored because a charge comes in two shapes and only counts tell them
+  /// apart. ForumPay takes a percentage of the money; Match2Pay takes a flat
+  /// amount per payment, which masquerades as a wildly unstable percentage
+  /// because blockchain gas costs the same to move 20 dollars as 2,000.
+  /// Deciding between them means fitting both against past corrections, and
+  /// the flat one cannot be fitted at all without knowing how many payments
+  /// each correction covered.
+  baselineCountIn  Int?
+  baselineCountOut Int?
   /// The rules the two totals were measured under. Change which words count
   /// and the comparison is no longer like-for-like, which the screen says.
   baselineRules Json?

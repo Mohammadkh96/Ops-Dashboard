@@ -260,6 +260,81 @@ function DriftExplainer({
 }
 
 /**
+ * What the provider appears to charge, and the numbers to type in.
+ *
+ * Both shapes are shown, not only the winner. A percentage and a flat charge
+ * per payment are different claims about what a provider does, the residual is
+ * what decides between them, and a reader who knows their provider bills per
+ * transaction should be able to see that the fit agrees — or overrule it.
+ */
+function ChargeSuggestion({
+  suggestion,
+  currency,
+}: {
+  suggestion: NonNullable<BalanceView["suggestedCharge"]>;
+  currency: string | null;
+}) {
+  const { better, percentage, flat } = suggestion;
+  const best = better === "percentage" ? percentage : flat;
+  if (!best) return null;
+
+  const unit = (v: number) =>
+    better === "percentage" ? `${v.toFixed(3)}%` : money(v, currency);
+
+  return (
+    <div className="flex flex-col gap-1.5 rounded-lg border border-accent-green/25 bg-accent-green-soft/40 px-3 py-2.5">
+      <span className="text-[11px] text-muted">
+        Your corrections are explained by a{" "}
+        <span className="font-medium text-primary">
+          {better === "percentage"
+            ? "percentage of the money"
+            : "flat charge per payment"}
+        </span>{" "}
+        of{" "}
+        <span className="tnum font-medium text-primary">
+          {unit(best.onIn)}
+        </span>{" "}
+        on money in and{" "}
+        <span className="tnum font-medium text-primary">
+          {unit(best.onOut)}
+        </span>{" "}
+        on money out.
+      </span>
+      <span className="text-[11px] text-muted">
+        Put those in the{" "}
+        {better === "percentage" ? "percentage" : "“flat, per payment”"} boxes
+        under Configure → this provider → Balance rules, then press Update from
+        portal once.
+      </span>
+      {/* The residual and the sample count, always together. Two corrections
+          fit two unknowns exactly, so a perfect fit on two samples is
+          arithmetic rather than evidence — and saying "explains them exactly"
+          without saying "over two" is how a guess becomes a number somebody
+          quotes to a provider. */}
+      <span className="text-[11px] text-muted">
+        Fitted over {best.samples} correction{best.samples === 1 ? "" : "s"},
+        {best.rms < 0.01
+          ? " which it explains to the cent"
+          : ` typically within ${money(best.rms, currency)}`}
+        .
+        {best.samples < 3
+          ? " Two corrections fit two unknowns exactly, so this is a hint until there is a third."
+          : ""}
+      </span>
+      {percentage && flat ? (
+        <span className="text-[11px] text-muted">
+          The other shape was tried too: as a{" "}
+          {better === "percentage" ? "flat charge" : "percentage"} the same
+          history comes out{" "}
+          {money(better === "percentage" ? flat.rms : percentage.rms, currency)}{" "}
+          out on average, against {money(best.rms, currency)} for this one.
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+/**
  * The compact form, for a card.
  *
  * Returns null when there is nothing to say. A card that reads "— no balance"
@@ -483,6 +558,21 @@ export function BalancePanel({
                 to guess that a link marked "find which field" is the thing that
                 explains it. It costs one query over one interval; it can pay
                 for itself by being on screen. */}
+            {/* The arithmetic that has been done by hand four times, done by
+                the screen instead. Every correction records the estimate, the
+                portal figure, and the money and payments in between — enough
+                to fit both shapes a charge comes in and see which explains the
+                history. Placed above the field search because it is the answer
+                far more often: ForumPay's gap was a percentage nobody reports,
+                Match2Pay's a flat charge per payment, and neither is a field
+                sitting in a record waiting to be mapped. */}
+            {balance.suggestedCharge && !balance.suggestedCharge.alreadySet ? (
+              <ChargeSuggestion
+                suggestion={balance.suggestedCharge}
+                currency={currency}
+              />
+            ) : null}
+
             {expectedDrift ? (
               <DriftExplainer
                 connectionId={connectionId}

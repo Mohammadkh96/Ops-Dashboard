@@ -40,6 +40,7 @@ const {
   readRules,
   pickReported,
   fitDrift,
+  fitCharges,
 } = require('../dist/src/psps/psp-balance.service');
 const { numericTotals, asNumber } = require('../dist/src/psps/record-fields');
 
@@ -945,6 +946,99 @@ section('a balance that moves on its own, not on its throughput');
     Math.abs(mt.perHour * 24 - 12.7) < 0.2,
     mt.perHour * 24,
   );
+}
+
+
+section('solving what a provider charges, from the corrections it caused');
+{
+  const rules = { add: ['in'], subtract: ['out'], statuses: ['ok'] };
+  // Anchors are cumulative, newest first. Build them from per-interval figures
+  // so the fixtures read as what actually happened.
+  const build = (intervals) => {
+    let inAmt = 0, outAmt = 0, cIn = 0, cOut = 0;
+    const out = [{ drift: null, baselineIn: 0, baselineOut: 0, baselineCountIn: 0,
+                   baselineCountOut: 0, baselineRules: rules, takenAt: '2026-08-01T00:00:00Z' }];
+    intervals.forEach((iv, n) => {
+      inAmt += iv.in; outAmt += iv.out; cIn += iv.cIn; cOut += iv.cOut;
+      out.unshift({
+        drift: iv.drift, baselineIn: inAmt, baselineOut: outAmt,
+        baselineCountIn: cIn, baselineCountOut: cOut, baselineRules: rules,
+        takenAt: `2026-08-${String(n + 2).padStart(2, '0')}T00:00:00Z`,
+      });
+    });
+    return out;
+  };
+
+  // FORUMPAY, as measured: 0.70% of deposits, 0.20% of payouts. Three windows,
+  // so the residual means something rather than being zero by construction.
+  const fp = fitCharges(build([
+    { in: 10177.71, out: 9081.86,  cIn: 40, cOut: 35, drift: 0.007 * 10177.71 + 0.002 * 9081.86 },
+    { in: 5445.47,  out: 30290.28, cIn: 20, cOut: 90, drift: 0.007 * 5445.47 + 0.002 * 30290.28 },
+    { in: 12619.85, out: 28525.52, cIn: 30, cOut: 80, drift: 0.007 * 12619.85 + 0.002 * 28525.52 },
+  ]));
+  ok('ForumPay reads as a percentage', fp.better === 'percentage', fp);
+  ok('  0.70% on deposits', Math.abs(fp.percentage.onIn - 0.7) < 0.001, fp.percentage);
+  ok('  0.20% on payouts', Math.abs(fp.percentage.onOut - 0.2) < 0.001, fp.percentage);
+  ok('  and it explains them to the cent', fp.percentage.rms < 0.01, fp.percentage.rms);
+
+  // MATCH2PAY, as measured: 1.02 per payment in, 2.14 per payment out. The
+  // amounts are deliberately unrelated to the drift — that is the whole point.
+  const mt = fitCharges(build([
+    { in: 168.19,  out: 258.47,  cIn: 4,  cOut: 9,  drift: 4 * 1.0202 + 9 * 2.141 },
+    { in: 5086.13, out: 3185.02, cIn: 77, cOut: 91, drift: 77 * 1.0202 + 91 * 2.141 },
+    { in: 900.00,  out: 12000.0, cIn: 10, cOut: 12, drift: 10 * 1.0202 + 12 * 2.141 },
+  ]));
+  ok('Match2Pay reads as a flat charge', mt.better === 'flat', mt);
+  ok('  1.02 per payment in', Math.abs(mt.flat.onIn - 1.0202) < 0.001, mt.flat);
+  ok('  2.14 per payment out', Math.abs(mt.flat.onOut - 2.141) < 0.001, mt.flat);
+  ok('  explaining them to the cent', mt.flat.rms < 0.01, mt.flat.rms);
+  // The decisive comparison: the percentage fit is ALSO offered, and is worse.
+  ok('  while a percentage cannot', !mt.percentage || mt.percentage.rms > mt.flat.rms,
+     { pct: mt.percentage, flat: mt.flat });
+
+  section('what the fit refuses to claim');
+  {
+    // Two corrections fit two unknowns exactly, so a residual of zero on two
+    // samples is arithmetic, not evidence. The sample count travels with it.
+    const two = fitCharges(build([
+      { in: 1000, out: 2000, cIn: 5, cOut: 5, drift: 11 },
+      { in: 3000, out: 1000, cIn: 5, cOut: 5, drift: 23 },
+    ]));
+    ok('two corrections are reported as two', two.percentage?.samples === 2, two.percentage);
+
+    // One interval cannot fit two unknowns at all.
+    ok('one is not enough', fitCharges(build([{ in: 1, out: 1, cIn: 1, cOut: 1, drift: 1 }])).better === null);
+    ok('none is not enough', fitCharges([]).better === null);
+
+    // Inflow and outflow always moving together cannot say which is charged.
+    const collinear = fitCharges(build([
+      { in: 100, out: 100, cIn: 2, cOut: 2, drift: 3 },
+      { in: 200, out: 200, cIn: 4, cOut: 4, drift: 6 },
+      { in: 400, out: 400, cIn: 8, cOut: 8, drift: 12 },
+    ]));
+    ok('a terminal whose sides always move together says nothing',
+       collinear.percentage === null, collinear);
+
+    // A provider paying us to take deposits is a fit absorbing noise, not a
+    // rebate. Offering it would put a credit into a balance.
+    const negative = fitCharges(build([
+      { in: 10000, out: 100, cIn: 5, cOut: 5, drift: 1 },
+      { in: 100, out: 10000, cIn: 5, cOut: 5, drift: 400 },
+      { in: 5000, out: 5000, cIn: 5, cOut: 5, drift: 190 },
+    ]));
+    ok('a negative charge is refused, not shown with a caveat',
+       negative.percentage === null || (negative.percentage.onIn >= 0 && negative.percentage.onOut >= 0),
+       negative.percentage);
+
+    // Anchors from before counts were recorded still serve the percentage fit.
+    const noCounts = build([
+      { in: 10177.71, out: 9081.86, cIn: 0, cOut: 0, drift: 0.007 * 10177.71 + 0.002 * 9081.86 },
+      { in: 5445.47, out: 30290.28, cIn: 0, cOut: 0, drift: 0.007 * 5445.47 + 0.002 * 30290.28 },
+    ]).map((a) => ({ ...a, baselineCountIn: null, baselineCountOut: null }));
+    const old = fitCharges(noCounts);
+    ok('an anchor with no counts can still be fitted as a percentage', old.percentage !== null, old);
+    ok('but not as a flat charge', old.flat === null, old);
+  }
 }
 
 console.log(failures ? `\n${failures} failed` : '\nall good');
