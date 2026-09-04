@@ -100,6 +100,26 @@ export type MovementRules = {
    */
   feeRateIn?: number;
   feeRateOut?: number;
+  /**
+   * What the provider takes PER TRANSACTION, regardless of size.
+   *
+   * Match2Pay, and the reason every percentage model failed on it. A
+   * blockchain charges the same gas to move 20 dollars as 2,000, so the cost
+   * is flat — and against an average 46-dollar withdrawal a flat 2.14 LOOKS
+   * like 4.6%, then like 9% on a quiet weekend of smaller ones. That unstable
+   * "rate" is what kept appearing and kept refusing to fit anything.
+   *
+   * Solved across both MT terminals in one window, then confirmed against an
+   * independent pair of corrections that neither number came from: 2.50 on
+   * Saint Lucia and 15.69 on Mauritius, which one consistent window reproduces
+   * at 2.14 and 14.69. A percentage cannot do that — the two terminals differ
+   * nineteen-fold in volume and barely at all in cost per payment.
+   *
+   * In the balance currency, per counted payment. Applied ALONGSIDE the
+   * percentages, because a provider can charge both and several do.
+   */
+  feeFlatIn?: number;
+  feeFlatOut?: number;
 };
 
 /** One anchor, as the API reports it. */
@@ -408,6 +428,21 @@ function rate(v: unknown): number | undefined {
   return n;
 }
 
+/**
+ * A flat charge per transaction, in the balance currency.
+ *
+ * Bounded differently from a percentage and for a different reason. There is no
+ * natural ceiling here — a wire fee can be 25 — so the cap is only against the
+ * obviously wrong: a figure larger than any per-payment charge has ever been is
+ * a decimal point in the wrong place, and across a thousand payments it would
+ * erase a balance.
+ */
+function flat(v: unknown): number | undefined {
+  const n = typeof v === 'number' ? v : Number(v);
+  if (!Number.isFinite(n) || n <= 0 || n > 1000) return undefined;
+  return n;
+}
+
 /** Whatever was stored, read as rules. Nothing here trusts the JSON's shape. */
 export function readRules(value: unknown): MovementRules | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -427,6 +462,8 @@ export function readRules(value: unknown): MovementRules | null {
     signed: r.signed === true,
     feeRateIn: rate(r.feeRateIn),
     feeRateOut: rate(r.feeRateOut),
+    feeFlatIn: flat(r.feeFlatIn),
+    feeFlatOut: flat(r.feeFlatOut),
   };
   const empty =
     !rules.currency &&
@@ -434,7 +471,9 @@ export function readRules(value: unknown): MovementRules | null {
     !rules.subtract?.length &&
     !rules.statuses?.length &&
     rules.feeRateIn === undefined &&
-    rules.feeRateOut === undefined;
+    rules.feeRateOut === undefined &&
+    rules.feeFlatIn === undefined &&
+    rules.feeFlatOut === undefined;
   return empty ? null : rules;
 }
 
@@ -455,6 +494,8 @@ export function sameRules(
     JSON.stringify({
       feeRateIn: r?.feeRateIn ?? null,
       feeRateOut: r?.feeRateOut ?? null,
+      feeFlatIn: r?.feeFlatIn ?? null,
+      feeFlatOut: r?.feeFlatOut ?? null,
       currency: r?.currency ?? null,
       add: [...(r?.add ?? [])].map((w) => w.toLowerCase()).sort(),
       subtract: [...(r?.subtract ?? [])].map((w) => w.toLowerCase()).sort(),
@@ -543,7 +584,12 @@ export function feeModeOf(
   rules: MovementRules | null,
 ): FeeMode {
   if (feePathOf(endpoints)) return 'reported';
-  return rules?.feeRateIn || rules?.feeRateOut ? 'modelled' : 'reported';
+  return rules?.feeRateIn ||
+    rules?.feeRateOut ||
+    rules?.feeFlatIn ||
+    rules?.feeFlatOut
+    ? 'modelled'
+    : 'reported';
 }
 
 export function feeSignature(
@@ -554,6 +600,8 @@ export function feeSignature(
     feePathOf(endpoints) ?? '',
     rules?.feeRateIn ? String(rules.feeRateIn) : '',
     rules?.feeRateOut ? String(rules.feeRateOut) : '',
+    rules?.feeFlatIn ? String(rules.feeFlatIn) : '',
+    rules?.feeFlatOut ? String(rules.feeFlatOut) : '',
   ];
   return parts.some(Boolean) ? parts.join('|') : null;
 }
@@ -585,16 +633,21 @@ export function feePathOf(endpoints: unknown): string | null {
 function modelFee(g: Group, rules: MovementRules | null): number {
   const inRate = rules?.feeRateIn ?? 0;
   const outRate = rules?.feeRateOut ?? 0;
-  if (!inRate && !outRate) return 0;
-
-  const amount = Math.abs(g.sum);
-  if (!amount) return 0;
+  const inFlat = rules?.feeFlatIn ?? 0;
+  const outFlat = rules?.feeFlatOut ?? 0;
+  if (!inRate && !outRate && !inFlat && !outFlat) return 0;
 
   // Which side this group sits on. With signed amounts the data decides;
   // otherwise the word does.
   const inbound = rules?.signed ? g.sum >= 0 : has(rules?.add, g.direction);
 
-  return (amount * (inbound ? inRate : outRate)) / 100;
+  // Per unit of money, and per payment. Both, because a provider can charge
+  // both — and because which one dominates is not a matter of opinion: a
+  // percentage tracks the money, a flat charge tracks the COUNT, and a ledger
+  // of small payments is mostly count.
+  const proportional = (Math.abs(g.sum) * (inbound ? inRate : outRate)) / 100;
+  const perPayment = g.count * (inbound ? inFlat : outFlat);
+  return proportional + perPayment;
 }
 
 /**

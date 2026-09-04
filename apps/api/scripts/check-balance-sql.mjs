@@ -636,6 +636,94 @@ try {
        precise.rows.map((r) => r.externalId));
   }
 
+  section('Match2Pay: a charge per payment, not per dollar');
+  {
+    // Why every percentage failed here. A blockchain charges the same gas to
+    // move 20 dollars as 2,000, so the cost tracks the COUNT. Against an
+    // average 46-dollar withdrawal a flat 2.14 looks like 4.6%, and like 9% on
+    // a quiet weekend of smaller ones — which is the unstable "rate" that kept
+    // appearing and kept fitting nothing.
+    //
+    // The real window, both terminals: 4 deposits + 9 withdrawals on Saint
+    // Lucia drifted 23.35, and 77 + 91 on Mauritius drifted 273.40.
+    const mk = async (terminal, flatIn, flatOut) =>
+      prisma.pspConnection.create({
+        data: {
+          terminal,
+          provider: 'match2pay',
+          label: terminal,
+          ledgerSource: 'provider',
+          movementRules: {
+            currency: 'USD',
+            add: ['DEPOSIT'],
+            subtract: ['WITHDRAWAL'],
+            statuses: ['Completed'],
+            feeFlatIn: flatIn,
+            feeFlatOut: flatOut,
+          },
+        },
+      });
+
+    const run = async (terminal, deposits, withdrawals, expected) => {
+      const c = await mk(terminal, 1.0202, 2.141);
+      await svc.setAnchor(c.id, {
+        amount: '100000.00',
+        currency: 'USD',
+        takenAt: new Date(Date.now() - 60_000).toISOString(),
+      });
+      const put = (i, dir, amt) =>
+        prisma.pspTransaction.create({
+          data: {
+            connectionId: c.id,
+            terminal: c.terminal,
+            externalId: `${dir}-${i}`,
+            direction: dir,
+            status: 'Completed',
+            currency: 'USD',
+            amount: amt,
+            raw: {},
+            occurredAt: new Date(),
+            settledAt: new Date(),
+          },
+        });
+      // Amounts deliberately varied: a per-payment charge must not care.
+      for (let i = 0; i < deposits; i++) await put(i, 'DEPOSIT', String(10 + i * 7));
+      for (let i = 0; i < withdrawals; i++) await put(i, 'WITHDRAWAL', String(15 + i * 3));
+      const b = await svc.balance(c.id);
+      ok(`${terminal}: the charge follows the payment count`,
+         Math.abs(b.movement.fees - expected) < 0.01,
+         { fees: b.movement.fees, expected });
+      return b;
+    };
+
+    // 4 x 1.0202 + 9 x 2.141 = 23.35, which is what Saint Lucia actually drifted.
+    await run('MT_SaintLucia_flat', 4, 9, 4 * 1.0202 + 9 * 2.141);
+    // 77 x 1.0202 + 91 x 2.141 = 273.40, which is what Mauritius actually drifted.
+    await run('MT_Mauritius_flat', 77, 91, 77 * 1.0202 + 91 * 2.141);
+
+    // THE property a percentage does not have: the same payments at ten times
+    // the value cost the same to move.
+    const big = await mk('MT_BigTickets_flat', 1.0202, 2.141);
+    await svc.setAnchor(big.id, {
+      amount: '100000.00',
+      currency: 'USD',
+      takenAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+    for (let i = 0; i < 9; i++) {
+      await prisma.pspTransaction.create({
+        data: {
+          connectionId: big.id, terminal: big.terminal,
+          externalId: `w-${i}`, direction: 'WITHDRAWAL', status: 'Completed',
+          currency: 'USD', amount: String(5000 + i * 100), raw: {},
+          occurredAt: new Date(), settledAt: new Date(),
+        },
+      });
+    }
+    const b = await svc.balance(big.id);
+    ok('nine large withdrawals cost the same as nine small ones',
+       Math.abs(b.movement.fees - 9 * 2.141) < 0.01, b.movement.fees);
+  }
+
   section('MT: both states of a payment carry the SAME occurredAt');
   {
     // Verbatim from the ledger screen: one second, two states. This is why no

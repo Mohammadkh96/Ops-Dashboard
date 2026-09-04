@@ -436,11 +436,12 @@ export function BalancePanel({
                   <span className="flex items-start gap-1.5 text-[11px] text-accent-orange">
                     <Info className="mt-px size-3.5 shrink-0" />
                     That is {(Math.abs(expectedDrift.rate) * 100).toFixed(1)}%
-                    of what moved, which no provider charges — so this gap is
-                    not a fee and a percentage will not fix it. Something is
-                    moving this balance other than the transactions: a holding
-                    being revalued, or money moved inside the portal. Re-anchor
-                    more often rather than modelling it.
+                    of what moved, which no provider charges as a percentage —
+                    so it is very likely a FLAT charge per payment, which looks
+                    like a wild percentage on small payments and fits nothing
+                    twice. Divide this gap by the number of payments rather than
+                    by their value, and put the answer in the “flat, per
+                    payment” boxes under Balance rules.
                   </span>
                 ) : null}
                 <span className="text-[11px] text-muted">

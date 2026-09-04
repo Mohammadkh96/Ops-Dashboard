@@ -1494,12 +1494,67 @@ function MovementRulesEditor({
                 <span className="text-[11px] text-muted">% of money out</span>
               </label>
             </div>
+            {/* The other shape a charge comes in, and the one that defeated
+                four rounds of percentage-fitting on Match2Pay. A blockchain
+                charges the same gas to move 20 dollars as 2,000, so the cost
+                follows the COUNT — and a flat 2.14 against an average
+                46-dollar withdrawal looks like 4.6%, then 9% on a quieter
+                weekend, fitting nothing twice. */}
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="flex items-center gap-1.5">
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={rules.feeFlatIn ?? ""}
+                  onChange={(e) =>
+                    set({
+                      feeFlatIn: e.target.value
+                        ? Number(e.target.value)
+                        : undefined,
+                    })
+                  }
+                  placeholder="1.02"
+                  className="w-20 rounded-lg border border-border bg-card px-2 py-1.5 text-xs outline-none focus:border-border-strong"
+                />
+                <span className="text-[11px] text-muted">
+                  flat, per payment in
+                </span>
+              </label>
+              <label className="flex items-center gap-1.5">
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  value={rules.feeFlatOut ?? ""}
+                  onChange={(e) =>
+                    set({
+                      feeFlatOut: e.target.value
+                        ? Number(e.target.value)
+                        : undefined,
+                    })
+                  }
+                  placeholder="2.14"
+                  className="w-20 rounded-lg border border-border bg-card px-2 py-1.5 text-xs outline-none focus:border-border-strong"
+                />
+                <span className="text-[11px] text-muted">
+                  flat, per payment out
+                </span>
+              </label>
+            </div>
+            <span className="text-[11px] text-muted">
+              Use the percentages for a provider that takes a cut of the money,
+              and the flat boxes for one that charges per payment — network gas
+              costs the same whether you send 20 or 2,000, which is why a flat
+              charge masquerades as a wildly unstable percentage. Both apply
+              together where a provider does both.
+            </span>
             <span className="text-[11px] text-muted">
               A MODEL, not a reading — it stops being true the day the provider
               changes its pricing, and the drift recorded at each re-anchor is
-              what says so. Leave both empty where the provider reports its own
-              fee per payment; map that field instead, because its figure beats
-              any percentage of ours.
+              what says so. Leave all four empty where the provider reports its
+              own fee per payment; map that field instead, because its figure
+              beats any model of ours.
             </span>
             {/* Setting a rate has the same shape as mapping a fee late: the
                 stored baseline holds fees measured at the old one. */}

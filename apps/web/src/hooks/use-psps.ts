@@ -69,6 +69,12 @@ export type MovementRules = {
    */
   feeRateIn?: number;
   feeRateOut?: number;
+  /**
+   * A flat charge per payment, regardless of size — blockchain gas, a wire fee.
+   * Why every percentage failed on Match2Pay: the cost tracks the COUNT.
+   */
+  feeFlatIn?: number;
+  feeFlatOut?: number;
 };
 
 /** A provider connection. Never carries the credential — only whether one is stored. */
