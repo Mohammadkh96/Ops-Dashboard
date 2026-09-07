@@ -1234,5 +1234,85 @@ section('solving what a provider charges, from the corrections it caused');
   }
 }
 
+section('the provider this must not disturb');
+{
+  // ForumPay currently matches its portal to the cent, on both terminals. Every
+  // change made for Match2Pay lands in the same function, so the question that
+  // has to be answered is not "is the new behaviour better" but "is the old
+  // behaviour still exactly the old behaviour where it was already right".
+  //
+  // Three things could have broken it, and each gets a check:
+  //   • pooling quiet intervals into the numerator would inflate the rate
+  //   • counting them as samples would change the number shown beside it
+  //   • the new trustworthy bar could suppress a correction that was working
+  const rules = { add: ['sell'], subtract: ['buy'], statuses: ['confirmed'] };
+  const at = (n) => ({
+    drift: n.drift,
+    baselineIn: n.in,
+    baselineOut: n.out,
+    baselineRules: n.rules ?? rules,
+    takenAt: n.takenAt,
+  });
+
+  // ForumPay as it actually behaves: a fee-sized gap, every window busy.
+  const busy = [
+    at({ drift: 89.4, in: 60000, out: 45000, takenAt: '2026-09-04T06:00:00.000Z' }),
+    at({ drift: 120.0, in: 50000, out: 38000, takenAt: '2026-09-03T06:00:00.000Z' }),
+    at({ drift: 352.2, in: 40000, out: 30000, takenAt: '2026-09-02T06:00:00.000Z' }),
+    at({ drift: null, in: 10000, out: 8000, takenAt: '2026-09-01T06:00:00.000Z' }),
+  ];
+  const fp = fitDrift(busy, rules);
+  ok('three corrections, all with volume', fp?.samples === 3 && fp?.volumeSamples === 3, fp);
+  ok(
+    'the rate is total drift over total volume, unchanged',
+    Math.abs(fp.rate - (89.4 + 120 + 352.2) / (60000 - 10000 + 45000 - 8000)) < 1e-12,
+    fp.rate,
+  );
+  ok('and it is fee-sized', Math.abs(fp.rate) <= 0.02, fp.rate);
+
+  // THE NON-REGRESSION THAT MATTERS. A terminal with three sound corrections,
+  // projecting inside what has been measured, must still correct. If the new
+  // bar suppressed this one it would have taken a working feature away from the
+  // provider it was built for.
+  const trustworthy = (fit, projected) =>
+    fit !== null && fit.samples >= 3 && Math.abs(projected) <= fit.largest;
+  const projected = fp.rate * 19259.57;
+  ok('a normal day still projects inside experience', Math.abs(projected) <= fp.largest, {
+    projected,
+    largest: fp.largest,
+  });
+  ok('so ForumPay still gets its correction', trustworthy(fp, projected) === true, {
+    samples: fp.samples,
+    projected,
+  });
+
+  // Now drop a quiet interval into the middle of it — the case that used to be
+  // discarded and is now admitted. The rate must not move by a single unit in
+  // the last place, because a quiet interval adds drift to no volume.
+  const withQuiet = [
+    at({ drift: 89.4, in: 60000, out: 45000, takenAt: '2026-09-04T06:00:00.000Z' }),
+    at({ drift: 5.0, in: 50000, out: 38000, takenAt: '2026-09-03T18:00:00.000Z' }),
+    at({ drift: 120.0, in: 50000, out: 38000, takenAt: '2026-09-03T06:00:00.000Z' }),
+    at({ drift: 352.2, in: 40000, out: 30000, takenAt: '2026-09-02T06:00:00.000Z' }),
+    at({ drift: null, in: 10000, out: 8000, takenAt: '2026-09-01T06:00:00.000Z' }),
+  ];
+  const fq = fitDrift(withQuiet, rules);
+  ok('the quiet interval is admitted', fq?.samples === 4, fq);
+  ok('but adds nothing to the volume fit', fq?.volumeSamples === 3, fq);
+  ok('so the rate is bit-identical', fq.rate === fp.rate, { was: fp.rate, now: fq.rate });
+  ok('and so is the volume behind it', fq.volume === fp.volume, { was: fp.volume, now: fq.volume });
+  // It DOES move the per-hour figure, which is the whole point — but ForumPay
+  // is projected on volume, so nothing on its screen reads that number.
+  ok('only the per-hour reading changes', fq.perHour !== fp.perHour, {
+    was: fp.perHour,
+    now: fq.perHour,
+  });
+
+  // And the sample count quoted beside a volume-basis correction stays the
+  // count of intervals that HAD volume — quoting four would overstate the
+  // evidence for a rate that was fitted on three.
+  ok('the count quoted for a rate is the count behind the rate', fq.volumeSamples === 3, fq);
+}
+
 console.log(failures ? `\n${failures} failed` : '\nall good');
 process.exit(failures ? 1 : 0);
