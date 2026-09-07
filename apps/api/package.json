@@ -31,6 +31,7 @@
     "check:adminlock": "npm run build && node scripts/check-admin-lock.mjs",
     "check:session": "npm run build && node scripts/check-session.mjs",
     "check:coldstart": "npm run build && node scripts/check-coldstart.mjs",
+    "check:reconcile": "npm run build && node scripts/check-reconcile.mjs",
     "check:adminusers": "npm run build && node scripts/check-admin-users.mjs",
     "check:import": "tsx scripts/check-import-export.ts",
     "check:overview": "tsx scripts/check-success-rate.ts",

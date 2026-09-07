@@ -19,6 +19,7 @@ import { assertCronSecret } from '../common/cron-secret';
 import { PspsService } from './psps.service';
 import { PspSyncService } from './psp-sync.service';
 import { PspBalanceService } from './psp-balance.service';
+import { PspReconcileService } from './psp-reconcile.service';
 import type { EndpointConfig } from './psp-connector';
 
 /**
@@ -48,6 +49,7 @@ export class PspsController {
     private readonly psps: PspsService,
     private readonly sync: PspSyncService,
     private readonly balanceService: PspBalanceService,
+    private readonly reconcile: PspReconcileService,
   ) {}
 
   /**
@@ -205,6 +207,23 @@ export class PspsController {
    * A session, like the sync: it is fetching data, and it spends no
    * credential at all — the person doing it already had the file.
    */
+  /**
+   * The provider's own statement, checked against ours payment by payment.
+   *
+   * A session, like the import above: it reads a file the person already had
+   * and spends no credential. It writes nothing — the ledger is not corrected
+   * from an uploaded file, because a statement is evidence and correcting a
+   * payment record is a decision.
+   */
+  @UseGuards(JwtAuthGuard)
+  @Post(':id/reconcile')
+  reconcileStatement(
+    @Param('id') id: string,
+    @Body() body: { rows?: Record<string, unknown>[] },
+  ) {
+    return this.reconcile.reconcile(id, body?.rows ?? []);
+  }
+
   @UseGuards(JwtAuthGuard)
   @Post(':id/import')
   importRows(

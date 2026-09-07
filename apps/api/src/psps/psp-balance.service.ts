@@ -461,7 +461,7 @@ export function pickReported(
 }
 
 /** Case-insensitive membership, because "Sell" and "sell" are one word. */
-function has(list: string[] | undefined, value: string | null): boolean {
+export function has(list: string[] | undefined, value: string | null): boolean {
   if (!list?.length || value === null) return false;
   const v = value.trim().toLowerCase();
   return list.some((x) => x.trim().toLowerCase() === v);

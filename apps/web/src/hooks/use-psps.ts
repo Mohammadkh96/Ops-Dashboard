@@ -856,3 +856,62 @@ export function usePspImport() {
     },
   });
 }
+
+/**
+ * The provider's own statement, checked against ours payment by payment.
+ *
+ * Not another balance. A balance is a sum, and a sum cannot say WHICH payment
+ * is wrong — nor that one is at all, when the provider reports the total
+ * correctly and only our record of a single payment is short. That is not
+ * hypothetical: a Match2Pay terminal matched its portal to thirty-six cents
+ * while holding a client's 3,999.40 deposit as 299.70. See the service.
+ */
+export type ReconcileReport = {
+  statement: {
+    rows: number;
+    settled: number;
+    ignored: number;
+    unreadable: number;
+    from: string | null;
+    to: string | null;
+    columns: {
+      at: string | null;
+      direction: string | null;
+      amount: string | null;
+      status: string | null;
+    };
+  };
+  ledger: { payments: number; to: string | null };
+  /** Set when the statement runs past our ledger — see the service. */
+  boundary: string | null;
+  matched: number;
+  counted: { payments: number; in: number; out: number };
+  uncounted: {
+    status: string;
+    direction: "in" | "out";
+    payments: number;
+    value: number;
+  }[];
+  amountErrors: {
+    at: string;
+    direction: "in" | "out";
+    reference: string | null;
+    customer: string | null;
+    ours: number;
+    theirs: number;
+    difference: number;
+  }[];
+  missing: { at: string; direction: "in" | "out"; amount: number }[];
+  /** Positive = our estimate runs high against the wallet. The drift, itemised. */
+  net: number;
+};
+
+export function useReconcileStatement(connectionId: string) {
+  return useMutation({
+    mutationFn: (rows: Record<string, unknown>[]) =>
+      apiFetch<ReconcileReport>(`/psps/${connectionId}/reconcile`, {
+        method: "POST",
+        body: JSON.stringify({ rows }),
+      }),
+  });
+}

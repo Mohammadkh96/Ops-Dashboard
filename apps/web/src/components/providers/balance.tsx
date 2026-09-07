@@ -13,6 +13,7 @@ import {
   usePspAnchors,
   type BalanceView,
 } from "@/hooks/use-psps";
+import { StatementReconciler } from "./reconcile";
 
 /**
  * An estimated provider balance, and the honesty that has to travel with it.
@@ -871,6 +872,16 @@ export function BalancePanel({
                 .
               </p>
             ) : null}
+
+            {/* Directly beneath the figure it is capable of disproving.
+                Everything above compares TOTALS, and a total was right to
+                thirty-six cents on a terminal holding a client's 3,999.40
+                deposit as 299.70. This is the only thing on the page that can
+                name a payment. */}
+            <StatementReconciler
+              connectionId={connectionId}
+              currency={currency}
+            />
           </>
         )}
       </div>
