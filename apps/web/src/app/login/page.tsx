@@ -11,7 +11,8 @@ import { ConnectionCheck } from "@/components/login/connection-check";
 import { LiveDot } from "@/components/ui/live-dot";
 import { AnimatedNumber } from "@/components/ui/animated-number";
 import { useAuth } from "@/lib/auth";
-import { API_URL, apiFetch, isDemoMode } from "@/lib/api";
+import { useWarmApi } from "@/hooks/use-warm-api";
+import { API_URL, ApiError, apiFetch, isDemoMode } from "@/lib/api";
 
 const highlights = [
   {
@@ -34,17 +35,53 @@ const highlights = [
 /**
  * Turns a sign-in failure into something the reader can act on.
  *
- * A blocked cross-origin request surfaces as `TypeError: Failed to fetch` and
- * nothing else — no status, no body, and the CORS detail is only in the browser
+ * A request that never reached the server surfaces as `Failed to fetch` and
+ * nothing else — no status, no body, and the detail is only in the browser
  * console. On a correct password that message points at the credentials, which
- * is the wrong place to look: the request never reached the server. Naming the
- * URL and the likely cause turns a dead end into a five-minute fix.
+ * is the wrong place to look. Naming the URL and the likely cause turns a dead
+ * end into a five-minute fix.
+ *
+ * It has to match on ApiError, not on TypeError. The API client wraps every
+ * network-level failure in an ApiError with status 0, so the TypeError this
+ * used to look for never arrives — and the bare browser string was shown
+ * instead of any of the below, which is exactly the "Failed to fetch" that was
+ * reported from the desk.
+ *
+ * The two cases read differently on purpose. A *timeout* is an API that is
+ * there and slow, which happens when a sleeping function and a suspended
+ * database are woken by the same request; pressing the button again works, and
+ * the message should say so rather than sending somebody to check settings.
+ * Anything else at status 0 is a request the browser refused to complete, which
+ * is a configuration matter and does need the connection check.
  */
-function describeSignInError(err: unknown): string {
-  if (err instanceof TypeError) {
-    return `Could not reach the API at ${API_URL || "(not configured)"}. Run the connection check below — it names which step failed and what to change.`;
+type SignInError = {
+  message: string;
+  /** Whether the connection check is worth offering, or would be a red herring. */
+  worthDiagnosing: boolean;
+};
+
+function describeSignInError(err: unknown): SignInError {
+  const unreachable = {
+    message: `Could not reach the API at ${API_URL || "(not configured)"}. Run the connection check below — it names which step failed and what to change.`,
+    worthDiagnosing: true,
+  };
+  if (err instanceof ApiError && err.status === 0) {
+    if (/did not answer/i.test(err.message)) {
+      return {
+        message:
+          "The API is taking longer than usual to answer — it goes to sleep when idle and is waking up. Press Sign in again in a moment.",
+        worthDiagnosing: false,
+      };
+    }
+    return unreachable;
   }
-  return err instanceof Error ? err.message : "Sign in failed";
+  if (err instanceof TypeError) return unreachable;
+  return {
+    message: err instanceof Error ? err.message : "Sign in failed",
+    // A refused password is not a connectivity problem, and a diagnostic panel
+    // under it invites somebody to go looking in the wrong place.
+    worthDiagnosing: false,
+  };
 }
 
 /**
@@ -90,8 +127,13 @@ export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [formError, setFormError] = useState<string | null>(null);
+  const [formError, setFormError] = useState<SignInError | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  // Wakes the API while the email and password are being typed, so the press
+  // of Sign in does not have to pay for a cold function AND a suspended
+  // database before it can be answered.
+  const warm = useWarmApi();
 
   // A refused Google sign-in redirects back here with its reason, because the
   // person is in a browser mid-flow and a JSON error page is a dead end.
@@ -103,7 +145,13 @@ export default function LoginPage() {
   // Dismissed the moment they try something else, so a stale message does not
   // sit over a fresh attempt.
   const [dismissed, setDismissed] = useState(false);
-  const error = formError ?? (dismissed ? null : redirected);
+  const error: SignInError | null =
+    formError ??
+    // An expired session and a refused Google sign-in both reached the API
+    // perfectly well, so neither wants a connectivity diagnostic under it.
+    (dismissed || !redirected
+      ? null
+      : { message: redirected, worthDiagnosing: false });
 
   // Whether this deployment has Google configured. Asked rather than assumed:
   // a "Continue with Google" button on a deployment without it sends people
@@ -335,7 +383,22 @@ export default function LoginPage() {
 
             {error ? (
               <p className="rounded-lg border border-accent-red/20 bg-accent-red-soft px-3 py-2 text-xs text-accent-red">
-                {error}
+                {error.message}
+              </p>
+            ) : warm === "unreachable" ? (
+              /* Said BEFORE the button is pressed. The API was pinged the
+                 moment this page opened; if that ping did not come back there
+                 is no point letting somebody type a password and blame it. */
+              <p className="rounded-lg border border-accent-orange/20 bg-accent-orange-soft px-3 py-2 text-xs text-accent-orange">
+                The API is not answering yet. Signing in may need a second
+                attempt — or run the connection check below.
+              </p>
+            ) : warm === "waking" ? (
+              /* Two or three seconds of a cold start, named rather than hidden.
+                 The alternative is a button that appears to do nothing. */
+              <p className="flex items-center gap-2 px-1 text-[11px] text-muted">
+                <Loader2 className="size-3 animate-spin" />
+                Waking the API…
               </p>
             ) : null}
 
@@ -360,7 +423,9 @@ export default function LoginPage() {
             Shown once a sign-in has failed, rather than always: on a working
             deployment it is noise, and on a broken one it is the whole answer.
           */}
-          {!isDemoMode && error ? <ConnectionCheck /> : null}
+          {!isDemoMode && (error?.worthDiagnosing || warm === "unreachable") ? (
+            <ConnectionCheck />
+          ) : null}
 
           {isDemoMode ? (
             <p className="mt-5 rounded-lg border border-border bg-card/40 px-3 py-2.5 text-center text-[11px] leading-relaxed text-muted">

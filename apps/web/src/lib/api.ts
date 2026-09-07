@@ -174,3 +174,54 @@ export async function apiFetch<T>(
   }
   throw last;
 }
+
+/**
+ * Wakes the API before anybody needs it.
+ *
+ * Everything behind this dashboard sleeps when nobody is using it: the API is a
+ * serverless function with no instance running, and Postgres suspends its
+ * compute after a few idle minutes. Neither is slow once awake — but the FIRST
+ * request after a quiet period pays for both, one after the other, and that
+ * request was always the one a person had just made. Leave the tab overnight,
+ * come back, press Sign in, and the press that should take 200ms takes several
+ * seconds or fails outright.
+ *
+ * So the waking is moved off the person and onto the page. Opening the sign-in
+ * screen fires this immediately; by the time an email and a password have been
+ * typed the function is up and the database is out of suspend, and the press
+ * lands on something warm.
+ *
+ * It asks /health specifically, because that endpoint runs `SELECT 1`. A ping
+ * that only reached the function would wake half of what is asleep and leave
+ * the database wake-up still charged to the sign-in.
+ *
+ * Failure is not reported to the caller and not retried hard. This is an
+ * optimisation: if it does not land, the real request behaves exactly as it did
+ * before, which is to say it retries on its own.
+ */
+type WarmState = "cold" | "waking" | "ready" | "unreachable";
+
+let warmAt = 0;
+let warming: Promise<WarmState> | undefined;
+
+/** A function stays warm for a few minutes; re-pinging inside that is waste. */
+const WARM_FOR_MS = 60_000;
+
+export function warmUp(): Promise<WarmState> {
+  if (isDemoMode) return Promise.resolve("ready");
+  if (Date.now() - warmAt < WARM_FOR_MS) return Promise.resolve("ready");
+  // De-duplicated: mount, focus and a reconnect can all fire at once, and three
+  // cold-start requests wake three instances instead of one.
+  warming ??= apiFetch<{ status?: string }>("/health", undefined, { retries: 1 })
+    .then((): WarmState => {
+      warmAt = Date.now();
+      return "ready";
+    })
+    .catch((): WarmState => "unreachable")
+    .finally(() => {
+      warming = undefined;
+    });
+  return warming;
+}
+
+export type { WarmState };
