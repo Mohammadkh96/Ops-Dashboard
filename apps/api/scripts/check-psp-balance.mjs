@@ -642,7 +642,7 @@ section('fitting how wrong this method has been');
   // 20,000 in and 10,000 out flowed between them, and the estimate finished
   // 150 high.
   const one = [at({ drift: 150, in: 30000, out: 15000 }), at({ drift: null, in: 10000, out: 5000 })];
-  const fit = fitDrift(one);
+  const fit = fitDrift(one, rules);
   ok('one interval is one sample', fit?.samples === 1, fit);
   ok('the volume is the difference of the totals', fit?.volume === 30000, fit);
   ok('and the rate is drift over volume', Math.abs(fit.rate - 150 / 30000) < 1e-12, fit);
@@ -656,7 +656,7 @@ section('fitting how wrong this method has been');
     at({ drift: 10, in: 50050, out: 49950 }),   // step of 100 — the outlier, 10%
     at({ drift: 900, in: 50000, out: 49900 }),  // step of 99,900 — about 0.9%
     at({ drift: null, in: 0, out: 0 }),
-  ]);
+  ], rules);
   const mean = (10 / 100 + 900 / 99900) / 2;
   ok('two intervals', pooled?.samples === 2, pooled);
   ok('over the volume of both', pooled?.volume === 100000, pooled);
@@ -667,15 +667,15 @@ section('fitting how wrong this method has been');
   );
 
   // The estimate can also run UNDER — nothing here assumes a direction.
-  const under = fitDrift([at({ drift: -60, in: 20000, out: 10000 }), at({ drift: null, in: 0, out: 0 })]);
+  const under = fitDrift([at({ drift: -60, in: 20000, out: 10000 }), at({ drift: null, in: 0, out: 0 })], rules);
   ok('a negative drift gives a negative rate', under.rate < 0, under);
 
   section('what the fit refuses to count');
   {
     // Fewer than two anchors is no interval at all: an anchor has to be
     // CORRECTED before there is any error to measure.
-    ok('one anchor is not a measurement', fitDrift([at({ drift: 150, in: 1, out: 1 })]) === null);
-    ok('no anchors is not a measurement', fitDrift([]) === null);
+    ok('one anchor is not a measurement', fitDrift([at({ drift: 150, in: 1, out: 1 })], rules) === null);
+    ok('no anchors is not a measurement', fitDrift([], rules) === null);
 
     // A baseline-less anchor predates baselines and has no volume to attribute
     // its drift to. Counting it would divide a real drift by somebody else's volume.
@@ -684,7 +684,7 @@ section('fitting how wrong this method has been');
       fitDrift([
         { drift: 150, baselineIn: null, baselineOut: null, baselineRules: rules },
         at({ drift: null, in: 0, out: 0 }),
-      ]) === null,
+      ], rules) === null,
     );
 
     // Rules changed mid-interval: the two totals count different things, so
@@ -695,25 +695,81 @@ section('fitting how wrong this method has been');
       fitDrift([
         { drift: 150, baselineIn: 30000, baselineOut: 15000, baselineRules: rules },
         { drift: null, baselineIn: 10000, baselineOut: 5000, baselineRules: { add: ['deposit'], subtract: ['payout'] } },
-      ]) === null,
+      ], rules) === null,
     );
 
-    // No volume, no rate — dividing a drift by zero volume is an infinity that
-    // would land on a screen as a balance.
-    ok(
-      'a zero-volume interval is skipped',
-      fitDrift([at({ drift: 150, in: 100, out: 100 }), at({ drift: null, in: 100, out: 100 })]) === null,
-    );
-    ok(
-      'and so is a negative one',
-      fitDrift([at({ drift: 150, in: 10, out: 10 }), at({ drift: null, in: 100, out: 100 })]) === null,
-    );
+    // No volume, no RATE — dividing a drift by zero volume is an infinity that
+    // would land on a screen as a balance. But the interval is not worthless,
+    // and throwing it out entirely was costing more than it saved.
+    //
+    // Match2Pay SC: its newest correction was 0.00 over a window with no
+    // transactions in it at all. Skipped, so the only surviving evidence was an
+    // older window that had drifted 23.75 — and a balance that was in truth
+    // 5.87 LOW got told it was 37.07 high. An hour is an hour whether or not
+    // anything happened in it, and "nothing moved, nothing drifted" is the
+    // strongest statement available about a balance that drifts on its own.
+    {
+      const quiet = fitDrift(
+        [at({ drift: 150, in: 100, out: 100 }), at({ drift: null, in: 100, out: 100 })],
+        rules,
+      );
+      ok('a zero-volume interval still counts as time', quiet?.samples === 1, quiet);
+      ok('but contributes no volume', quiet?.volume === 0, quiet);
+      ok(
+        'and no rate is claimed from it',
+        quiet?.rate === null,
+        quiet?.rate,
+      );
+      ok('while its drift is measurable per hour', Math.abs(quiet.perHour - 150 / 24) < 1e-9, quiet);
+    }
+
+    // A NEGATIVE volume is the counting totals going backwards — payments
+    // leaving the set on cancellation. Still not a denominator; still a real
+    // span of hours with a real drift in it.
+    {
+      const shrank = fitDrift(
+        [at({ drift: 150, in: 10, out: 10 }), at({ drift: null, in: 100, out: 100 })],
+        rules,
+      );
+      ok('a negative-volume interval claims no rate either', shrank?.rate === null, shrank);
+      ok('and is not counted as volume', shrank?.volumeSamples === 0, shrank);
+    }
+
+    // THE ONE THAT COST 426.96.
+    //
+    // An interval whose two anchors agree with each other, but were both
+    // measured under rules that are no longer running. It used to pass — the
+    // only comparison was curr against prev — so a fit could describe a
+    // configuration nobody was using and be applied to today's estimate.
+    //
+    // Worse, the panel's own advice is to change those settings. Following it
+    // moved the fit onto the last interval BEFORE the change and pinned it
+    // there: Match2Pay SL was corrected by 426.96 when the estimate was 165.95
+    // out, which more than doubled the error and pointed it the other way.
+    {
+      const old = { add: ['sell'], subtract: ['buy'], statuses: ['confirmed'], feeFlatOut: 2.14 };
+      const stale = [
+        { drift: 150, baselineIn: 30000, baselineOut: 15000, baselineRules: old,
+          takenAt: '2026-09-03T00:00:00Z' },
+        { drift: null, baselineIn: 10000, baselineOut: 5000, baselineRules: old,
+          takenAt: '2026-09-02T00:00:00Z' },
+      ];
+      ok(
+        'an interval consistent with itself but not with the rules in force is skipped',
+        fitDrift(stale, rules) === null,
+      );
+      ok(
+        'and the same interval counts when those rules ARE in force',
+        fitDrift(stale, old)?.samples === 1,
+        fitDrift(stale, old),
+      );
+    }
 
     // An anchor with no recorded drift is the FIRST one ever entered: there was
     // no estimate for it to be wrong against.
     ok(
       'an anchor with no drift is skipped',
-      fitDrift([at({ drift: null, in: 30000, out: 15000 }), at({ drift: null, in: 0, out: 0 })]) === null,
+      fitDrift([at({ drift: null, in: 30000, out: 15000 }), at({ drift: null, in: 0, out: 0 })], rules) === null,
     );
 
     // A baseline-less anchor kills BOTH intervals touching it, not one: a
@@ -722,7 +778,7 @@ section('fitting how wrong this method has been');
       at({ drift: 150, in: 30000, out: 15000 }),
       at({ drift: 20, in: 10000, out: 5000 }),
       { drift: null, baselineIn: null, baselineOut: null, baselineRules: rules },
-    ]);
+    ], rules);
     ok('one good interval past a bad one still counts', mixed?.samples === 1, mixed);
     ok('and measures only that interval', mixed?.volume === 30000, mixed);
   }
@@ -736,7 +792,7 @@ section('fitting how wrong this method has been');
     const fitted = fitDrift([
       at({ drift: 89.4, in: volumeSince, out: 0 }),
       at({ drift: null, in: 0, out: 0 }),
-    ]);
+    ], rules);
     const expected = fitted.rate * volumeSince;
     ok(
       'a correction fitted on one period reproduces it on an identical one',
@@ -772,7 +828,7 @@ section('when the correction stops being founded on anything');
     at({ drift: 352.2, in: 40000, out: 30000 }),
     at({ drift: 89.4, in: 12000, out: 8000 }),
     at({ drift: null, in: 0, out: 0 }),
-  ]);
+  ], rules);
   ok('two corrections', fit?.samples === 2, fit);
   ok('the largest is the largest, not the latest', fit?.largest === 352.2, fit);
 
@@ -782,7 +838,7 @@ section('when the correction stops being founded on anything');
     at({ drift: -500, in: 40000, out: 30000 }),
     at({ drift: 10, in: 12000, out: 8000 }),
     at({ drift: null, in: 0, out: 0 }),
-  ]);
+  ], rules);
   ok('a large negative correction still counts as experience', mixedSign?.largest === 500, mixedSign);
 
   // And the threshold the screen uses, both ways round. Inside experience the
@@ -920,16 +976,40 @@ section('a balance that moves on its own, not on its throughput');
     at({ drift: 23.35, in: 168.19, out: 258.47, takenAt: '2026-09-04T05:42:00.000Z' }),
     at({ drift: 2.50, in: 0, out: 0, takenAt: '2026-09-02T09:42:00.000Z' }),
     at({ drift: null, in: 0, out: 0, takenAt: '2026-08-31T09:42:00.000Z' }),
-  ]);
-  ok('it spans the hours between the anchors', Math.abs((mt?.hours ?? 0) - 44) < 0.01, mt?.hours);
+  ], rules);
+  // BOTH intervals, including the quiet one — 92 hours, not 44.
+  //
+  // The middle anchor drifted 2.50 with nothing moving at all, over 48 hours.
+  // That interval used to be discarded for having no volume, which meant the
+  // per-hour rate was fitted ONLY on the busy window and then applied to quiet
+  // ones. The bias runs one way: excluding quiet hours from the denominator
+  // while keeping busy hours' drift in the numerator makes the projection too
+  // large exactly when the desk is quietest. Here it was 0.531/hour on 44
+  // hours; pooled honestly over 92 it is 0.281.
+  //
+  // This fixture is the argument for the change, not a casualty of it: an
+  // interval where nothing moved and the balance still drifted is the whole
+  // reason this provider is measured per hour rather than per dollar.
+  ok('it spans every hour between the anchors', Math.abs((mt?.hours ?? 0) - 92) < 0.01, mt?.hours);
+  ok('both corrections count', mt?.samples === 2, mt);
+  ok('but only the one with volume in it feeds the rate', mt?.volumeSamples === 1, mt);
   ok('and 5.5% of volume is not a fee', Math.abs(mt.rate) > 0.02, mt.rate);
-  ok('per hour is the readable unit', Math.abs(mt.perHour - 23.35 / 44) < 0.001, mt.perHour);
+  ok(
+    'per hour is the readable unit, pooled over all of them',
+    Math.abs(mt.perHour - (23.35 + 2.5) / 92) < 0.001,
+    mt.perHour,
+  );
+  ok(
+    'and the quiet window does NOT inflate the rate it was absent from',
+    Math.abs(mt.rate - 23.35 / 426.66) < 1e-9,
+    mt.rate,
+  );
 
   // ForumPay, for contrast: the same fit, a rate a provider could charge.
   const fp = fitDrift([
     at({ drift: 188.08, in: 15623.18, out: 39372.14, takenAt: '2026-09-04T05:42:00.000Z' }),
     at({ drift: null, in: 0, out: 0, takenAt: '2026-09-02T09:42:00.000Z' }),
-  ]);
+  ], rules);
   ok('ForumPay fits inside the fee ceiling', Math.abs(fp.rate) <= 0.02, fp.rate);
 
   // The failure the two bases exist to prevent, stated in money. A volume rate
@@ -943,9 +1023,122 @@ section('a balance that moves on its own, not on its throughput');
   );
   ok(
     'while the time basis still expects a day of movement',
-    Math.abs(mt.perHour * 24 - 12.7) < 0.2,
+    Math.abs(mt.perHour * 24 - 6.74) < 0.2,
     mt.perHour * 24,
   );
+}
+
+
+section('both Match2Pay terminals, exactly as the desk saw them');
+{
+  // 2026-09-07. Two terminals of the same provider, anchored at the same
+  // minute three days earlier, each showing a correction that moved its balance
+  // FURTHER from the portal than leaving it alone would have. Both are here
+  // because they failed for different reasons and the fix has to cover both.
+  //
+  //                       portal        estimate      panel said     truth
+  //   SL   123,519.32   123,685.27    123,258.31    est was +165.95, "corrected" to −261.01
+  //   SC   140,554.39   140,548.52    140,511.45    est was   −5.87, "corrected" to  −42.94
+  const now = { add: ['DEPOSIT'], subtract: ['WITHDRAWAL'], statuses: ['Completed'] };
+  const at = (n) => ({
+    drift: n.drift,
+    baselineIn: n.in,
+    baselineOut: n.out,
+    baselineRules: n.rules ?? now,
+    takenAt: n.takenAt,
+  });
+
+  // ── SL: a fit pinned to a configuration nobody is running ──
+  //
+  // The fee settings were changed, then the balance re-anchored. The interval
+  // ACROSS the change was correctly skipped — but the pair before it agreed
+  // with each other perfectly, so the fit described the old configuration and
+  // was applied to the new one. It reached back 273.36 of drift over 8,271.15
+  // of volume, called it 3.305%, and projected 426.96.
+  const before = { ...now, feeFlatIn: 1.02, feeFlatOut: 2.14 };
+  const sl = [
+    at({ drift: 28.25, in: 60000, out: 40000, takenAt: '2026-09-04T07:23:00.000Z' }),
+    at({ drift: 273.36, in: 55000, out: 39000, rules: before, takenAt: '2026-09-03T00:00:00.000Z' }),
+    at({ drift: null, in: 50000, out: 35728.85, rules: before, takenAt: '2026-09-01T03:24:00.000Z' }),
+  ];
+
+  // What the screen actually showed, reproduced: ask for the fit under the OLD
+  // rules and the discarded interval comes back, with the 3.305% on it. This is
+  // not a hypothetical — it is the number in the screenshot.
+  const asItWas = fitDrift(sl, before);
+  ok('the stale interval is what produced 3.305%', asItWas?.samples === 1, asItWas);
+  ok(
+    'and 8,271.15 of volume behind it',
+    Math.abs((asItWas?.volume ?? 0) - 8271.15) < 0.01,
+    asItWas?.volume,
+  );
+  ok(
+    'and it projected 426.96 over the three days since',
+    Math.abs(asItWas.perHour * 69.6 - 426.96) < 1.5,
+    asItWas.perHour * 69.6,
+  );
+
+  // And what it does now: nothing. No interval was measured under the rules in
+  // force, so there is no rate to quote and no correction to apply. The
+  // estimate stands on its own — 165.95 from the portal instead of 261.01.
+  ok('under the rules in force there is nothing to fit', fitDrift(sl, now) === null);
+
+  // ── SC: the correction that said "we were exactly right", thrown away ──
+  //
+  // Nothing moved between the last two anchors and the estimate came out on the
+  // nose. Zero volume, so the interval was discarded, so the only surviving
+  // evidence was an older window that had drifted 23.75 — and a balance that
+  // was 5.87 LOW was told it stood 37.07 high.
+  const sc = [
+    at({ drift: 0, in: 20000, out: 15000, takenAt: '2026-09-04T07:23:00.000Z' }),
+    at({ drift: 23.75, in: 20000, out: 15000, takenAt: '2026-09-03T00:00:00.000Z' }),
+    at({ drift: null, in: 19746.7, out: 14746.71, takenAt: '2026-09-01T03:24:00.000Z' }),
+  ];
+  const scWas = fitDrift(sc.slice(1), now); // as if the quiet interval did not exist
+  ok(
+    'the discarded window is what produced 4.688%',
+    Math.abs((scWas?.rate ?? 0) - 0.04688) < 0.0001,
+    scWas?.rate,
+  );
+  ok(
+    'and projected 37.07 over the three days since',
+    Math.abs(scWas.perHour * 69.6 - 37.07) < 1.5,
+    scWas.perHour * 69.6,
+  );
+
+  const scNow = fitDrift(sc, now);
+  ok('now the quiet window counts too', scNow?.samples === 2, scNow);
+  ok('though it adds no volume', scNow?.volumeSamples === 1, scNow);
+  ok(
+    'so the per-hour figure is roughly halved',
+    scNow.perHour < scWas.perHour * 0.75,
+    { was: scWas.perHour, now: scNow.perHour },
+  );
+
+  // ── and the rule that stops either of them publishing a balance ──
+  //
+  // Neither terminal reaches three corrections, and both were already past the
+  // largest gap ever measured. The doc on fitDrift has always said two is a
+  // hint and not a rate; this is that sentence with teeth. The service builds
+  // `trustworthy` from exactly these two facts.
+  const trustworthy = (fit, projected) =>
+    fit !== null && fit.samples >= 3 && Math.abs(projected) <= fit.largest;
+  ok(
+    'SL: one stale sample, already extrapolating — not enough to move a balance',
+    trustworthy(asItWas, 426.96) === false,
+  );
+  ok(
+    'SC: two samples, still extrapolating — likewise',
+    trustworthy(scNow, scNow.perHour * 69.6) === false,
+    { samples: scNow.samples, largest: scNow.largest },
+  );
+
+  // The whole point, in money: leaving the estimate alone is nearer the portal
+  // than every correction that was actually applied.
+  const nearer = (est, adjusted, portal) =>
+    Math.abs(est - portal) < Math.abs(adjusted - portal);
+  ok('SL: the plain estimate beats the correction', nearer(123685.27, 123258.31, 123519.32));
+  ok('SC: the plain estimate beats the correction', nearer(140548.52, 140511.45, 140554.39));
 }
 
 

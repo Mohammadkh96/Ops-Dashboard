@@ -521,7 +521,15 @@ export type BalanceView = {
     net: number;
     added: number;
     subtracted: number;
+    /** Every row counting right now, across ALL of time. Not "since". */
     counted: number;
+    /**
+     * How many payments moved SINCE the anchor, each way — the denominator for
+     * anything charged per payment. Null on an anchor taken before the counts
+     * were recorded; the screen says "not known" rather than guessing.
+     */
+    paymentsIn: number | null;
+    paymentsOut: number | null;
     ignoredDirection: number;
     ignoredStatus: number;
     ignoredCurrency: number;
@@ -556,11 +564,29 @@ export type BalanceView = {
    * number of intervals behind it so a two-sample hint cannot pass for a rate.
    */
   expectedDrift: {
+    /** Corrections behind the figure actually being projected. */
     samples: number;
-    rate: number;
+    /** Null when no comparable interval had volume, so no rate was measured. */
+    rate: number | null;
     fittedOver: number;
     expected: number;
     adjusted: number;
+    /**
+     * Which quantity the projection came from — and therefore the only unit it
+     * may honestly be quoted in. A percentage of volume printed beside a figure
+     * derived per hour describes a calculation nobody performed.
+     */
+    basis: "volume" | "time";
+    /** Drift per day. The readable form when the basis is time. */
+    perDay: number;
+    /** Hours the fit spans — the weight to put on a time-based projection. */
+    fittedOverHours: number;
+    /**
+     * Founded well enough to MOVE the headline figure — three corrections, and
+     * not already extrapolating. Below that the panel describes the error's
+     * direction without publishing a different balance. See the service.
+     */
+    trustworthy: boolean;
     /**
      * The projected drift has outgrown the largest correction ever measured, so
      * the rate is being extrapolated past everything it was fitted on. What

@@ -353,8 +353,19 @@ export function BalanceLine({ balance }: { balance: BalanceView | null }) {
   // Corrected wins, when there is a correction: showing a figure we have
   // MEASURED to be ninety dollars high, while holding the measurement, is not
   // caution. It is publishing a known error.
+  //
+  // ...but only a correction that is FOUNDED. Publishing a known error is one
+  // thing; publishing a guess dressed as a measurement is another, and both
+  // Match2Pay terminals were doing the second. Each had a single sample, each
+  // was already extrapolating past the largest gap ever measured, and each
+  // moved this figure further from the portal than leaving it alone: SL to
+  // 123,258.31 when the portal said 123,519.32 and the plain estimate said
+  // 123,685.27. The estimate was 165.95 out; the correction made it 261.01 out,
+  // in the other direction. `trustworthy` is that test, made in the service.
   const corrected =
-    expectedDrift && Math.abs(expectedDrift.expected) >= 0.01
+    expectedDrift &&
+    expectedDrift.trustworthy &&
+    Math.abs(expectedDrift.expected) >= 0.01
       ? expectedDrift
       : null;
   const shown = corrected ? corrected.adjusted : balance.estimate;
@@ -364,8 +375,13 @@ export function BalanceLine({ balance }: { balance: BalanceView | null }) {
   // while a quiet provider is fine after a month. The data sets the line:
   // once the projected drift outgrows the largest correction ever made, the
   // correction is extrapolating and the portal is the only honest answer.
-  const stale = corrected
-    ? corrected.beyondExperience
+  //
+  // Read off expectedDrift rather than off `corrected`, because a correction
+  // too thin to apply is still evidence that this anchor has been left too
+  // long. Gating the warning on the same test that gates the arithmetic would
+  // have silenced it in exactly the case it was built for.
+  const stale = expectedDrift?.beyondExperience
+    ? true
     : (balance.ageHours ?? 0) > STALE_HOURS;
 
   return (
@@ -382,7 +398,7 @@ export function BalanceLine({ balance }: { balance: BalanceView | null }) {
         {corrected ? "estimated, drift-corrected" : "estimated"} · anchored{" "}
         {age(balance.ageHours)}
       </span>
-      {stale && corrected ? (
+      {expectedDrift?.beyondExperience ? (
         <span className="text-[11px] text-accent-orange">
           Drifted further than we have ever measured — read the portal
         </span>
@@ -430,6 +446,28 @@ export function BalancePanel({
   const ignored =
     movement.ignoredDirection + movement.ignoredStatus + movement.ignoredCurrency;
 
+  /**
+   * How many payments moved since the anchor — the denominator for anything
+   * charged per payment, and the number the panel used to lack.
+   *
+   * `movement.counted` sits next to it and is NOT this: it is every row
+   * counting right now, across the whole ledger. The gap between the two is
+   * the difference between 8,731 and however many actually landed in three
+   * days, and the panel was inviting the reader to divide by the first.
+   *
+   * Null (older anchors) and zero or negative (a quiet window, or payments
+   * leaving the counting set on cancellation) both mean the same thing here:
+   * there is no denominator, so no per-payment figure is offered.
+   */
+  const paymentsSince =
+    movement.paymentsIn === null || movement.paymentsOut === null
+      ? null
+      : movement.paymentsIn + movement.paymentsOut;
+  const perPayment =
+    expectedDrift && paymentsSince !== null && paymentsSince > 0
+      ? Math.abs(expectedDrift.expected) / paymentsSince
+      : null;
+
   return (
     <>
       <div className="flex flex-col gap-3 rounded-xl border border-border bg-card/60 px-4 py-3">
@@ -464,7 +502,17 @@ export function BalancePanel({
                 valueClass={
                   movement.net >= 0 ? "text-accent-green" : "text-accent-orange"
                 }
-                note={`${movement.counted.toLocaleString()} transaction${movement.counted === 1 ? "" : "s"} counting`}
+                /* The count that belongs under the words "movement since" is
+                   the one that moved since. This said "8,731 transactions
+                   counting" beside three days of movement on a ledger going
+                   back to February — the whole counting set, printed as though
+                   it were the window. Falls back to the all-time figure, said
+                   as such, on an anchor too old to have recorded the counts. */
+                note={
+                  paymentsSince === null
+                    ? `${movement.counted.toLocaleString()} counting in total`
+                    : `${paymentsSince.toLocaleString()} payment${paymentsSince === 1 ? "" : "s"} since · ${movement.counted.toLocaleString()} counting in total`
+                }
               />
               <Figure
                 label={reported ? "We estimate" : "Estimated now"}
@@ -485,18 +533,45 @@ export function BalancePanel({
                 would end that and move a figure the desk has learned to read. */}
             {expectedDrift && Math.abs(expectedDrift.expected) >= 0.01 ? (
               <div className="flex flex-col gap-1 rounded-lg border border-border bg-card/40 px-3 py-2.5">
-                <span className="text-[11px] text-muted">
-                  On past form this estimate runs{" "}
-                  <span className="font-medium text-accent-orange">
-                    {expectedDrift.expected > 0 ? "high" : "low"} by about{" "}
-                    {money(Math.abs(expectedDrift.expected), currency)}
-                  </span>{" "}
-                  by now — so the balance is likely nearer{" "}
-                  <span className="tnum font-medium text-primary">
-                    {money(expectedDrift.adjusted, currency)}
+                {/* The correction states a different balance ONLY when it has
+                    earned the right to. Both Match2Pay terminals published one
+                    off a single sample while already extrapolating, and both
+                    landed further from the portal than saying nothing would
+                    have — SL by 95.06, SC by 37.07. Under-evidenced, the same
+                    measurement is still worth showing; it is the verb that has
+                    to change, from "the balance is" to "the error has leant". */}
+                {expectedDrift.trustworthy ? (
+                  <span className="text-[11px] text-muted">
+                    On past form this estimate runs{" "}
+                    <span className="font-medium text-accent-orange">
+                      {expectedDrift.expected > 0 ? "high" : "low"} by about{" "}
+                      {money(Math.abs(expectedDrift.expected), currency)}
+                    </span>{" "}
+                    by now — so the balance is likely nearer{" "}
+                    <span className="tnum font-medium text-primary">
+                      {money(expectedDrift.adjusted, currency)}
+                    </span>
+                    .
                   </span>
-                  .
-                </span>
+                ) : (
+                  <span className="text-[11px] text-muted">
+                    Past corrections have all run{" "}
+                    <span className="font-medium text-accent-orange">
+                      {expectedDrift.expected > 0 ? "high" : "low"}
+                    </span>
+                    , by around{" "}
+                    {money(Math.abs(expectedDrift.expected), currency)} at this
+                    point — but on{" "}
+                    {expectedDrift.samples === 0
+                      ? "no comparable correction"
+                      : `${expectedDrift.samples} correction${expectedDrift.samples === 1 ? "" : "s"}`}
+                    {expectedDrift.beyondExperience
+                      ? ", already past the largest gap ever measured,"
+                      : ""}{" "}
+                    that is a direction and not a figure. The estimate above is
+                    left alone.
+                  </span>
+                )}
                 {/* The sample size travels with the number, always. Two
                     corrections is a hint; presenting it as a rate is how a
                     guess becomes a figure somebody quotes to a provider. */}
@@ -507,23 +582,64 @@ export function BalancePanel({
                     weekend and 2.50 the window before — that is a balance
                     being revalued, not a provider charging, and a percentage
                     of throughput models it worst when the desk is quietest. */}
+                {/* This paragraph used to assert the OPPOSITE of what the
+                    service had just concluded. A rate above the fee ceiling is
+                    precisely why the projection switches to a per-hour basis —
+                    the code's reading is "this is not a charge at all" — and
+                    then the screen said "so it is very likely a FLAT charge".
+                    Both cannot be true, and the reader was being sent to type
+                    a fee into a provider that may not be charging one.
+
+                    So: state what is actually known (it does not scale with
+                    volume), list what that can be, and hand over the one number
+                    needed to test the flat-charge idea — the count of payments
+                    SINCE THE ANCHOR. The old advice said "divide by the number
+                    of payments" with only an all-time count on screen, which
+                    on SL meant dividing 426.96 by 8,731 and typing four
+                    nine-hundredths of a cent into a fee box. */}
                 {!expectedDrift.looksLikeFee ? (
                   <span className="flex items-start gap-1.5 text-[11px] text-accent-orange">
                     <Info className="mt-px size-3.5 shrink-0" />
-                    That is {(Math.abs(expectedDrift.rate) * 100).toFixed(1)}%
-                    of what moved, which no provider charges as a percentage —
-                    so it is very likely a FLAT charge per payment, which looks
-                    like a wild percentage on small payments and fits nothing
-                    twice. Divide this gap by the number of payments rather than
-                    by their value, and put the answer in the “flat, per
-                    payment” boxes under Balance rules.
+                    This gap does not scale with what moves
+                    {expectedDrift.rate !== null
+                      ? ` — it is ${(Math.abs(expectedDrift.rate) * 100).toFixed(1)}% of volume, which no provider charges as a percentage`
+                      : " — no interval with any volume in it has been measured yet"}
+                    , so it is being projected per hour instead. That shape fits
+                    three things: a FLAT charge per payment, a balance that is a
+                    valuation rather than a ledger, or handwork in the portal.
+                    {perPayment !== null ? (
+                      <>
+                        {" "}
+                        If it is a flat charge, it is{" "}
+                        <span className="tnum font-medium">
+                          {money(perPayment, currency)}
+                        </span>{" "}
+                        per payment across the{" "}
+                        {paymentsSince!.toLocaleString()} since this anchor —
+                        put that in the “flat, per payment” boxes under Balance
+                        rules and it will be tested against the next correction.
+                      </>
+                    ) : (
+                      <>
+                        {" "}
+                        To test the flat-charge reading, enter the balance again
+                        so the payments either side of it are counted.
+                      </>
+                    )}
                   </span>
                 ) : null}
                 <span className="text-[11px] text-muted">
-                  {(Math.abs(expectedDrift.rate) * 100).toFixed(3)}% of what
-                  moves, measured over {expectedDrift.samples} correction
+                  {/* Quoted in the unit the projection actually uses. A
+                      percentage of volume beside a figure derived per hour
+                      describes a calculation nobody performed. */}
+                  {expectedDrift.basis === "time"
+                    ? `${money(expectedDrift.perDay, currency)} a day`
+                    : `${((expectedDrift.rate ?? 0) * 100).toFixed(3)}% of what moves`}
+                  , measured over {expectedDrift.samples} correction
                   {expectedDrift.samples === 1 ? "" : "s"} and{" "}
-                  {money(expectedDrift.fittedOver, currency)} of volume
+                  {expectedDrift.basis === "time"
+                    ? `${expectedDrift.fittedOverHours.toLocaleString()} hours`
+                    : `${money(expectedDrift.fittedOver, currency)} of volume`}
                   {expectedDrift.samples < 3
                     ? " — too few to rely on yet, but it is the direction the error has taken every time"
                     : ""}

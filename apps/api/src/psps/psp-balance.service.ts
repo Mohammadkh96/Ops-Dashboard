@@ -174,6 +174,22 @@ export type BalanceView = {
     fees: number;
     /** How many rows went each way, and how many were left out and why. */
     counted: number;
+    /**
+     * How many payments moved SINCE the anchor, each way.
+     *
+     * Distinct from `counted`, which is every row counting right now, across
+     * all of time — and which the screen was showing directly under the words
+     * "movement since". On Match2Pay SL that read "8,731 transactions counting"
+     * beside a movement of three days, and the panel in the same breath told
+     * the reader to divide the gap by the number of payments. Following that
+     * gave a flat charge of 4.89 CENTS per payment. The denominator was the
+     * whole ledger.
+     *
+     * Null on an anchor taken before the counts were recorded, because the
+     * honest answer there is "not known", not a plausible-looking number.
+     */
+    paymentsIn: number | null;
+    paymentsOut: number | null;
     ignoredDirection: number;
     ignoredStatus: number;
     ignoredCurrency: number;
@@ -305,8 +321,14 @@ export type BalanceView = {
      *            irrelevant and hours are what accumulate.
      */
     basis: 'volume' | 'time';
-    /** Fraction of gross volume. Positive = the estimate runs high. */
-    rate: number;
+    /**
+     * Fraction of gross volume. Positive = the estimate runs high.
+     *
+     * Null when no comparable interval had any volume in it, so no rate was
+     * ever measured. Distinct from zero, which would be the claim that this
+     * provider takes nothing.
+     */
+    rate: number | null;
     /** Drift per day, which is the readable form when the basis is time. */
     perDay: number;
     /** Hours the fit spans. */
@@ -345,6 +367,17 @@ export type BalanceView = {
      * thousand a day is not the right one for a provider doing two hundred.
      */
     beyondExperience: boolean;
+    /**
+     * Whether this correction is founded well enough to MOVE the headline
+     * figure, as opposed to merely describing which way the error has leant.
+     *
+     * Three corrections and not already extrapolating. Below that the panel
+     * still says what it has seen — direction, size, sample count — but stops
+     * short of publishing a different balance, because both Match2Pay
+     * terminals published one and both were further from the portal than the
+     * plain estimate they replaced.
+     */
+    trustworthy: boolean;
   } | null;
   /**
    * What the provider appears to be charging, solved from past corrections.
@@ -791,9 +824,42 @@ function applyRules(
  *   • an interval whose anchors were measured under different rules — the
  *     volumes are then counts of different things and their difference is not
  *     a volume
+ *   • an interval measured under rules that are NO LONGER IN FORCE. This is not
+ *     the same test, and leaving it out was the expensive omission. The two
+ *     anchors either side of a rule change disagree with each other and were
+ *     correctly skipped — but the pair BEFORE the change agree with each other
+ *     perfectly, so they survived, and the fit then described a configuration
+ *     nobody is using any more. Match2Pay SL was corrected by 426.96 on the
+ *     strength of an interval measured before its fee settings were touched,
+ *     when the estimate was in truth only 165.95 out; the correction more than
+ *     doubled the error. Worse, the panel's own advice is to change those
+ *     settings — so following it silently pinned the correction to the last
+ *     configuration it was NOT supposed to describe.
  *   • an anchor with no baseline, from before baselines existed, which has no
  *     volume to attribute its drift to
- *   • a zero or negative volume, which is not an interval anything flowed in
+ *
+ * WHAT IS NO LONGER THROWN AWAY: an interval in which nothing moved.
+ *
+ * A zero volume is meaningless as the denominator of a rate, and it used to
+ * disqualify the interval outright. But it is not meaningless per HOUR — and
+ * for a provider whose drift is read per hour, an interval where nothing moved
+ * and nothing drifted is the single most informative measurement available: it
+ * says directly that time alone does not move this balance. Match2Pay SC threw
+ * away exactly that. Its newest correction was 0.00 over a window with no
+ * transactions in it at all, so the sole surviving evidence was an older window
+ * that had drifted 23.75, and a balance that was 5.87 LOW got told it was 37.07
+ * high. Discarding a zero does not lose one measurement in the noise; it hands
+ * the whole answer to whatever is left.
+ *
+ * So the two fits are now kept apart. The volume fit takes intervals that had
+ * volume, because a rate needs a denominator. The time fit takes all of them,
+ * because an hour is an hour whether or not anything happened in it. Pooling
+ * them into one numerator would inflate the rate by exactly the drift of every
+ * quiet interval, which is the ForumPay figure this must not disturb.
+ *
+ * POOLED, not averaged. Total drift over total volume, so a fortnight of
+ * trading counts for more than an afternoon of it. Averaging the per-interval
+ * rates would let one quiet day with a rounding error in it outvote everything.
  *
  * WHAT THIS IS NOT. It is not a fee schedule and does not pretend to be one; a
  * provider that changes its pricing invalidates it, and so does a manual
@@ -801,14 +867,30 @@ function applyRules(
  * It is a correction fitted to past error, and it is only ever shown WITH the
  * number of intervals behind it — two corrections is a hint, not a rate.
  */
-export function fitDrift(anchors: Anchor[]): {
-  /** Anchor-to-anchor intervals the rate was fitted over. */
+export function fitDrift(
+  anchors: Anchor[],
+  /**
+   * The rules in force right now. An interval measured under anything else
+   * describes a configuration that is no longer running, and correcting today's
+   * estimate by it is fitting the wrong machine.
+   */
+  current: MovementRules | null,
+): {
+  /** Intervals behind the TIME fit — every comparable one, quiet included. */
   samples: number;
-  /** Drift as a fraction of gross volume. Positive = we run high. */
-  rate: number;
+  /** Intervals behind the VOLUME fit — only those something flowed in. */
+  volumeSamples: number;
+  /**
+   * Drift as a fraction of gross volume. Positive = we run high.
+   *
+   * Null when nothing flowed in any comparable interval: there is then no
+   * denominator, and a rate of zero would read as "this provider charges
+   * nothing", which is a claim the data has not made.
+   */
+  rate: number | null;
   /** The volume behind the fit — the weight to put on it. */
   volume: number;
-  /** Total drift observed across those intervals. */
+  /** Total drift observed across the time-fit intervals. */
   drift: number;
   /** Hours the fit spans, so a drift driven by time rather than volume can be
    * expressed in the unit that actually drives it. */
@@ -825,11 +907,16 @@ export function fitDrift(anchors: Anchor[]): {
    */
   largest: number;
 } | null {
+  // The time fit: every comparable interval, whether or not money moved.
   let totalDrift = 0;
-  let totalVolume = 0;
+  let totalHours = 0;
   let samples = 0;
   let largest = 0;
-  let totalHours = 0;
+  // The volume fit: kept in its own numerator, or a quiet interval's drift
+  // would be added to the rate without adding anything to its denominator.
+  let volumeDrift = 0;
+  let totalVolume = 0;
+  let volumeSamples = 0;
 
   // Newest first, so each anchor pairs with the one after it in the array.
   for (let i = 0; i + 1 < anchors.length; i++) {
@@ -839,10 +926,8 @@ export function fitDrift(anchors: Anchor[]): {
     if (curr.baselineIn === null || curr.baselineOut === null) continue;
     if (prev.baselineIn === null || prev.baselineOut === null) continue;
     if (!sameRules(curr.baselineRules, prev.baselineRules)) continue;
-
-    const volume =
-      curr.baselineIn - prev.baselineIn + (curr.baselineOut - prev.baselineOut);
-    if (!(volume > 0)) continue;
+    // ...and under the rules that are running now, not merely under each other.
+    if (!sameRules(curr.baselineRules, current)) continue;
 
     const hours =
       (new Date(curr.takenAt).getTime() - new Date(prev.takenAt).getTime()) /
@@ -850,16 +935,24 @@ export function fitDrift(anchors: Anchor[]): {
     if (!(hours > 0)) continue;
 
     totalDrift += curr.drift;
-    totalVolume += volume;
     totalHours += hours;
     largest = Math.max(largest, Math.abs(curr.drift));
     samples++;
+
+    const volume =
+      curr.baselineIn - prev.baselineIn + (curr.baselineOut - prev.baselineOut);
+    if (volume > 0) {
+      volumeDrift += curr.drift;
+      totalVolume += volume;
+      volumeSamples++;
+    }
   }
 
-  if (!samples || totalVolume <= 0 || totalHours <= 0) return null;
+  if (!samples || totalHours <= 0) return null;
   return {
     samples,
-    rate: totalDrift / totalVolume,
+    volumeSamples,
+    rate: totalVolume > 0 ? volumeDrift / totalVolume : null,
     volume: round(totalVolume),
     hours: totalHours,
     perHour: totalDrift / totalHours,
@@ -1176,6 +1269,8 @@ export class PspBalanceService {
       added: 0,
       subtracted: 0,
       counted: 0,
+      paymentsIn: null,
+      paymentsOut: null,
       ignoredDirection: 0,
       ignoredStatus: 0,
       ignoredCurrency: 0,
@@ -1319,6 +1414,29 @@ export class PspBalanceService {
         feeMode,
       );
 
+    /**
+     * The payment counts either side of the anchor, subtracted the same way the
+     * money is.
+     *
+     * Only from a STORED baseline that recorded them: a reconstructed baseline
+     * counts a date window rather than a snapshot, and an anchor from before
+     * these columns existed knows nothing about them. Both give null, which the
+     * screen renders as "not known" — the alternative is a denominator that
+     * looks authoritative and is the size of the whole ledger.
+     */
+    const paymentsSince =
+      stored &&
+      anchor.baselineCountIn !== null &&
+      anchor.baselineCountOut !== null
+        ? {
+            paymentsIn:
+              now.countIn - (anchor.baselineCountIn + (arrived?.countIn ?? 0)),
+            paymentsOut:
+              now.countOut -
+              (anchor.baselineCountOut + (arrived?.countOut ?? 0)),
+          }
+        : { paymentsIn: null, paymentsOut: null };
+
     const added = round(now.in - baseline.in);
     const subtracted = round(now.out - baseline.out);
     // Only meaningful against a stored baseline: a reconstructed one carries no
@@ -1339,10 +1457,14 @@ export class PspBalanceService {
       subtracted,
       fees,
       net: round(added - subtracted),
-      // How many are counting NOW. Not "how many moved since": with a baseline
-      // there is no such number, because a payment can enter and leave the
-      // counting set without any date changing.
+      // How many are counting NOW, across all time.
       counted: now.counted,
+      // How many moved SINCE the anchor — the same subtraction as the money,
+      // done on the counts. Signed on purpose and not clamped at zero: a
+      // payment can LEAVE the counting set when it is cancelled or refunded,
+      // and a negative here is that happening, which is worth seeing rather
+      // than rounding away.
+      ...paymentsSince,
       ignoredDirection: now.ignoredDirection,
       ignoredStatus: now.ignoredStatus,
       ignoredCurrency: now.ignoredCurrency,
@@ -1361,7 +1483,7 @@ export class PspBalanceService {
     const fitted =
       stored && !sameRules(anchor.baselineRules, rules)
         ? null
-        : fitDrift(history);
+        : fitDrift(history, rules);
     const volumeSince = m.added + m.subtracted;
     // WHICH THING DRIVES THE DRIFT, decided by whether a fee-shaped answer is
     // even arithmetically possible.
@@ -1379,16 +1501,33 @@ export class PspBalanceService {
     // So above the fee ceiling the same history is re-read per HOUR, which is
     // the unit that actually moves it.
     const hoursSince = Math.max(0, (Date.now() - since.getTime()) / 3_600_000);
-    const looksLikeFee = fitted ? Math.abs(fitted.rate) <= MAX_FEE_RATE : true;
+    // A fee-shaped answer needs a rate, and a rate needs volume to have been
+    // measured. With none, the question "is this a percentage?" has not been
+    // asked and must not be answered — least of all in the affirmative, which
+    // is what a rate defaulting to zero would have said.
+    const looksLikeFee =
+      fitted?.rate === null || fitted?.rate === undefined
+        ? false
+        : Math.abs(fitted.rate) <= MAX_FEE_RATE;
     const expected = fitted
-      ? looksLikeFee
+      ? looksLikeFee && fitted.rate !== null
         ? fitted.rate * volumeSince
         : fitted.perHour * hoursSince
       : 0;
 
+    const beyondExperience = fitted
+      ? Math.abs(expected) > fitted.largest
+      : false;
+    // How many corrections stand behind the number actually being projected —
+    // which is not always the same count. The volume fit and the time fit take
+    // different sets of intervals, and quoting the wrong one overstates the
+    // evidence for whichever answer is on screen.
+    const samples =
+      fitted && looksLikeFee ? fitted.volumeSamples : (fitted?.samples ?? 0);
+
     const expectedDrift = fitted
       ? {
-          samples: fitted.samples,
+          samples,
           basis: looksLikeFee ? ('volume' as const) : ('time' as const),
           rate: fitted.rate,
           perDay: round(fitted.perHour * 24),
@@ -1396,8 +1535,20 @@ export class PspBalanceService {
           fittedOverHours: round(fitted.hours),
           expected: round(expected),
           adjusted: round(estimate - expected),
-          beyondExperience: Math.abs(expected) > fitted.largest,
+          beyondExperience,
           looksLikeFee,
+          /**
+           * Whether this correction is founded well enough to MOVE the figure,
+           * rather than merely to describe which way the error has leant.
+           *
+           * Both terminals of Match2Pay failed this and neither said so. Each
+           * had one sample, each was already extrapolating past the largest
+           * correction ever measured, and each shifted the headline balance
+           * further from the portal than leaving it alone would have: SL by
+           * 95.06, SC by 37.07. The doc above has always said two corrections
+           * is a hint and not a rate. This is that sentence, enforced.
+           */
+          trustworthy: samples >= 3 && !beyondExperience,
         }
       : null;
 
