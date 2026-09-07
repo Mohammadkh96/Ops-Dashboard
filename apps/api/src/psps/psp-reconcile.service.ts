@@ -13,16 +13,24 @@ import { has, readRules, type MovementRules } from './psp-balance.service';
  * this was written — while a client deposit of USD 3,999.40 sat in the ledger
  * recorded as USD 299.70. Both facts were true at once, and they are not in
  * tension: the client had sent a second transfer to a deposit address whose
- * invoice was already closed, the provider credited the wallet with everything
- * that arrived, and only the CRM's side of it was short. The money WAS there.
- * The balance was right. A customer was owed 3,699.70 and nothing on any screen
- * could say so, because every instrument we had compares totals.
+ * invoice was already closed, and the provider credited the wallet with
+ * everything that arrived. The money WAS there, which is exactly why the total
+ * agreed and went on agreeing.
+ *
+ * Nobody was out of pocket in the end. Somebody found it and put 3,699.70 into
+ * the CRM by hand — a figure that appears nowhere in the payment ledger, under
+ * no reference, because it never came through the payment flow at all. That is
+ * the part worth building for: the correction happened OUTSIDE every system
+ * that could have recorded why, so the ledger still says 299.70, the next
+ * occurrence has to be caught the same way, and in between the two the balance
+ * estimate ran 3,699.70 low with nothing able to say so.
  *
  * That is the whole argument. A balance is a sum, and a sum cannot tell you
- * WHICH payment is wrong — it cannot even tell you that one is, when the errors
- * are on the client side of a figure the provider reports correctly. The only
- * thing that finds it is a comparison at the level the error happens: one
- * payment at a time, against what the provider says it did.
+ * WHICH payment is wrong — it cannot even tell you that one is, when the money
+ * arrived, the provider reported the total correctly, and only our record of a
+ * single payment is short. The only thing that finds it is a comparison at the
+ * level the error happens: one payment at a time, against what the provider
+ * says it did.
  *
  * WHAT IT FOUND, on one month of two terminals, which is also what the checks
  * are built from:

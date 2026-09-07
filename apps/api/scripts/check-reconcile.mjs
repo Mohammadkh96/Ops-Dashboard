@@ -5,9 +5,11 @@
 // invents. In order of how much they cost:
 //
 //   • a deposit recorded at 299.70 that the provider settled at 3,999.40. The
-//     client had paid twice into an address whose invoice was already closed;
-//     the wallet got everything, the CRM got the first transfer. The balance was
-//     RIGHT throughout — no total could ever have found this.
+//     client had paid twice into an address whose invoice was already closed,
+//     so the wallet got everything and the balance was RIGHT throughout — no
+//     total could ever have found this. The client was made whole by a manual
+//     3,699.70 in the CRM that appears in no ledger under any reference, which
+//     is why the payment record still says 299.70 and why this check exists.
 //   • fourteen deposits the provider had completed and we still held under
 //     "Awaiting Webhook", "Pending" and "Declined".
 //   • "WITHDRAW" against "WITHDRAWAL": comparing the two words for equality
