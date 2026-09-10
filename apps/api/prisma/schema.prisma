@@ -316,10 +316,31 @@ model Client {
   @@index([kycStatus])
 }
 
+/// One VERIFICATION, not one client.
+///
+/// The distinction the provider's own export forced. A client is verified as
+/// many times as it takes: CU447 appears four times in one afternoon — invalid,
+/// invalid, invalid, valid — and CU702 four times, and CU643 three. Storing one
+/// row per client would have kept whichever attempt happened to be imported
+/// last and thrown away the history that explains it, which is exactly the
+/// history a compliance officer is asked about.
+///
+/// The client's CURRENT standing is therefore derived from these rows rather
+/// than stored as the truth: Client.kycStatus is a cache of the latest
+/// verification, and this table is the record.
 model KycCase {
-  id           String    @id @default(cuid())
-  client       Client    @relation(fields: [clientId], references: [id])
-  clientId     String
+  id String @id @default(cuid())
+
+  /// Nullable, and that is not laziness.
+  ///
+  /// The export carries verifications with no external applicant id at all —
+  /// an abandoned or duplicated application that never reached an account. It
+  /// still cost money, still has a decline reason, and still belongs in the
+  /// count. Requiring a client would mean dropping those silently, which is
+  /// the one thing a compliance record must not do.
+  client   Client? @relation(fields: [clientId], references: [id])
+  clientId String?
+
   status       KycStatus @default(PENDING)
   riskScore    Int       @default(0)
   assignedTo   User?     @relation("KycAssignee", fields: [assignedToId], references: [id])
@@ -328,8 +349,47 @@ model KycCase {
   reviewedAt   DateTime?
   notes        String?
 
+  // ---------- What the provider said ----------
+
+  /// Which provider. One column now, because a second one is how this becomes
+  /// unreadable later.
+  provider String @default("kycaid")
+
+  /// The provider's id for this verification — the natural key, and what makes
+  /// re-importing the same export update rather than duplicate.
+  verificationId String?
+  /// The provider's id for the PERSON, stable across their attempts. This is
+  /// what the live by-id API is called with.
+  applicantId    String?
+
+  /// Their word, untranslated: "VALID" in the export, "completed" in the
+  /// callback — the same vendor, two vocabularies. Kept verbatim so a mapping
+  /// that turns out wrong can be redone without re-importing.
+  providerStatus String?
+  /// Which form ran it. Not decoration: one entity's form includes ADDRESS in
+  /// its checks and the other's does not, so this is the only field that says
+  /// two clients were held to different standards.
+  form           String?
+  /// "Manual check" or "Automation check" — the split that explains the cost
+  /// and the delay.
+  method         String?
+  /// Why it failed, in the provider's words. Several at once, routinely.
+  declineReasons String[]
+  /// What this attempt was billed. A client verified four times was billed
+  /// four times.
+  priceEur       Decimal? @db.Decimal(10, 2)
+  /// Minutes from submission to decision. Zero for automation.
+  processingMin  Int?
+
+  /// The whole row as it arrived. The field nobody mapped today is the one a
+  /// dispute needs next month, and a KYC export cannot always be re-pulled.
+  raw Json?
+
+  @@unique([provider, verificationId])
   @@index([status])
   @@index([clientId])
+  @@index([applicantId])
+  @@index([submittedAt])
 }
 
 // ---------- Payments ----------

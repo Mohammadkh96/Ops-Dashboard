@@ -1087,7 +1087,9 @@ export class ModulesService {
         status: 'in_review',
         risk: 'high',
         riskScore: 78,
-        documents: 4,
+        attempts: 4,
+        providerStatus: null,
+        declineReasons: [],
         submittedAt: '2h ago',
         assignee: 'David Chen',
       },
@@ -1098,7 +1100,9 @@ export class ModulesService {
         status: 'pending',
         risk: 'low',
         riskScore: 22,
-        documents: 3,
+        attempts: 3,
+        providerStatus: null,
+        declineReasons: [],
         submittedAt: '3h ago',
         assignee: 'Unassigned',
       },
@@ -1109,7 +1113,9 @@ export class ModulesService {
         status: 'edd_required',
         risk: 'critical',
         riskScore: 91,
-        documents: 6,
+        attempts: 6,
+        providerStatus: null,
+        declineReasons: [],
         submittedAt: '5h ago',
         assignee: 'David Chen',
       },
@@ -1120,7 +1126,9 @@ export class ModulesService {
         status: 'pending',
         risk: 'medium',
         riskScore: 54,
-        documents: 2,
+        attempts: 2,
+        providerStatus: null,
+        declineReasons: [],
         submittedAt: '6h ago',
         assignee: 'Unassigned',
       },
@@ -1131,7 +1139,9 @@ export class ModulesService {
         status: 'approved_kyc',
         risk: 'low',
         riskScore: 18,
-        documents: 4,
+        attempts: 4,
+        providerStatus: null,
+        declineReasons: [],
         submittedAt: '1d ago',
         assignee: 'Sara Ahmed',
       },
@@ -1142,7 +1152,9 @@ export class ModulesService {
         status: 'rejected',
         risk: 'high',
         riskScore: 83,
-        documents: 5,
+        attempts: 5,
+        providerStatus: null,
+        declineReasons: [],
         submittedAt: '1d ago',
         assignee: 'David Chen',
       },
@@ -1153,32 +1165,62 @@ export class ModulesService {
         status: 'in_review',
         risk: 'medium',
         riskScore: 47,
-        documents: 3,
+        attempts: 3,
+        providerStatus: null,
+        declineReasons: [],
         submittedAt: '1d ago',
         assignee: 'Sara Ahmed',
       },
     ];
   }
 
+  /**
+   * Verifications, as the compliance screen reads them.
+   *
+   * There IS a real source now — see KycService. Until there was, this returned
+   * an empty list on a live database rather than the seeded fallback, which was
+   * the honest answer to "no integration yet"; it still is, for a live
+   * deployment that has imported nothing.
+   *
+   * `attempts` replaced a `documents` count that was computed as
+   * `2 + (riskScore % 5)` — a number with the shape of a fact and no source
+   * behind it, on the one screen where a made-up figure is least excusable.
+   * Attempts is real and is the more useful column anyway: a client verified
+   * four times in an afternoon is the finding.
+   */
   async kycCases() {
-    // Live: no invented rows. There is no real source for this yet, so an
-    // empty list is the honest answer — see isLive().
-    if (await this.isLive()) return [];
-    const fallback = this.kycFallback();
+    const live = await this.isLive();
+    const fallback = live ? [] : this.kycFallback();
     return this.safe(async () => {
       const rows = await this.prisma.kycCase.findMany({
         include: { client: true, assignedTo: true },
         orderBy: { submittedAt: 'desc' },
+        take: 500,
       });
       if (rows.length === 0) return fallback;
-      return rows.map((c, i) => ({
-        id: `k${i + 1}`,
-        client: c.client?.fullName ?? 'Unknown',
+
+      // How many times each client has been through it. Counted over the rows
+      // in hand rather than queried per row.
+      const attempts = new Map<string, number>();
+      for (const c of rows) {
+        if (!c.clientId) continue;
+        attempts.set(c.clientId, (attempts.get(c.clientId) ?? 0) + 1);
+      }
+
+      return rows.map((c) => ({
+        id: c.id,
+        // The account reference, not a name. This dashboard deliberately does
+        // not learn people's names from a KYC file — the reference is what
+        // joins to their payments, which is what anybody here needs.
+        client: c.client?.externalId ?? '(no account reference)',
         country: c.client?.country ?? '—',
         status: this.kycLabel(c.status),
         risk: this.lower(c.client?.riskLevel ?? 'LOW'),
         riskScore: c.riskScore,
-        documents: 2 + (c.riskScore % 5),
+        attempts: c.clientId ? (attempts.get(c.clientId) ?? 1) : 1,
+        /** Their word, so a mapping that reads oddly can be checked. */
+        providerStatus: c.providerStatus ?? null,
+        declineReasons: c.declineReasons,
         submittedAt: this.ago(c.submittedAt),
         assignee: c.assignedTo
           ? `${c.assignedTo.firstName} ${c.assignedTo.lastName}`

@@ -57,7 +57,12 @@ export type KycCase = {
   status: KycStatus;
   risk: Risk;
   riskScore: number;
-  documents: number;
+  /** How many times this client has been verified. Was an invented document
+   *  count; see the note on the compliance page. */
+  attempts: number;
+  /** The provider's own word, so a mapping that reads oddly can be checked. */
+  providerStatus: string | null;
+  declineReasons: string[];
   submittedAt: string;
   assignee: string;
 };
@@ -124,13 +129,13 @@ export const gateways: Gateway[] = [
 ];
 
 export const kycCases: KycCase[] = [
-  { id: "k1", client: "Client #55210", country: "NG", status: "in_review", risk: "high", riskScore: 78, documents: 4, submittedAt: "2h ago", assignee: "David Chen" },
-  { id: "k2", client: "Client #90117", country: "AE", status: "pending", risk: "low", riskScore: 22, documents: 3, submittedAt: "3h ago", assignee: "Unassigned" },
-  { id: "k3", client: "Client #40551", country: "BR", status: "edd_required", risk: "critical", riskScore: 91, documents: 6, submittedAt: "5h ago", assignee: "David Chen" },
-  { id: "k4", client: "Client #12844", country: "IN", status: "pending", risk: "medium", riskScore: 54, documents: 2, submittedAt: "6h ago", assignee: "Unassigned" },
-  { id: "k5", client: "Client #66203", country: "GB", status: "approved_kyc", risk: "low", riskScore: 18, documents: 4, submittedAt: "1d ago", assignee: "Sara Ahmed" },
-  { id: "k6", client: "Client #30918", country: "SA", status: "rejected", risk: "high", riskScore: 83, documents: 5, submittedAt: "1d ago", assignee: "David Chen" },
-  { id: "k7", client: "Client #22981", country: "DE", status: "in_review", risk: "medium", riskScore: 47, documents: 3, submittedAt: "1d ago", assignee: "Sara Ahmed" },
+  { id: "k1", client: "Client #55210", country: "NG", status: "in_review", risk: "high", riskScore: 78, attempts: 4, providerStatus: null, declineReasons: [], submittedAt: "2h ago", assignee: "David Chen" },
+  { id: "k2", client: "Client #90117", country: "AE", status: "pending", risk: "low", riskScore: 22, attempts: 3, providerStatus: null, declineReasons: [], submittedAt: "3h ago", assignee: "Unassigned" },
+  { id: "k3", client: "Client #40551", country: "BR", status: "edd_required", risk: "critical", riskScore: 91, attempts: 6, providerStatus: null, declineReasons: [], submittedAt: "5h ago", assignee: "David Chen" },
+  { id: "k4", client: "Client #12844", country: "IN", status: "pending", risk: "medium", riskScore: 54, attempts: 2, providerStatus: null, declineReasons: [], submittedAt: "6h ago", assignee: "Unassigned" },
+  { id: "k5", client: "Client #66203", country: "GB", status: "approved_kyc", risk: "low", riskScore: 18, attempts: 4, providerStatus: null, declineReasons: [], submittedAt: "1d ago", assignee: "Sara Ahmed" },
+  { id: "k6", client: "Client #30918", country: "SA", status: "rejected", risk: "high", riskScore: 83, attempts: 5, providerStatus: null, declineReasons: [], submittedAt: "1d ago", assignee: "David Chen" },
+  { id: "k7", client: "Client #22981", country: "DE", status: "in_review", risk: "medium", riskScore: 47, attempts: 3, providerStatus: null, declineReasons: [], submittedAt: "1d ago", assignee: "Sara Ahmed" },
 ];
 
 export const incidents: Incident[] = [

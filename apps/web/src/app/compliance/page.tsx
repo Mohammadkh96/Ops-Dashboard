@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { ShieldPlus, Check, AlertTriangle } from "lucide-react";
 
 import { PageHeader } from "@/components/ui/page-header";
+import { ImportVerifications } from "@/components/compliance/import-verifications";
 import { StatTileRow, type Stat } from "@/components/ui/stat-tile";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { FilterBar } from "@/components/ui/filter-bar";
@@ -93,7 +94,12 @@ export default function CompliancePage() {
   const columns: Column<KycCase>[] = [
     { key: "client", header: "Client", render: (c) => <span className="font-medium">{c.client}</span> },
     { key: "country", header: "Country", render: (c) => <span className="text-muted-foreground">{c.country}</span> },
-    { key: "documents", header: "Documents", render: (c) => <span className="tnum text-muted-foreground">{c.documents}</span> },
+    /* Was a "Documents" count computed as 2 + (riskScore % 5) — a number with
+       the shape of a fact and nothing behind it, on the one screen where that
+       is least excusable. Attempts is real, and is the more useful column: a
+       client verified four times in an afternoon is the finding. */
+    { key: "attempts", header: "Attempts", align: "right", render: (c) => <span className={`tnum ${c.attempts > 1 ? "text-accent-orange" : "text-muted-foreground"}`}>{c.attempts}</span> },
+    { key: "declineReasons", header: "Why", render: (c) => <span className="text-muted" title={c.declineReasons.join(", ")}>{c.declineReasons.length ? c.declineReasons.join(", ") : "—"}</span> },
     { key: "risk", header: "Risk", render: (c) => <RiskBadge level={c.risk} /> },
     { key: "riskScore", header: "Risk score", align: "right", render: (c) => <span className={`tnum font-medium ${scoreTone(c.riskScore)}`}>{c.riskScore}</span> },
     { key: "status", header: "Status", render: (c) => <StatusBadge status={c.status} /> },
@@ -116,6 +122,8 @@ export default function CompliancePage() {
       />
 
       <StatTileRow stats={stats} />
+
+      <ImportVerifications />
 
       <div className="flex flex-col gap-4">
         <FilterBar
@@ -146,7 +154,7 @@ export default function CompliancePage() {
         open={selected !== null}
         onOpenChange={(o) => !o && setSelected(null)}
         title={selected?.client ?? ""}
-        subtitle={selected ? `${selected.country} · ${selected.documents} documents` : ""}
+        subtitle={selected ? `${selected.country} · ${selected.attempts} attempt${selected.attempts === 1 ? "" : "s"}` : ""}
         footer={
           selected ? (
             <div className="flex gap-2">
@@ -177,7 +185,9 @@ export default function CompliancePage() {
               {[
                 ["Client", selected.client],
                 ["Country", selected.country],
-                ["Documents", String(selected.documents)],
+                ["Attempts", String(selected.attempts)],
+                ["Provider said", selected.providerStatus ?? "—"],
+                ["Decline reasons", selected.declineReasons.length ? selected.declineReasons.join(", ") : "—"],
                 ["Assignee", selected.assignee],
                 ["Submitted", selected.submittedAt],
               ].map(([k, v]) => (
