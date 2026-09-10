@@ -6,6 +6,7 @@ import { ShieldPlus, Check, AlertTriangle } from "lucide-react";
 import { PageHeader } from "@/components/ui/page-header";
 import { ImportVerifications } from "@/components/compliance/import-verifications";
 import { SyncProvider } from "@/components/compliance/sync-provider";
+import { ByBrand } from "@/components/compliance/by-brand";
 import { StatTileRow, type Stat } from "@/components/ui/stat-tile";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { FilterBar } from "@/components/ui/filter-bar";
@@ -192,6 +193,7 @@ export default function CompliancePage() {
           for to load history or when the provider is down. */}
       <SyncProvider />
       <ImportVerifications />
+      <ByBrand />
 
       <div className="flex flex-col gap-4">
         <FilterBar

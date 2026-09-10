@@ -786,6 +786,70 @@ export class KycService {
    * document, document not visible. Those are fixable at the form, not at the
    * desk.
    */
+  /**
+   * The two brands, side by side.
+   *
+   * WHY THE FORM IS THE BRAND. Each entity runs its own KYCAID form — "DEFAULT
+   * KYC Tradin MAU" and "DEFAULT KYC" — and they are not the same check: one
+   * includes ADDRESS and the other does not. So the form column is the only
+   * record that two clients were held to different standards, and a single
+   * total across both averages away the difference.
+   *
+   * `null` is kept as a row of its own rather than folded into either. A
+   * verification whose form did not come through is a gap in the import, and a
+   * gap silently added to one brand's count is worse than a gap that says so.
+   */
+  async byForm() {
+    const [grouped, unlinked] = await Promise.all([
+      this.prisma.kycCase.groupBy({
+        by: ['form', 'status'],
+        _count: { _all: true },
+        _sum: { priceEur: true },
+      }),
+      this.prisma.kycCase.groupBy({
+        by: ['form'],
+        where: { clientId: null },
+        _count: { _all: true },
+      }),
+    ]);
+
+    const forms = new Map<
+      string,
+      {
+        form: string | null;
+        verifications: number;
+        byStatus: Record<string, number>;
+        spentEur: number;
+        /** Settled against no account of ours — see ImportResult.unlinked. */
+        unlinked: number;
+      }
+    >();
+    const keyOf = (form: string | null) => form ?? ' none';
+
+    for (const g of grouped) {
+      const key = keyOf(g.form);
+      const row = forms.get(key) ?? {
+        form: g.form,
+        verifications: 0,
+        byStatus: {},
+        spentEur: 0,
+        unlinked: 0,
+      };
+      row.verifications += g._count._all;
+      row.byStatus[g.status] = (row.byStatus[g.status] ?? 0) + g._count._all;
+      row.spentEur += g._sum.priceEur === null ? 0 : Number(g._sum.priceEur);
+      forms.set(key, row);
+    }
+    for (const u of unlinked) {
+      const row = forms.get(keyOf(u.form));
+      if (row) row.unlinked = u._count._all;
+    }
+
+    return [...forms.values()].sort(
+      (a, b) => b.verifications - a.verifications,
+    );
+  }
+
   async summary() {
     const [total, byStatus, byReason, cost, repeats] = await Promise.all([
       this.prisma.kycCase.count(),
@@ -813,6 +877,7 @@ export class KycService {
     const retried = repeats.filter((r) => r._count._all > 1);
     return {
       verifications: total,
+      byForm: await this.byForm(),
       byStatus: byStatus.map((s) => ({
         status: s.status,
         count: s._count._all,

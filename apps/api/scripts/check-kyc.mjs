@@ -485,6 +485,55 @@ async function run() {
     // total, filters applied to whatever those 500 happened to be, and an
     // attempts count taken over the same window.
 
+    section('the two brands, split by their form');
+    {
+      // The two entities run separate forms and the checks are NOT the same —
+      // one includes ADDRESS. A single total across both averages away the one
+      // thing a compliance officer gets asked about.
+      // Names of their own, so these assertions are about these five rows and
+      // not about whatever the earlier sections happened to leave behind.
+      const A = 'Brand A KYC (address)';
+      const B = 'Brand B KYC';
+      const noForm = {
+        ...v({ id: 'bd-5', ref: 'CU9005', status: 'VALID', price: 1 }),
+        form: null,
+      };
+      await kyc.importVerifications([
+        v({ id: 'bd-1', ref: 'CU9001', status: 'VALID', form: A, price: 2 }),
+        v({ id: 'bd-2', ref: 'CU9002', status: 'INVALID', form: A, price: 2,
+            reasons: ['Wrong name'] }),
+        v({ id: 'bd-3', ref: 'CU9003', status: 'VALID', form: B, price: 3 }),
+        // No account reference: kept and counted under its brand, never dropped.
+        v({ id: 'bd-4', ref: null, status: 'INVALID', form: B, price: 3,
+            reasons: ['Other'] }),
+        // No form at all — the shape a file import takes when the export was
+        // missing that column.
+        noForm,
+      ]);
+
+      const byForm = await kyc.byForm();
+      const a = byForm.find((f) => f.form === A);
+      const b = byForm.find((f) => f.form === B);
+      const none = byForm.find((f) => f.form === null);
+
+      ok('each form is its own line', Boolean(a && b), byForm.map((f) => f.form));
+      ok('with its own verdicts',
+         a.byStatus.APPROVED === 1 && a.byStatus.REJECTED === 1, a.byStatus);
+      ok('and its own spend', Number(a.spentEur) === 4, a.spentEur);
+      ok('a verification with no account is counted under its brand',
+         b.unlinked === 1, b.unlinked);
+      // The failure this prevents: a gap quietly added to one brand's total.
+      ok('a verification with NO form is its own row, not folded into a brand',
+         Boolean(none) && none.verifications >= 1, byForm.map((f) => f.form));
+      ok('and neither brand absorbed it',
+         a.verifications === 2 && b.verifications === 2,
+         { a: a.verifications, b: b.verifications });
+      // Every row lands in exactly one line, so the split cannot lose any.
+      ok('so the lines still add up to the whole table',
+         byForm.reduce((n, f) => n + f.verifications, 0)
+           === (await prisma.kycCase.count()));
+    }
+
     section('a page is a page, not a ceiling');
     {
       const modules = app.get(ModulesService);

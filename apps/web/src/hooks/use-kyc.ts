@@ -24,8 +24,25 @@ export type KycCase = {
   submittedAt: string;
 };
 
+/**
+ * One KYCAID form — which in practice is one brand.
+ *
+ * The two entities run separate forms and the checks are not identical (one
+ * includes ADDRESS), so a single total across both averages away the thing a
+ * compliance officer is asked about.
+ */
+export type KycFormBreakdown = {
+  /** null where the import carried no form — kept, never folded into a brand. */
+  form: string | null;
+  verifications: number;
+  byStatus: Record<string, number>;
+  spentEur: number;
+  unlinked: number;
+};
+
 export type KycSummary = {
   verifications: number;
+  byForm: KycFormBreakdown[];
   byStatus: { status: string; count: number }[];
   declineReasons: { reason: string; count: number }[];
   spentEur: number;
