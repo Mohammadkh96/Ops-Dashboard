@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 
+import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   isFailedState,
@@ -1188,23 +1189,76 @@ export class ModulesService {
    * Attempts is real and is the more useful column anyway: a client verified
    * four times in an afternoon is the finding.
    */
-  async kycCases() {
+  /**
+   * How many verifications match — the number the page size is measured
+   * against.
+   *
+   * Separate from the page so "showing 501–1,000 of 12,129" can be true. The
+   * screen previously showed the length of its own array as the total, which is
+   * the one number it definitely is not.
+   */
+  async kycCaseCount(opts: KycCaseQuery = {}): Promise<{ total: number }> {
+    return this.safe(
+      async () => ({
+        total: await this.prisma.kycCase.count({ where: kycWhere(opts) }),
+      }),
+      { total: 0 },
+    );
+  }
+
+  async kycCases(opts: KycCaseQuery = {}) {
     const live = await this.isLive();
     const fallback = live ? [] : this.kycFallback();
+    /**
+     * A PAGE, and it says so.
+     *
+     * This used to be `take: 500` and nothing else. With a real import behind
+     * it that is not a page, it is a ceiling: verification 501 was unreachable
+     * by any means the dashboard offered, and the screen said "500 of 500" for
+     * a database holding twelve thousand — a truncation wearing the clothes of
+     * a total.
+     */
+    const take = Math.min(Math.max(opts.limit ?? 500, 1), 1000);
+    const skip = Math.max(opts.offset ?? 0, 0);
+
+    const where = kycWhere(opts);
+    const filtered = Boolean(opts.status || opts.risk || opts.q);
+
     return this.safe(async () => {
       const rows = await this.prisma.kycCase.findMany({
+        where,
         include: { client: true, assignedTo: true },
         orderBy: { submittedAt: 'desc' },
-        take: 500,
+        take,
+        skip,
       });
-      if (rows.length === 0) return fallback;
+      // A page past the end is empty, and that is an answer — not a reason to
+      // show demo data. Only an empty database falls back.
+      if (rows.length === 0) return skip > 0 || filtered ? [] : fallback;
 
-      // How many times each client has been through it. Counted over the rows
-      // in hand rather than queried per row.
+      /**
+       * How many times each client has been through it — asked of the whole
+       * table, not of this page.
+       *
+       * Counting over the rows in hand undercounts by construction: a client
+       * whose four attempts straddle a page boundary shows two on one page and
+       * two on the next, and "how many attempts did this person make" is the
+       * question the column exists to answer.
+       */
+      const clientIds = [
+        ...new Set(
+          rows.map((r) => r.clientId).filter((id): id is string => Boolean(id)),
+        ),
+      ];
       const attempts = new Map<string, number>();
-      for (const c of rows) {
-        if (!c.clientId) continue;
-        attempts.set(c.clientId, (attempts.get(c.clientId) ?? 0) + 1);
+      if (clientIds.length) {
+        const grouped = await this.prisma.kycCase.groupBy({
+          by: ['clientId'],
+          where: { clientId: { in: clientIds } },
+          _count: { _all: true },
+        });
+        for (const g of grouped)
+          if (g.clientId) attempts.set(g.clientId, g._count._all);
       }
 
       return rows.map((c) => ({
@@ -2571,4 +2625,60 @@ export class ModulesService {
       at: `${deskDate(a.createdAt)} ${deskTime(a.createdAt)}`,
     }));
   }
+}
+
+/** What the compliance table is asking for. */
+export type KycCaseQuery = {
+  limit?: number;
+  offset?: number;
+  /** A dashboard status word — `approved_kyc`, `rejected`, `in_review`… */
+  status?: string;
+  risk?: string;
+  /** Account reference or country, matched loosely. */
+  q?: string;
+};
+
+/**
+ * The filters, as a database clause.
+ *
+ * IN ONE PLACE because the count and the page must agree. Two copies of this
+ * is how a table ends up saying "showing 1–500 of 12,129" while the filter it
+ * is showing matches nine.
+ *
+ * They run in the database at all because they used to run in the browser,
+ * over whatever the single page happened to hold: searching for a client who
+ * sat past the cutoff returned nothing, and looked exactly like a client
+ * nobody had ever verified. That is the worst answer a compliance screen can
+ * give.
+ */
+function kycWhere(opts: KycCaseQuery): Prisma.KycCaseWhereInput {
+  const where: Prisma.KycCaseWhereInput = {};
+
+  const status = (opts.status ?? '').trim().toUpperCase();
+  if (status) {
+    // The dashboard says `approved_kyc` so nothing collides with the payment
+    // statuses on other screens; the column says APPROVED.
+    where.status = (
+      status === 'APPROVED_KYC' ? 'APPROVED' : status
+    ) as Prisma.KycCaseWhereInput['status'];
+  }
+
+  const risk = (opts.risk ?? '').trim().toUpperCase();
+  const q = (opts.q ?? '').trim();
+  if (risk || q) {
+    where.client = {
+      ...(risk
+        ? { riskLevel: risk as Prisma.ClientWhereInput['riskLevel'] }
+        : {}),
+      ...(q
+        ? {
+            OR: [
+              { externalId: { contains: q, mode: 'insensitive' as const } },
+              { country: { contains: q, mode: 'insensitive' as const } },
+            ],
+          }
+        : {}),
+    };
+  }
+  return where;
 }

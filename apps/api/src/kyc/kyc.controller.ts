@@ -3,14 +3,16 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   HttpException,
   Post,
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiExcludeEndpoint, ApiTags } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { assertCronSecret } from '../common/cron-secret';
 import { KycService, type VerificationRow } from './kyc.service';
 
 /**
@@ -96,6 +98,23 @@ export class KycController {
           `The provider read failed: ${why.slice(0, 600)}`,
         );
       });
+  }
+
+  /**
+   * The same read, on a schedule, so nobody has to press anything.
+   *
+   * Outside the session guard because Vercel Cron issues a plain GET and cannot
+   * carry one — which makes CRON_SECRET the whole of its protection, exactly as
+   * on the payment sync. Read-only either way: every call it makes is a GET.
+   */
+  @Get('sync/run')
+  @ApiExcludeEndpoint()
+  async cronSync(@Headers('authorization') auth?: string) {
+    assertCronSecret(auth);
+    return {
+      ranAt: new Date().toISOString(),
+      result: await this.kyc.syncRecent(),
+    };
   }
 
   /**

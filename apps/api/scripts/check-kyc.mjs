@@ -70,6 +70,7 @@ async function run() {
     require_('../dist/src/kyc/kyc.service');
   const { toVerificationRow, readDeclineReasons, readRows } =
     require_('../dist/src/kyc/kycaid.client');
+  const { ModulesService } = require_('../dist/src/modules/modules.service');
 
   const app = await createApp();
   await app.init();
@@ -475,6 +476,91 @@ async function run() {
       ok('naming the day to resume from', r.nextDate === '2026-08-02', r.nextDate);
       ok('the range it was given is echoed back',
          r.from === '2026-08-01' && r.to === '2026-08-31', r);
+    }
+
+    // ── The compliance table ──
+    //
+    // What this screen showed before: the first 500 rows of a 12,129-row
+    // import, a "500 of 500" that was a truncation wearing the clothes of a
+    // total, filters applied to whatever those 500 happened to be, and an
+    // attempts count taken over the same window.
+
+    section('a page is a page, not a ceiling');
+    {
+      const modules = app.get(ModulesService);
+      // 60 verifications for 30 clients — two each, so attempts is answerable
+      // and pages can be made to straddle a client.
+      const many = [];
+      for (let i = 0; i < 30; i++) {
+        for (let a = 0; a < 2; a++) {
+          many.push(v({
+            id: `pg-${i}-${a}`, ref: `CU8${String(i).padStart(3, '0')}`,
+            applicant: `app-8${i}`, status: a ? 'VALID' : 'INVALID',
+            at: `2026-07-${String((i % 27) + 1).padStart(2, '0')}T10:0${a}:00Z`,
+          }));
+        }
+      }
+      await kyc.importVerifications(many);
+
+      const { total } = await modules.kycCaseCount();
+      const first = await modules.kycCases({ limit: 10, offset: 0 });
+      const second = await modules.kycCases({ limit: 10, offset: 10 });
+      ok('the count is of the table, not of the page', total >= 60, total);
+      ok('a page is the size asked for', first.length === 10, first.length);
+      // The bug this replaces: row 501 was unreachable by any means the screen
+      // offered, because take:500 was the only paging there was.
+      ok('and the second page is different rows',
+         first.every((r) => !second.some((s) => s.id === r.id)), {
+           first: first.map((r) => r.id).slice(0, 3),
+           second: second.map((r) => r.id).slice(0, 3),
+         });
+      ok('a page past the end is empty, not demo data',
+         (await modules.kycCases({ limit: 10, offset: 100_000 })).length === 0);
+    }
+
+    section('attempts is counted over the table, not the page');
+    {
+      const modules = app.get(ModulesService);
+      // A page of ONE. Counting over the rows in hand would say 1; the client
+      // has been through it twice, and that is the finding the column exists
+      // for.
+      const page = await modules.kycCases({ limit: 1, offset: 0 });
+      const row = page[0];
+      const real = await prisma.kycCase.count({
+        where: { client: { externalId: row.client } },
+      });
+      ok('a client whose attempts straddle the page still counts them all',
+         row.attempts === real, { shown: row.attempts, real, client: row.client });
+    }
+
+    section('the filters run in the database');
+    {
+      const modules = app.get(ModulesService);
+      // The failure this prevents: searching for a client who sits past the
+      // page cutoff returned nothing, which looks exactly like a client nobody
+      // ever verified — the worst answer a compliance screen can give.
+      const hits = await modules.kycCases({ q: 'CU8029', limit: 500 });
+      ok('a client past the first page is still findable',
+         hits.length === 2 && hits.every((h) => h.client === 'CU8029'), hits.length);
+
+      const rejected = await modules.kycCases({ status: 'rejected', limit: 500 });
+      ok('a status filter returns only that status',
+         rejected.length > 0 && rejected.every((r) => r.status === 'rejected'),
+         rejected.length);
+
+      // The dashboard's word for it is `approved_kyc`; the column says APPROVED.
+      const approved = await modules.kycCases({ status: 'approved_kyc', limit: 500 });
+      ok('and the screen’s word for APPROVED is understood',
+         approved.length > 0 && approved.every((r) => r.status === 'approved_kyc'),
+         approved.length);
+
+      const counted = await modules.kycCaseCount({ status: 'rejected' });
+      ok('the count agrees with the page it is a count of',
+         counted.total === rejected.length, { counted: counted.total, page: rejected.length });
+
+      const none = await modules.kycCases({ q: 'CU-nobody-has-this', limit: 500 });
+      ok('and a search that matches nothing is empty, not demo data',
+         none.length === 0, none.length);
     }
 
     section('what the direct reader refuses');

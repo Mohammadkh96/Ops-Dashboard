@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ShieldPlus, Check, AlertTriangle } from "lucide-react";
 
 import { PageHeader } from "@/components/ui/page-header";
@@ -13,7 +13,8 @@ import { StatusBadge, RiskBadge } from "@/components/ui/status-badge";
 import { Drawer } from "@/components/ui/drawer";
 import { Button } from "@/components/ui/button";
 import { type KycCase } from "@/lib/modules";
-import { useKycCases } from "@/hooks/use-modules";
+import { useKycCases, useKycCaseCount } from "@/hooks/use-modules";
+import { useKycSummary } from "@/hooks/use-kyc";
 
 const STATUS_OPTIONS: { label: string; value: KycCase["status"] }[] = [
   { label: "Pending", value: "pending" },
@@ -56,27 +57,89 @@ function scoreTone(score: number): string {
   return "text-accent-green";
 }
 
+/** How many rows one page of the table holds. */
+const PAGE_SIZE = 200;
+
+/**
+ * A value that stops changing while somebody is still typing.
+ *
+ * The filters run in the database now, so every keystroke in the search box
+ * would otherwise be a query. Three hundred milliseconds is under the pause
+ * between words and well over the pause between letters.
+ */
+function useSettled<T>(value: T, ms = 300): T {
+  const [settled, setSettled] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setSettled(value), ms);
+    return () => clearTimeout(t);
+  }, [value, ms]);
+  return settled;
+}
+
 export default function CompliancePage() {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
   const [risk, setRisk] = useState("");
+  const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<KycCase | null>(null);
-  const { data: kycCases, isLoading } = useKycCases();
 
+  const q = useSettled(search);
+  // A filter changes what the pages ARE, so it goes back to the first one.
+  // Staying on page four of a result set that no longer has four pages shows
+  // an empty table, which reads as "no matches" and is not.
+  const refilter = <T,>(set: (v: T) => void) => (v: T) => {
+    set(v);
+    setPage(0);
+  };
+
+  const query = { status, risk, q };
+  const { data: kycCases, isLoading } = useKycCases({
+    ...query,
+    limit: PAGE_SIZE,
+    offset: page * PAGE_SIZE,
+  });
+  const { data: count } = useKycCaseCount(query);
+  const total = count.total;
+
+  /**
+   * The tiles count the TABLE, not the page.
+   *
+   * They used to count whichever rows had been fetched, so the fourth tile
+   * read "500 open cases" for any database with at least five hundred
+   * verifications — the page size, relabelled as a finding. It also called
+   * settled verifications open, when most of them are Approved or Rejected.
+   *
+   * The average risk score has gone with it. Nothing computes a risk score, so
+   * every row holds a zero, and a tile averaging zeroes is a number with the
+   * shape of a fact and nothing behind it. Verifications held is true.
+   */
+  const summary = useKycSummary();
   const stats: Stat[] = useMemo(() => {
-    const pending = kycCases.filter((c) => c.status === "pending").length;
-    const inReview = kycCases.filter((c) => c.status === "in_review").length;
-    const edd = kycCases.filter((c) => c.status === "edd_required").length;
-    const avg = Math.round(
-      kycCases.reduce((sum, c) => sum + c.riskScore, 0) / (kycCases.length || 1),
+    const by = new Map(
+      (summary.data?.byStatus ?? []).map((s) => [s.status, s.count]),
     );
+    const pending = by.get("PENDING") ?? 0;
+    const inReview = by.get("IN_REVIEW") ?? 0;
+    const edd = by.get("EDD_REQUIRED") ?? 0;
+    const held = summary.data?.verifications ?? total;
+    const awaiting = pending + inReview + edd;
     return [
-      { label: "Pending KYC", value: String(pending), tone: "blue", spark: [1, 2, 1, 3, 2, 2, pending] },
-      { label: "In review", value: String(inReview), tone: "purple", spark: [3, 2, 4, 2, 3, 2, inReview] },
-      { label: "EDD required", value: String(edd), tone: "orange", spark: [0, 1, 1, 2, 1, 1, edd] },
-      { label: "Avg risk score", value: String(avg), tone: "red", delta: { text: `${kycCases.length} open cases`, positive: false } },
+      { label: "Pending KYC", value: pending.toLocaleString(), tone: "blue", spark: [1, 2, 1, 3, 2, 2, pending] },
+      { label: "In review", value: inReview.toLocaleString(), tone: "purple", spark: [3, 2, 4, 2, 3, 2, inReview] },
+      { label: "EDD required", value: edd.toLocaleString(), tone: "orange", spark: [0, 1, 1, 2, 1, 1, edd] },
+      {
+        label: "Verifications",
+        value: held.toLocaleString(),
+        tone: awaiting ? "orange" : "green",
+        delta: {
+          text: awaiting
+            ? `${awaiting.toLocaleString()} awaiting a decision`
+            : "none awaiting a decision",
+          positive: awaiting === 0,
+        },
+      },
     ];
-  }, [kycCases]);
+  }, [summary.data, total]);
 
   const filtered = useMemo(
     () =>
@@ -133,15 +196,23 @@ export default function CompliancePage() {
       <div className="flex flex-col gap-4">
         <FilterBar
           search={search}
-          onSearch={setSearch}
+          onSearch={refilter(setSearch)}
           searchPlaceholder="Search client, country…"
           filters={[
-            { label: "Status", value: status, onChange: setStatus, options: STATUS_OPTIONS },
-            { label: "Risk", value: risk, onChange: setRisk, options: RISK_OPTIONS },
+            { label: "Status", value: status, onChange: refilter(setStatus), options: STATUS_OPTIONS },
+            { label: "Risk", value: risk, onChange: refilter(setRisk), options: RISK_OPTIONS },
           ]}
         >
-          <span className="ml-auto text-xs text-muted">
-            {filtered.length} of {kycCases.length}
+          {/* The range being shown, and the real total. It used to read
+              "500 of 500" for a database holding twelve thousand — the page
+              size reported as a fact about the data. */}
+          <span className="tnum ml-auto text-xs text-muted">
+            {total === 0
+              ? "0"
+              : `${(page * PAGE_SIZE + 1).toLocaleString()}–${Math.min(
+                  page * PAGE_SIZE + filtered.length,
+                  total,
+                ).toLocaleString()} of ${total.toLocaleString()}`}
           </span>
         </FilterBar>
 
@@ -153,6 +224,33 @@ export default function CompliancePage() {
           loading={isLoading}
           empty="No KYC cases match these filters."
         />
+
+        {total > PAGE_SIZE ? (
+          <div className="flex items-center justify-between gap-3">
+            <span className="tnum text-xs text-muted">
+              Page {(page + 1).toLocaleString()} of{" "}
+              {Math.ceil(total / PAGE_SIZE).toLocaleString()}
+            </span>
+            <div className="flex gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={page === 0 || isLoading}
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+              >
+                Previous
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={(page + 1) * PAGE_SIZE >= total || isLoading}
+                onClick={() => setPage((p) => p + 1)}
+              >
+                Next
+              </Button>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       <Drawer

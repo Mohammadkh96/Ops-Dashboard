@@ -14,6 +14,7 @@
   "rewrites": [{ "source": "/(.*)", "destination": "/api" }],
   "crons": [
     { "path": "/api/paymaxis/sync", "schedule": "0 3 * * *" },
-    { "path": "/api/paymaxis/backfill/run", "schedule": "30 3 * * *" }
+    { "path": "/api/paymaxis/backfill/run", "schedule": "30 3 * * *" },
+    { "path": "/api/kyc/sync/run", "schedule": "0 4 * * *" }
   ]
 }

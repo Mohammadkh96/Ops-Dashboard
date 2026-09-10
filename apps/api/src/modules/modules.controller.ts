@@ -164,9 +164,38 @@ export class ModulesController {
     return this.modules.gateways(parseRange({ range, from, to }));
   }
 
+  /**
+   * A page of verifications, with the filters applied in the database.
+   *
+   * `limit` and `offset` are real here. The table used to take the first 500
+   * and stop, which on a twelve-thousand-row import meant most of it could not
+   * be reached at all — and the screen reported the truncation as the total.
+   */
   @Get('compliance/kyc')
-  kyc() {
-    return this.modules.kycCases();
+  kyc(
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+    @Query('status') status?: string,
+    @Query('risk') risk?: string,
+    @Query('q') q?: string,
+  ) {
+    return this.modules.kycCases({
+      limit: limit ? Number(limit) : undefined,
+      offset: offset ? Number(offset) : undefined,
+      status,
+      risk,
+      q,
+    });
+  }
+
+  /** How many match, so a page can say what it is a page of. */
+  @Get('compliance/kyc/count')
+  kycCount(
+    @Query('status') status?: string,
+    @Query('risk') risk?: string,
+    @Query('q') q?: string,
+  ) {
+    return this.modules.kycCaseCount({ status, risk, q });
   }
 
   /**

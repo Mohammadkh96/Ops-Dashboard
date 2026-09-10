@@ -72,7 +72,49 @@ export const useTransactions = (type?: "Deposit" | "Withdrawal" | "Refund") =>
   );
 export const useGateways = () =>
   useApi<Gateway[]>("gateways", "/gateways", gateways, { ranged: true });
-export const useKycCases = () => useApi<KycCase[]>("kyc", "/compliance/kyc", kycCases);
+/** What the compliance table is asking the API for. */
+export type KycCaseQuery = {
+  limit?: number;
+  offset?: number;
+  status?: string;
+  risk?: string;
+  q?: string;
+};
+
+function kycQuery(o: KycCaseQuery): string {
+  const p = new URLSearchParams();
+  if (o.limit) p.set("limit", String(o.limit));
+  if (o.offset) p.set("offset", String(o.offset));
+  if (o.status) p.set("status", o.status);
+  if (o.risk) p.set("risk", o.risk);
+  if (o.q) p.set("q", o.q);
+  const s = p.toString();
+  return s ? `?${s}` : "";
+}
+
+/**
+ * A PAGE of verifications, filtered by the database.
+ *
+ * Both halves of that used to be untrue. The endpoint took the first 500 rows
+ * and stopped — so on a twelve-thousand-row import most of the table could not
+ * be reached at all — and the filters ran in the browser over whatever those
+ * 500 happened to be, which made a client on page four indistinguishable from
+ * a client nobody had ever verified.
+ */
+export const useKycCases = (opts: KycCaseQuery = {}) =>
+  useApi<KycCase[]>(
+    `kyc:${kycQuery(opts)}`,
+    `/compliance/kyc${kycQuery(opts)}`,
+    kycCases,
+  );
+
+/** How many match — what the page size is measured against. */
+export const useKycCaseCount = (opts: KycCaseQuery = {}) =>
+  useApi<{ total: number }>(
+    `kyc-count:${kycQuery({ ...opts, limit: undefined, offset: undefined })}`,
+    `/compliance/kyc/count${kycQuery({ ...opts, limit: undefined, offset: undefined })}`,
+    { total: kycCases.length },
+  );
 export const useIncidents = () => useApi<Incident[]>("incidents", "/incidents", incidents);
 
 type OperationsData = { tickets: Ticket[]; team: Operator[]; shiftChecklist: ChecklistItem[] };

@@ -598,6 +598,47 @@ export class KycService {
   }
 
   /**
+   * The nightly catch-up: everything since the newest verification held.
+   *
+   * FROM THE NEWEST DAY, not the day after it. A verification that arrived at
+   * 23:50 while the previous run was reading that same day would otherwise
+   * never be fetched at all — and re-reading one day costs one request and
+   * changes nothing, because the verification id is the key.
+   *
+   * Self-healing across runs. If the budget stops it short of today, `newest`
+   * has still moved forward, so the next run resumes from there rather than
+   * from the beginning. A week of downtime catches up over a few nights
+   * without anybody deciding anything.
+   */
+  async syncRecent(opts: { days?: number; budgetMs?: number } = {}) {
+    if (!kycaidConfigured()) {
+      // Not an error. A scheduler firing against a deployment with no token is
+      // an unfinished setup, and a nightly red line in the log trains people to
+      // ignore the log.
+      return {
+        skipped: 'KYCAID_API_TOKEN is not set',
+        ranAt: new Date().toISOString(),
+      };
+    }
+    const newest = await this.prisma.kycCase.findFirst({
+      orderBy: { submittedAt: 'desc' },
+      select: { submittedAt: true },
+    });
+    const to = today();
+    let from = newest?.submittedAt.toISOString().slice(0, 10) ?? null;
+    if (!from) {
+      // Nothing held at all, so there is no "since". A short window rather than
+      // a guess at how far back the account goes — the whole history is a
+      // deliberate act on the Compliance screen, not something a cron should
+      // start on its own at three in the morning.
+      const back = new Date(to + 'T00:00:00Z');
+      back.setUTCDate(back.getUTCDate() - (opts.days ?? 7));
+      from = back.toISOString().slice(0, 10);
+    }
+    return this.syncFromProvider({ from, to, budgetMs: opts.budgetMs });
+  }
+
+  /**
    * What the direct reader can do here, and what is already loaded.
    *
    * The two dates are what makes "fetch everything" a real button rather than a
