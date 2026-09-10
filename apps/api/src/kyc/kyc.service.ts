@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 
+import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 /**
@@ -25,6 +26,15 @@ import { PrismaService } from '../prisma/prisma.service';
  * ledger. That is the whole reason this integration is worth having: it is the
  * first thing that connects a person to their money.
  */
+
+/**
+ * How many statements travel together.
+ *
+ * Small enough that one transaction is an ordinary request and the row locks it
+ * takes are held for a moment; large enough that a thirty-thousand-row export
+ * is sixty round trips rather than sixty thousand.
+ */
+const WRITE_CHUNK = 500;
 
 /** What the export calls a decided verification. Their words, not ours. */
 const SETTLED_OK = ['valid', 'approved', 'completed', 'verified', 'success'];
@@ -162,27 +172,64 @@ export class KycService {
           .filter((r): r is string => Boolean(r)),
       ),
     ];
+    /**
+     * Resolved in bulk, because a real export is not a handful of rows.
+     *
+     * The first version asked the database once per reference and then twice
+     * more per verification. On the 30,111-row export that is sixty thousand
+     * sequential round trips — several minutes against a serverless function
+     * with a sixty-second ceiling, so it would never have finished no matter
+     * how the file arrived.
+     */
     const clientIds = new Map<string, string>();
-    for (const externalId of references) {
-      const existing = await this.prisma.client.findUnique({
-        where: { externalId },
-        select: { id: true },
-      });
-      if (existing) {
-        clientIds.set(externalId, existing.id);
-        continue;
-      }
+    const known = await this.prisma.client.findMany({
+      where: { externalId: { in: references } },
+      select: { id: true, externalId: true },
+    });
+    for (const c of known) if (c.externalId) clientIds.set(c.externalId, c.id);
+
+    const missing = references.filter((r) => !clientIds.has(r));
+    if (missing.length) {
       // Created from the reference alone. The name is deliberately NOT taken
       // from the export: this row exists to hang verifications and payments off
       // a single account id, and a KYC file is not the place a dashboard should
       // be learning people's names from.
-      const made = await this.prisma.client.create({
-        data: { externalId, fullName: externalId },
-        select: { id: true },
+      //
+      // skipDuplicates because two imports can run at once and losing the whole
+      // batch to one racing insert would be a poor trade.
+      const made = await this.prisma.client.createMany({
+        data: missing.map((externalId) => ({
+          externalId,
+          fullName: externalId,
+        })),
+        skipDuplicates: true,
       });
-      clientIds.set(externalId, made.id);
-      clientsCreated++;
+      clientsCreated = made.count;
+      const fresh = await this.prisma.client.findMany({
+        where: { externalId: { in: missing } },
+        select: { id: true, externalId: true },
+      });
+      for (const c of fresh)
+        if (c.externalId) clientIds.set(c.externalId, c.id);
     }
+
+    // Which verifications we already hold, asked once for the whole batch
+    // rather than once per row.
+    const ids = rows
+      .map((r) => r.verificationId?.trim())
+      .filter((v): v is string => Boolean(v));
+    const seen = new Set(
+      (
+        await this.prisma.kycCase.findMany({
+          where: { provider, verificationId: { in: ids } },
+          select: { verificationId: true },
+        })
+      )
+        .map((c) => c.verificationId)
+        .filter((v): v is string => Boolean(v)),
+    );
+
+    const writes: Prisma.PrismaPromise<unknown>[] = [];
 
     for (const row of rows) {
       const word = row.status?.trim() ?? '';
@@ -215,24 +262,27 @@ export class KycService {
         reviewedAt: row.at,
       };
 
-      const existing = await this.prisma.kycCase.findUnique({
-        where: {
-          provider_verificationId: {
-            provider,
-            verificationId: row.verificationId.trim(),
-          },
-        },
-        select: { id: true },
-      });
-      if (existing) {
-        await this.prisma.kycCase.update({ where: { id: existing.id }, data });
-        updated++;
-      } else {
-        await this.prisma.kycCase.create({
-          data: { ...data, verificationId: row.verificationId.trim() },
-        });
-        created++;
-      }
+      const verificationId = row.verificationId.trim();
+      // One upsert per row, but queued rather than awaited — the whole batch
+      // then travels as a single round trip. Upsert rather than a create/update
+      // decision made here, so two imports racing on the same verification end
+      // with one row instead of a unique-constraint failure.
+      writes.push(
+        this.prisma.kycCase.upsert({
+          where: { provider_verificationId: { provider, verificationId } },
+          create: { ...data, verificationId },
+          update: data,
+        }),
+      );
+      if (seen.has(verificationId)) updated++;
+      else created++;
+    }
+
+    // Sent in chunks. One transaction of thirty thousand statements is a
+    // request big enough to be refused and a lock held long enough to matter;
+    // a few hundred at a time is neither.
+    for (let i = 0; i < writes.length; i += WRITE_CHUNK) {
+      await this.prisma.$transaction(writes.slice(i, i + WRITE_CHUNK));
     }
 
     clientsUpdated = await this.refreshClientStatus([...clientIds.values()]);
@@ -263,19 +313,24 @@ export class KycService {
    * table exists to prevent.
    */
   async refreshClientStatus(clientIds: string[]): Promise<number> {
+    if (!clientIds.length) return 0;
     let touched = 0;
-    for (const clientId of clientIds) {
-      const latest = await this.prisma.kycCase.findFirst({
-        where: { clientId },
-        orderBy: [{ submittedAt: 'desc' }],
-        select: { status: true },
-      });
-      if (!latest) continue;
-      await this.prisma.client.update({
-        where: { id: clientId },
-        data: { kycStatus: latest.status },
-      });
-      touched++;
+    // Set-based, in chunks. Per client this was two queries — twenty thousand
+    // round trips for the real export, on top of the sixty thousand the import
+    // itself was making. DISTINCT ON is Postgres saying "the latest row per
+    // group" in one statement, which is exactly the question.
+    for (let i = 0; i < clientIds.length; i += WRITE_CHUNK) {
+      const slice = clientIds.slice(i, i + WRITE_CHUNK);
+      touched += await this.prisma.$executeRaw`
+        UPDATE "Client" c
+        SET "kycStatus" = s.status
+        FROM (
+          SELECT DISTINCT ON ("clientId") "clientId", status
+          FROM "KycCase"
+          WHERE "clientId" IN (${Prisma.join(slice)})
+          ORDER BY "clientId", "submittedAt" DESC
+        ) s
+        WHERE c.id = s."clientId" AND c."kycStatus" IS DISTINCT FROM s.status`;
     }
     return touched;
   }

@@ -47,13 +47,17 @@ export function ImportVerifications() {
     undated: number;
   } | null>(null);
   const [mapping, setMapping] = useState<Record<string, string>>({});
-  const load = useImportVerifications();
+  // A 30,000-row export is thirty requests. Without this the button simply
+  // sits there for a minute and the obvious conclusion is that it has hung.
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const load = useImportVerifications((done, total) => setProgress({ done, total }));
   const result: KycImportResult | undefined = load.data;
 
   async function onPick(file: File | undefined) {
     if (!file) return;
     setError(null);
     setStaged(null);
+    setProgress(null);
     load.reset();
     setFileName(file.name);
     setReading(true);
@@ -198,16 +202,19 @@ export function ImportVerifications() {
             size="sm"
             className="self-start"
             disabled={busy}
-            onClick={() =>
+            onClick={() => {
+              setProgress({ done: 0, total: staged.rows.length });
               load.mutate({
                 rows: staged.rows,
                 mapping: Object.fromEntries(
                   Object.entries(mapping).filter(([, v]) => v),
                 ),
-              })
-            }
+              });
+            }}
           >
-            Import {staged.rows.length.toLocaleString()}
+            {load.isPending && progress
+              ? `Importing ${progress.done.toLocaleString()} of ${progress.total.toLocaleString()}…`
+              : `Import ${staged.rows.length.toLocaleString()}`}
           </Button>
         </div>
       ) : null}
