@@ -5,6 +5,7 @@ import { ShieldPlus, Check, AlertTriangle } from "lucide-react";
 
 import { PageHeader } from "@/components/ui/page-header";
 import { ImportVerifications } from "@/components/compliance/import-verifications";
+import { SyncProvider } from "@/components/compliance/sync-provider";
 import { StatTileRow, type Stat } from "@/components/ui/stat-tile";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { FilterBar } from "@/components/ui/filter-bar";
@@ -123,6 +124,10 @@ export default function CompliancePage() {
 
       <StatTileRow stats={stats} />
 
+      {/* The provider first, the file second: reading KYCAID directly is the
+          ordinary way to keep this current, and the export is what you reach
+          for to load history or when the provider is down. */}
+      <SyncProvider />
       <ImportVerifications />
 
       <div className="flex flex-col gap-4">

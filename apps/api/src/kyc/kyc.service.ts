@@ -2,24 +2,34 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 
 import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  KycaidClient,
+  REPORT_PAGE_SIZE,
+  kycaidConfigured,
+  toVerificationRow,
+} from './kycaid.client';
 
 /**
  * Verifications from the KYC provider, and the client standing derived from
  * them.
  *
- * WHY AN IMPORT RATHER THAN AN API CALL.
+ * TWO WAYS IN, AND A CORRECTION.
  *
- * KYCAID reads back one record at a time and will not enumerate. Proven, not
- * assumed — `GET /applicants/{id}` answers in 237ms with the whole applicant,
- * while `/applicants`, `/verifications` and `/applicants/{id}/verifications`
- * all return `404 not_found`, and `/forms/{id}` returns the form's country-name
- * translations rather than its verifications. So the API is a reader with no
- * index: perfectly good once you know an applicant id, and useless for finding
- * out which ids exist.
+ * This was built as a file import on the finding that KYCAID "will not
+ * enumerate" — `GET /applicants/{id}` answers in 237ms with the whole
+ * applicant, while `/applicants`, `/verifications` and
+ * `/applicants/{id}/verifications` all return `404 not_found` and `/forms/{id}`
+ * returns country-name translations. That finding was drawn from evidence and
+ * was still wrong. The enumeration is `GET /verifications/report?date=…`, one
+ * day at a time, and it returns very nearly the columns the console export
+ * produces. Four 404s never proved absence; they proved four wrong paths.
  *
- * The index has to come from somewhere else, and the provider's own console
- * exports it. That is what this reads. Afterwards the by-id API can refresh any
- * client on demand, because by then we know their applicant id.
+ * So there are two ways in and both are kept. `syncFromProvider` reads the
+ * provider directly and is what keeps this current. `importVerifications` takes
+ * a console export parsed in the browser — it needs no credential, it is how
+ * history from before this was wired up gets loaded, and it still works on a
+ * day the provider does not. They write the same rows, keyed the same way, so
+ * running both is safe: the second one updates what the first created.
  *
  * THE JOIN. `external_applicant_id` is the CRM's own account reference —
  * `CU65081`, `CU447` — the same identifier carried by every payment in the
@@ -32,9 +42,15 @@ import { PrismaService } from '../prisma/prisma.service';
  *
  * Small enough that one transaction is an ordinary request and the row locks it
  * takes are held for a moment; large enough that a thirty-thousand-row export
- * is sixty round trips rather than sixty thousand.
+ * is a few hundred round trips rather than sixty thousand.
+ *
+ * Lowered from 500 defensively. A serverless instance holds ONE pooled
+ * connection to a database that is itself behind a pooler, and a transaction of
+ * five hundred statements is a large thing to ask of that even though it runs
+ * comfortably against a local Postgres. This is the number that is cheap to be
+ * wrong about in the safe direction.
  */
-const WRITE_CHUNK = 500;
+const WRITE_CHUNK = 200;
 
 /**
  * The most rows one request may carry.
@@ -50,6 +66,15 @@ const MAX_ROWS_PER_REQUEST = 5000;
 /** What the export calls a decided verification. Their words, not ours. */
 const SETTLED_OK = ['valid', 'approved', 'completed', 'verified', 'success'];
 const SETTLED_BAD = ['invalid', 'declined', 'rejected', 'failed'];
+/**
+ * A form issued and never filled in.
+ *
+ * `unused` is KYCAID's word for it, and without this it falls through to
+ * PENDING — which reads as "somebody is looking at it" for a verification
+ * nobody has started. The distinction is the difference between a queue and a
+ * chase list.
+ */
+const NOT_STARTED_WORDS = ['unused', 'not started', 'not_started', 'new'];
 
 /**
  * A row of the provider's export, once the columns have been read.
@@ -65,6 +90,17 @@ export type VerificationRow = {
   applicantId: string | null;
   externalApplicantId: string | null;
   status: string;
+  /**
+   * Passed or failed, where the provider's status word does not say.
+   *
+   * The API's report calls a finished verification `completed` whether it was
+   * approved or declined — the same record the console export calls `INVALID`.
+   * Read the word alone and every decline of the last year becomes an
+   * approval. So the direct reader works the verdict out from whether a reason
+   * to decline was recorded, and sets it here; the file import leaves it unset,
+   * because its export says `VALID` or `INVALID` outright.
+   */
+  verdict?: 'PASS' | 'FAIL' | null;
   at: Date | null;
   form: string | null;
   method: string | null;
@@ -94,6 +130,105 @@ export type ImportResult = {
   forms: { form: string; rows: number }[];
 };
 
+/**
+ * How many pages one day may take before the sync moves on.
+ *
+ * Twenty thousand verifications in a single day is an order of magnitude beyond
+ * anything these two forms have ever done, so hitting this means the paging is
+ * not advancing — a provider that ignores `offset` would otherwise re-read page
+ * one until the request is killed. The days that hit it are named in the reply
+ * rather than passed over in silence.
+ */
+const MAX_PAGES_PER_DAY = 20;
+
+export type SyncOptions = {
+  /** First day to read, `YYYY-MM-DD`. Defaults to `to`. */
+  from?: string;
+  /** Last day to read, inclusive. Defaults to today, UTC. */
+  to?: string;
+  /** How long this call may spend before handing back a cursor. */
+  budgetMs?: number;
+  provider?: string;
+  /** Injected by the checks, so they never touch the live provider. */
+  client?: KycaidClient;
+};
+
+export type SyncResult = ImportResult & {
+  from: string;
+  to: string;
+  /** Days actually read in this call — not the size of the range. */
+  days: number;
+  /** Rows the provider returned, before any were dropped or written. */
+  fetched: number;
+  /** The day to resume from, or null when the range is finished. */
+  nextDate: string | null;
+  done: boolean;
+  /** Days that hit the page cap, and may therefore be incomplete. */
+  truncated: string[];
+};
+
+const DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/**
+ * A day, or nothing.
+ *
+ * Strict on purpose. The provider takes `date` as a plain string and answers
+ * cheerfully to a malformed one with an empty report — so a slip in the date
+ * format arrives as "no verifications that day" rather than as an error, and a
+ * sync that reads nothing looks exactly like a quiet month.
+ */
+export function readDay(value: string | undefined | null): string | null {
+  const s = (value ?? '').trim();
+  const m = DAY.exec(s);
+  if (!m) return null;
+  const [, y, mo, d] = m;
+  const at = new Date(Date.UTC(+y, +mo - 1, +d));
+  // Rejects 2026-02-31, which Date.UTC would roll forward into March.
+  return at.toISOString().slice(0, 10) === s ? s : null;
+}
+
+function today(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+export function nextDay(day: string): string {
+  const at = new Date(day + 'T00:00:00Z');
+  at.setUTCDate(at.getUTCDate() + 1);
+  return at.toISOString().slice(0, 10);
+}
+
+function emptyResult(): ImportResult {
+  return {
+    read: 0,
+    created: 0,
+    updated: 0,
+    unusable: 0,
+    unlinked: 0,
+    clientsCreated: 0,
+    clientsUpdated: 0,
+    statuses: [],
+    forms: [],
+  };
+}
+
+function mergeInto(
+  total: ImportResult,
+  r: ImportResult,
+  statuses: Map<string, number>,
+  forms: Map<string, number>,
+) {
+  total.read += r.read;
+  total.created += r.created;
+  total.updated += r.updated;
+  total.unusable += r.unusable;
+  total.unlinked += r.unlinked;
+  total.clientsCreated += r.clientsCreated;
+  total.clientsUpdated += r.clientsUpdated;
+  for (const s of r.statuses)
+    statuses.set(s.status, (statuses.get(s.status) ?? 0) + s.rows);
+  for (const f of r.forms) forms.set(f.form, (forms.get(f.form) ?? 0) + f.rows);
+}
+
 const KYC_STATUS = [
   'NOT_STARTED',
   'PENDING',
@@ -115,6 +250,7 @@ export type KycStatusName = (typeof KYC_STATUS)[number];
 export function defaultStatus(word: string | null): KycStatusName {
   const w = (word ?? '').trim().toLowerCase();
   if (!w) return 'PENDING';
+  if (NOT_STARTED_WORDS.includes(w)) return 'NOT_STARTED';
   if (SETTLED_OK.includes(w)) return 'APPROVED';
   if (SETTLED_BAD.includes(w)) return 'REJECTED';
   if (w.includes('review') || w.includes('manual')) return 'IN_REVIEW';
@@ -177,8 +313,25 @@ export class KycService {
       }
       mapping.set(word.trim().toLowerCase(), clean);
     }
-    const statusFor = (word: string | null) =>
-      mapping.get((word ?? '').trim().toLowerCase()) ?? defaultStatus(word);
+    /**
+     * Three sources, in the order a person would want them believed.
+     *
+     * A mapping typed on the screen is somebody looking at the vocabulary and
+     * saying what it means, so it wins. Failing that, a verdict the reader
+     * worked out from the provider's own decline reasons beats the status word,
+     * because `completed` describes a finished check and not a passed one.
+     * Only with neither is the word read on its own.
+     */
+    const statusFor = (
+      word: string | null,
+      verdict?: 'PASS' | 'FAIL' | null,
+    ) => {
+      const typed = mapping.get((word ?? '').trim().toLowerCase());
+      if (typed) return typed;
+      if (verdict === 'FAIL') return 'REJECTED';
+      if (verdict === 'PASS') return 'APPROVED';
+      return defaultStatus(word);
+    };
 
     const statuses = new Map<string, number>();
     const forms = new Map<string, number>();
@@ -278,7 +431,7 @@ export class KycService {
         clientId,
         applicantId: row.applicantId?.trim() || null,
         providerStatus: word || null,
-        status: statusFor(word),
+        status: statusFor(word, row.verdict),
         form: row.form?.trim() || null,
         method: row.method?.trim() || null,
         declineReasons: row.declineReasons.filter(Boolean),
@@ -327,6 +480,152 @@ export class KycService {
       forms: [...forms.entries()]
         .map(([form, rows]) => ({ form, rows }))
         .sort((a, b) => b.rows - a.rows),
+    };
+  }
+
+  /**
+   * The provider, read directly, one day at a time.
+   *
+   * WHY DAYS. `GET /verifications/report` requires a `date` and returns that
+   * date. There is no range to ask for, so a year is three hundred and
+   * sixty-five requests and the only question is who counts them.
+   *
+   * WHY A CURSOR RATHER THAN A LOOP THAT FINISHES. This runs in a function with
+   * a sixty-second ceiling. A sync that tries to read a year in one request
+   * gets killed at fifty-nine seconds and reports nothing — not even the eleven
+   * months it had already written. So it spends a budget, stops on a day
+   * boundary, and hands back the day it did not reach. The caller asks again
+   * with that date and the whole range gets read across as many requests as it
+   * takes, with every one of them landing its own rows permanently.
+   *
+   * Re-reading a day is free of consequence: the verification id is the key, so
+   * a day read twice updates rather than duplicates. That is what makes it safe
+   * to resume from a date that was already half-done.
+   */
+  async syncFromProvider(opts: SyncOptions = {}): Promise<SyncResult> {
+    if (!kycaidConfigured()) {
+      throw new BadRequestException(
+        'No KYCAID token is configured, so there is nothing to read from. Set KYCAID_API_TOKEN on the API and redeploy — the file import needs no credential and still works meanwhile.',
+      );
+    }
+
+    const to = readDay(opts.to) ?? today();
+    const from = readDay(opts.from) ?? to;
+    if (from > to) {
+      throw new BadRequestException(
+        `The range runs backwards: ${from} is after ${to}.`,
+      );
+    }
+
+    /**
+     * Bounded at both ends.
+     *
+     * The ceiling is the platform's: a serverless function is killed at sixty
+     * seconds, and a reply that never arrives loses the report of work that
+     * was actually done. The floor is only there so a zero cannot turn the
+     * budget off; one day always runs whatever this says, so the walk always
+     * advances and a sync can never sit still.
+     */
+    const budgetMs = Math.min(
+      Math.max(
+        opts.budgetMs ?? Number(process.env.KYCAID_SYNC_BUDGET_MS ?? 20_000),
+        100,
+      ),
+      45_000,
+    );
+    const started = Date.now();
+
+    const client = opts.client ?? new KycaidClient();
+    // Once per sync, not once per day. Only worth the round trip if there is
+    // more than a page of work ahead of it, but it is one call either way.
+    const formNames = await client.forms();
+
+    const total = emptyResult();
+    const statuses = new Map<string, number>();
+    const forms = new Map<string, number>();
+    const truncated: string[] = [];
+    let fetched = 0;
+    let days = 0;
+    let nextDate: string | null = null;
+
+    for (let day = from; day <= to; day = nextDay(day)) {
+      // Checked BEFORE a day rather than after, so the budget is a promise
+      // about when this returns and not a description of when it noticed.
+      if (days > 0 && Date.now() - started > budgetMs) {
+        nextDate = day;
+        break;
+      }
+
+      let offset = 0;
+      for (let page = 0; page < MAX_PAGES_PER_DAY; page++) {
+        const raw = await client.report(day, offset, REPORT_PAGE_SIZE);
+        fetched += raw.length;
+        const rows = raw
+          .map((r) => toVerificationRow(r, formNames))
+          .filter((r): r is VerificationRow => r !== null);
+
+        if (rows.length) {
+          const r = await this.importVerifications(rows, {
+            provider: opts.provider,
+          });
+          mergeInto(total, r, statuses, forms);
+        }
+
+        if (raw.length < REPORT_PAGE_SIZE) break;
+        offset += REPORT_PAGE_SIZE;
+        if (page === MAX_PAGES_PER_DAY - 1) truncated.push(day);
+      }
+      days++;
+    }
+
+    total.statuses = [...statuses.entries()]
+      .map(([status, rows]) => ({ status, rows }))
+      .sort((a, b) => b.rows - a.rows);
+    total.forms = [...forms.entries()]
+      .map(([form, rows]) => ({ form, rows }))
+      .sort((a, b) => b.rows - a.rows);
+
+    return {
+      ...total,
+      from,
+      to,
+      days,
+      fetched,
+      nextDate,
+      done: nextDate === null,
+      truncated,
+    };
+  }
+
+  /**
+   * What the direct reader can do here, and what is already loaded.
+   *
+   * The two dates are what makes "fetch everything" a real button rather than a
+   * guess: `newest` is where an update should start, and its absence is how the
+   * screen knows this database has never been filled and should be offering a
+   * range instead.
+   */
+  async providerStatus() {
+    const [oldest, newest, verifications] = await Promise.all([
+      this.prisma.kycCase.findFirst({
+        orderBy: { submittedAt: 'asc' },
+        select: { submittedAt: true },
+      }),
+      this.prisma.kycCase.findFirst({
+        orderBy: { submittedAt: 'desc' },
+        select: { submittedAt: true },
+      }),
+      this.prisma.kycCase.count(),
+    ]);
+    return {
+      provider: 'kycaid',
+      configured: kycaidConfigured(),
+      /** Named so the screen can say which variable is missing. */
+      variable: 'KYCAID_API_TOKEN',
+      verifications,
+      oldest: oldest?.submittedAt ?? null,
+      newest: newest?.submittedAt ?? null,
+      today: today(),
     };
   }
 

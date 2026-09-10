@@ -15,12 +15,17 @@ import { useImportVerifications, type KycImportResult } from "@/hooks/use-kyc";
 /**
  * A KYC export, read here and reduced before it goes anywhere.
  *
- * WHY AN IMPORT AND NOT AN API CALL. The provider reads back one record at a
- * time and will not enumerate — `/applicants/{id}` answers in 237ms, while
- * `/applicants`, `/verifications` and `/applicants/{id}/verifications` all
- * return 404. So the API is a reader with no index, and the index comes from
- * the provider's own console export. After this has run once, the live API can
- * refresh any client on demand, because by then we know their applicant id.
+ * WHY AN IMPORT WHEN THERE IS ALSO AN API. This was built on the finding that
+ * the provider "will not enumerate" — `/applicants`, `/verifications` and
+ * `/applicants/{id}/verifications` all return 404, so the index had to come
+ * from the console export. That finding was wrong: the enumeration is
+ * `GET /verifications/report?date=…`, and the panel above this one uses it.
+ *
+ * This one stays anyway, and not out of sentiment. It needs no credential at
+ * all — the person doing it already has the file — it is how history from
+ * before any of this was wired up gets loaded in one go, and it is what works
+ * on a day the provider does not. Both paths key on the verification id, so
+ * running one after the other updates rather than duplicates.
  *
  * The file is parsed in this browser and stripped to ten columns before a
  * request is made. Names, dates of birth, passport numbers, tax ids, phone

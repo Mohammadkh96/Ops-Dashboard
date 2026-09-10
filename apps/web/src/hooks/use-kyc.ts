@@ -87,10 +87,12 @@ export function useKycCoverage() {
  * response it is not allowed to see, so a 30,111-row export arrived as a bare
  * "Failed to fetch" with nothing in the server log at all.
  *
- * A thousand rows is roughly 300KB. Well under the ceiling, few enough round
- * trips that a large export still finishes in a sensible time.
+ * Four hundred rows is roughly 120KB — far under the ceiling, and small enough
+ * that one request is a short piece of work rather than a long one. A 30,000
+ * row export is seventy-five requests, which the progress counter makes
+ * legible.
  */
-const ROWS_PER_REQUEST = 1000;
+const ROWS_PER_REQUEST = 400;
 
 /**
  * Sends an export in batches and adds up what came back.
@@ -154,6 +156,120 @@ async function importInBatches(
   return total;
 }
 
+/** What the direct reader can do, and what is already loaded. */
+export type KycProviderStatus = {
+  provider: string;
+  configured: boolean;
+  /** The environment variable to set, so the screen can name it. */
+  variable: string;
+  verifications: number;
+  oldest: string | null;
+  newest: string | null;
+  /** The provider's today, from the API's clock rather than the browser's. */
+  today: string;
+};
+
+export type KycSyncResult = KycImportResult & {
+  from: string;
+  to: string;
+  days: number;
+  fetched: number;
+  nextDate: string | null;
+  done: boolean;
+  truncated: string[];
+};
+
+export function useKycProvider() {
+  return useQuery<KycProviderStatus>({
+    queryKey: ["kyc-provider"],
+    queryFn: () => apiFetch<KycProviderStatus>("/kyc/provider"),
+  });
+}
+
+/**
+ * Reads the provider across as many requests as the range takes.
+ *
+ * The API reads one day at a time and stops on a day boundary when its budget
+ * runs out, handing back the day it did not reach. This asks again with that
+ * date until there is none — so a year of history is a hundred short requests
+ * rather than one that gets killed at sixty seconds, and every one of them
+ * lands its rows permanently.
+ *
+ * A day that has already been read updates rather than duplicates, because the
+ * verification id is the key. That is what makes resuming safe.
+ */
+async function syncUntilDone(
+  from: string,
+  to: string,
+  onProgress?: (day: string, done: number) => void,
+): Promise<KycSyncResult> {
+  const total: KycSyncResult = {
+    read: 0, created: 0, updated: 0, unusable: 0, unlinked: 0,
+    clientsCreated: 0, clientsUpdated: 0, statuses: [], forms: [],
+    from, to, days: 0, fetched: 0, nextDate: null, done: false, truncated: [],
+  };
+  const statuses = new Map<string, number>();
+  const forms = new Map<string, number>();
+
+  let cursor: string | null = from;
+  // A range is finite and each call advances by at least one day, so this
+  // cannot run for ever. The guard is against an API that stops advancing —
+  // a bug there would otherwise be an infinite loop in somebody's browser.
+  for (let call = 0; cursor && call < 500; call++) {
+    const r: KycSyncResult = await apiFetch<KycSyncResult>("/kyc/sync", {
+      method: "POST",
+      body: JSON.stringify({ from: cursor, to }),
+    });
+    total.read += r.read;
+    total.created += r.created;
+    total.updated += r.updated;
+    total.unusable += r.unusable;
+    total.unlinked += r.unlinked;
+    total.clientsCreated += r.clientsCreated;
+    total.clientsUpdated += r.clientsUpdated;
+    total.days += r.days;
+    total.fetched += r.fetched;
+    total.truncated.push(...r.truncated);
+    for (const s of r.statuses)
+      statuses.set(s.status, (statuses.get(s.status) ?? 0) + s.rows);
+    for (const f of r.forms)
+      forms.set(f.form, (forms.get(f.form) ?? 0) + f.rows);
+
+    const next: string | null = r.nextDate;
+    if (next && next === cursor) {
+      throw new Error(
+        `The sync stopped advancing at ${cursor}. ${total.created + total.updated} verifications were stored before that.`,
+      );
+    }
+    cursor = next;
+    onProgress?.(cursor ?? to, total.days);
+  }
+
+  total.done = cursor === null;
+  total.nextDate = cursor;
+  total.statuses = [...statuses.entries()]
+    .map(([status, rows]) => ({ status, rows }))
+    .sort((a, b) => b.rows - a.rows);
+  total.forms = [...forms.entries()]
+    .map(([form, rows]) => ({ form, rows }))
+    .sort((a, b) => b.rows - a.rows);
+  return total;
+}
+
+export function useSyncProvider(
+  onProgress?: (day: string, days: number) => void,
+) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { from: string; to: string }) =>
+      syncUntilDone(body.from, body.to, onProgress),
+    onSuccess: () => {
+      for (const key of ["kyc-cases", "kyc-summary", "kyc-coverage", "kyc-provider"])
+        void queryClient.invalidateQueries({ queryKey: [key] });
+    },
+  });
+}
+
 export function useImportVerifications(
   onProgress?: (done: number, total: number) => void,
 ) {
@@ -164,7 +280,7 @@ export function useImportVerifications(
       mapping?: Record<string, string>;
     }) => importInBatches(body.rows, body.mapping, onProgress),
     onSuccess: () => {
-      for (const key of ["kyc-cases", "kyc-summary", "kyc-coverage"])
+      for (const key of ["kyc-cases", "kyc-summary", "kyc-coverage", "kyc-provider"])
         void queryClient.invalidateQueries({ queryKey: [key] });
     },
   });
