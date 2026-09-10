@@ -36,6 +36,17 @@ import { PrismaService } from '../prisma/prisma.service';
  */
 const WRITE_CHUNK = 500;
 
+/**
+ * The most rows one request may carry.
+ *
+ * Comfortably above what the import screen sends (a thousand) and far below
+ * what a whole export is, so the two failures this endpoint has actually had —
+ * a 9MB body refused at the edge, and a 3.6MB body that reached the handler
+ * and timed out after 36,000 round trips — both become a sentence instead of a
+ * silence.
+ */
+const MAX_ROWS_PER_REQUEST = 5000;
+
 /** What the export calls a decided verification. Their words, not ours. */
 const SETTLED_OK = ['valid', 'approved', 'completed', 'verified', 'success'];
 const SETTLED_BAD = ['invalid', 'declined', 'rejected', 'failed'];
@@ -133,6 +144,21 @@ export class KycService {
     if (!rows.length) {
       throw new BadRequestException(
         'That file had no verifications in it. Export again from the provider and upload the file it produced.',
+      );
+    }
+    /**
+     * A ceiling, said out loud rather than discovered as a timeout.
+     *
+     * The browser sends this in batches precisely so a request stays small,
+     * but an older page — or anything calling the endpoint directly — will
+     * post the whole file. That reaches the handler only to spend a minute
+     * failing, and a serverless timeout arrives as a bare 500 with nothing to
+     * act on. Refusing it immediately, by name, is the kinder failure.
+     */
+    if (rows.length > MAX_ROWS_PER_REQUEST) {
+      throw new BadRequestException(
+        `${rows.length.toLocaleString()} verifications in one request is too many — the limit is ${MAX_ROWS_PER_REQUEST.toLocaleString()}. ` +
+          'The import screen sends a large export in batches; if you are seeing this, the page is older than the API. Reload the dashboard and try again.',
       );
     }
     const provider = opts.provider?.trim() || 'kycaid';

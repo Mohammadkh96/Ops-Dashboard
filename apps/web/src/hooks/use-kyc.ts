@@ -112,10 +112,25 @@ async function importInBatches(
 
   for (let i = 0; i < rows.length; i += ROWS_PER_REQUEST) {
     const batch = rows.slice(i, i + ROWS_PER_REQUEST);
-    const r = await apiFetch<KycImportResult>("/kyc/import", {
-      method: "POST",
-      body: JSON.stringify({ rows: batch, mapping }),
-    });
+    let r: KycImportResult;
+    try {
+      r = await apiFetch<KycImportResult>("/kyc/import", {
+        method: "POST",
+        body: JSON.stringify({ rows: batch, mapping }),
+      });
+    } catch (e) {
+      // An import is not atomic across batches, so a failure halfway leaves
+      // real rows behind. Saying how many landed turns "it broke" into "start
+      // again and the first N will update rather than duplicate" — which is
+      // true, because the verification id is the key.
+      const done = total.created + total.updated;
+      const why = e instanceof Error ? e.message : String(e);
+      throw new Error(
+        done
+          ? `Imported ${done.toLocaleString()} of ${rows.length.toLocaleString()} before this failed: ${why} — re-running is safe, what landed will update rather than duplicate.`
+          : why,
+      );
+    }
     total.read += r.read;
     total.created += r.created;
     total.updated += r.updated;
