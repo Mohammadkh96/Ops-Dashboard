@@ -73,6 +73,9 @@ async function run() {
     readDeclineReasons,
     readRows,
     readCountryNames,
+    formNamesFor,
+    formLabel,
+    forgetFormNames,
     kycaidAccounts,
   } = require_('../dist/src/kyc/kycaid.client');
   const { ModulesService, codesFor } = require_(
@@ -459,6 +462,42 @@ async function run() {
       ok('a language can be asked for', readCountryNames(body, 'RU').get('PH') === 'Филиппины');
       ok('an empty reply is an empty map, not a throw', readCountryNames(null).size === 0);
       ok('and so is a reply of the wrong shape', readCountryNames({ ok: true }).size === 0);
+    }
+
+    section('the form name the provider will not give');
+    {
+      // `GET /forms` answers 200 with hex ids; the report says 12666; and
+      // `/forms/12666` answers 422. Two namespaces, no call between them — so
+      // the name is configuration, and this is the parsing of it.
+      const env = {
+        KYCAID_FORM_NAMES_MU: '12666=DEFAULT KYC Tradin MAU',
+        KYCAID_FORM_NAMES_SL: '14482=DEFAULT KYC; 14483=Pro KYC,14954=EDD SOF',
+        KYCAID_FORM_NAMES: '99=Fallback form',
+      };
+      const mu = formNamesFor('MU', env);
+      const sl = formNamesFor('SL', env);
+      ok('one pair is read', mu.get('12666') === 'DEFAULT KYC Tradin MAU', [...mu]);
+      ok('semicolons and commas both separate',
+         ['14482', '14483', '14954'].every((id) => sl.has(id)), [...sl]);
+      ok('and the spaces around them are not part of the name',
+         sl.get('14483') === 'Pro KYC', sl.get('14483'));
+      // The ids are per account. Mauritius must not inherit Saint Lucia's.
+      ok('an account sees only its own ids, plus the shared fallback',
+         !mu.has('14483') && mu.get('99') === 'Fallback form', [...mu]);
+      ok('a malformed pair is skipped, not stored as ""',
+         formNamesFor('MU', { KYCAID_FORM_NAMES_MU: 'nonsense;=x;12666=Named' }).size === 1);
+      ok('no variable, no names', formNamesFor('MU', {}).size === 0);
+
+      // Naming is applied when a row is READ, so it fixes rows already stored.
+      forgetFormNames();
+      process.env.KYCAID_FORM_NAMES_MU = '12666=DEFAULT KYC Tradin MAU';
+      ok('a stored id reads as its name', formLabel('12666', 'MU') === 'DEFAULT KYC Tradin MAU');
+      // An unnamed id stays the number ON PURPOSE: a guessed form name on a
+      // compliance screen asserts which checks somebody was held to.
+      ok('an id nobody has named stays the id', formLabel('14483', 'SL') === '14483');
+      ok('no form is no form, not the string "null"', formLabel(null, 'MU') === null);
+      delete process.env.KYCAID_FORM_NAMES_MU;
+      forgetFormNames();
     }
 
     section('searching by the name the column shows');

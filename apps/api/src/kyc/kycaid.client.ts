@@ -68,11 +68,13 @@ export type ReportRow = {
 /**
  * One row of `GET /forms`, in every spelling it has been seen to use.
  *
- * The screen is showing raw form ids — "12666" where the console says "DEFAULT
- * KYC Tradin MAU" — which means this lookup came back with nothing. Either the
- * endpoint refused, or it names its columns differently from the report that
- * references them. Both spellings are read rather than guessed at, and the
- * failure is no longer swallowed silently: `formsFailed` says so.
+ * THE SCREEN'S "12666" IS NOT THIS CALL FAILING. Measured against the live
+ * account, `/forms` answers 200 with seven forms whose ids are 36 hex
+ * characters, while the report sends `form_id: 12666` — two namespaces, and
+ * `/forms/12666` answers `422 Form ID is not valid`. So this map is correct,
+ * complete, and cannot name a single row the report returns. See `formNamesFor`
+ * for what does. Kept because it costs one request per sync and would resolve
+ * the ids immediately if the provider ever reported them in this namespace.
  */
 export type KycaidForm = {
   form_id?: string | null;
@@ -152,6 +154,108 @@ export function kycaidAccounts(
 /** Whether a direct read is possible at all. */
 export function kycaidConfigured(env?: NodeJS.ProcessEnv): boolean {
   return kycaidAccounts(env).length > 0;
+}
+
+/**
+ * The form names, which the provider will not give us.
+ *
+ * MEASURED, AND IT OVERTURNS WHAT THIS FILE USED TO SAY. `GET /forms` answers
+ * 200 with seven forms whose `form_id` is 36 hex characters —
+ * `017ec21701bf374cb728753376077c03767d`, "DEFAULT KYC Tradin MAU". The report
+ * sends `form_id: 12666`. Those are two different identifier spaces: asking
+ * `/forms/12666` returns `422 validation — Form ID is not valid`, so there is
+ * no call that turns one into the other. The `12666` in the Form column was
+ * never a failed request and never a parsing bug; it is the provider handing
+ * out an id in one namespace and a directory in another.
+ *
+ * Measured across fourteen days: Mauritius reports one id on every row (12666);
+ * Saint Lucia reports three (14482, 14483, 14954). So it IS a form — one
+ * entity runs everything through a single form and the other through three —
+ * and the only thing missing is the name.
+ *
+ * WHICH LEAVES CONFIGURATION, and configuration is the honest answer here.
+ * `KYCAID_FORM_NAMES_MU="12666=DEFAULT KYC Tradin MAU"` names one; the account
+ * suffix follows the token variables, and a bare `KYCAID_FORM_NAMES` covers a
+ * single-account deployment. An id nobody has named keeps showing as the
+ * number, because inventing a form name on a compliance screen — asserting
+ * which checks a client was held to — is worse than showing an id that cannot
+ * be read.
+ *
+ * Applied when the rows are READ, not when they are written, so naming a form
+ * fixes the rows already stored instead of requiring a year to be fetched
+ * again.
+ */
+const FORM_NAMES_VARIABLE = 'KYCAID_FORM_NAMES';
+const formNameCache = new Map<string, Map<string, string>>();
+
+export function formNamesFor(
+  label: string | null | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): Map<string, string> {
+  const account = (label ?? '').trim().toUpperCase();
+  const cached = formNameCache.get(account);
+  if (cached && env === process.env) return cached;
+
+  // The account's own list wins; the unsuffixed one is the fallback a
+  // single-account deployment sets. Read in that order so a shared name can be
+  // overridden per entity — the ids are per account and could collide.
+  const names = new Map<string, string>();
+  for (const variable of [
+    FORM_NAMES_VARIABLE,
+    account ? `${FORM_NAMES_VARIABLE}_${account}` : '',
+    account ? `${FORM_NAMES_VARIABLE}${account}` : '',
+  ]) {
+    if (!variable) continue;
+    for (const pair of (env[variable] ?? '').split(/[;,\n]/)) {
+      const at = pair.indexOf('=');
+      if (at < 1) continue;
+      const id = pair.slice(0, at).trim();
+      const name = pair.slice(at + 1).trim();
+      if (id && name) names.set(id, name);
+    }
+  }
+  if (env === process.env) formNameCache.set(account, names);
+  return names;
+}
+
+/** Forget the parsed names. For the checks, which change the environment. */
+export function forgetFormNames() {
+  formNameCache.clear();
+}
+
+/**
+ * A stored form value, named if anybody has named it.
+ *
+ * Takes the row's account as well as its form, because `14483` means one thing
+ * on Saint Lucia's account and nothing at all on Mauritius's.
+ */
+export function formLabel(
+  form: string | null | undefined,
+  account: string | null | undefined,
+): string | null {
+  const id = (form ?? '').trim();
+  if (!id) return null;
+  const named = formNamesFor(account).get(id);
+  if (named) return named;
+
+  /**
+   * No account on the row, so try them all.
+   *
+   * The breakdown groups by form alone — the figure it answers is "how many
+   * verifications went through this form", not "per form per account" — and
+   * rows loaded before the account column existed carry none either. The
+   * namespaces are disjoint in the data measured (Mauritius 12666, Saint Lucia
+   * 14482/14483/14954), so this is unambiguous in practice; where two accounts
+   * did name the same id differently, the first account alphabetically wins
+   * and the row is no worse off than the number it would otherwise show.
+   */
+  if (!(account ?? '').trim()) {
+    for (const a of kycaidAccounts()) {
+      const guess = formNamesFor(a.label).get(id);
+      if (guess) return guess;
+    }
+  }
+  return id;
 }
 
 /**

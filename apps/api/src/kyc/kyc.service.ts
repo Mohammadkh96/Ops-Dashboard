@@ -7,6 +7,7 @@ import {
   KycaidClient,
   REPORT_PAGE_SIZE,
   countryNames,
+  formLabel,
   kycaidAccounts,
   kycaidConfigured,
   toVerificationRow,
@@ -21,9 +22,8 @@ import {
  * This was built as a file import on the finding that KYCAID "will not
  * enumerate" — `GET /applicants/{id}` answers in 237ms with the whole
  * applicant, while `/applicants`, `/verifications` and
- * `/applicants/{id}/verifications` all return `404 not_found` and `/forms/{id}`
- * returns country-name translations. That finding was drawn from evidence and
- * was still wrong. The enumeration is `GET /verifications/report?date=…`, one
+ * `/applicants/{id}/verifications` all return `404 not_found`. That finding was
+ * drawn from evidence and was still wrong. The enumeration is `GET /verifications/report?date=…`, one
  * day at a time, and it returns very nearly the columns the console export
  * produces. Four 404s never proved absence; they proved four wrong paths.
  *
@@ -213,7 +213,8 @@ const STORED_AS: Record<string, string> = {
   external_applicant_id: 'client (the CU reference, and the join to payments)',
   created_at: 'submittedAt',
   status: 'providerStatus, and the verdict derived from decline_reasons',
-  form_id: 'form (resolved to its name via GET /forms)',
+  form_id:
+    "form (the report's numeric id — GET /forms uses a different namespace and rejects it, so the name comes from KYCAID_FORM_NAMES_<ACCOUNT>)",
   method: 'method',
   service: 'service (KYC / KYB / SERVICE)',
   verification_types: 'checks',
@@ -1363,7 +1364,8 @@ export class KycService {
         countryName: code ? (countries.names.get(code) ?? null) : null,
         status: c.status,
         providerStatus: c.providerStatus,
-        form: c.form,
+        /** Named from configuration — see `formLabel`, and why it has to be. */
+        form: formLabel(c.form, c.account),
         method: c.method,
         declineReasons: c.declineReasons,
         priceEur: c.priceEur === null ? null : Number(c.priceEur),
@@ -1474,7 +1476,10 @@ export class KycService {
    * gap silently added to one brand's count is worse than a gap that says so.
    */
   async byForm(window: KycWindow = {}) {
-    return this.breakdown('form', window);
+    const rows = await this.breakdown('form', window);
+    // Named on the way out, for the same reason the table is: the stored value
+    // is the provider's own id and the name is configuration on top of it.
+    return rows.map((r) => ({ ...r, form: formLabel(r.form, null) }));
   }
 
   /**

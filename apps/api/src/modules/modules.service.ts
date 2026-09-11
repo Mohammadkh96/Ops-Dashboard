@@ -13,7 +13,7 @@ import {
   providerLabel,
 } from '../paymaxis/normalize';
 import { parseInstant, type TimeRange } from '../common/range';
-import { countryNames } from '../kyc/kycaid.client';
+import { countryNames, formLabel } from '../kyc/kycaid.client';
 import {
   GROUP_LABELS,
   PAYMENT_FIELDS,
@@ -1303,7 +1303,16 @@ export class ModulesService {
           countries.names.get(c.country ?? c.client?.country ?? '') ?? null,
         /** MU, SL — which entity's KYCAID account this was fetched from. */
         account: c.account ?? null,
-        form: c.form ?? null,
+        /**
+         * Named where anybody has named it, the id where nobody has.
+         *
+         * The report's `form_id` is a number in a namespace `GET /forms` does
+         * not use — `/forms/12666` answers `422 Form ID is not valid` — so the
+         * name comes from `KYCAID_FORM_NAMES_<ACCOUNT>` or not at all. Resolved
+         * here rather than at import so naming a form fixes the rows already
+         * stored.
+         */
+        form: formLabel(c.form, c.account),
         /** Manual or automation — the split that explains cost and delay. */
         method: c.method ?? null,
         priceEur: c.priceEur === null ? null : Number(c.priceEur),
