@@ -1,0 +1,18 @@
+-- Which checks actually ran, and the rest of the row for the ones nobody has
+-- asked for yet.
+--
+-- `checks` is the provider's `verification_types` — "Profile, Document,
+-- Liveness, Address, Database Screening, Adverse Media Check" — the column
+-- their own console puts beside every verification and the only record of WHAT
+-- was verified. Two entities run two forms and the forms do not include the
+-- same checks, so "approved" means different things on the two sides of this
+-- table; without this column there is nothing on the screen that says so.
+--
+-- `raw` has existed since the table was created, with a comment saying the
+-- field nobody mapped today is the one a dispute needs next month, and it was
+-- never written to. It is written now — MINUS the identity fields this
+-- integration deliberately refuses: name, date of birth, email, phone, tax id,
+-- wallet address, telegram. Those are dropped before anything is stored, so
+-- this is the rest of the provider's row and not a second copy of everybody's
+-- identity documents.
+ALTER TABLE "KycCase" ADD COLUMN "checks" TEXT[] NOT NULL DEFAULT '{}';

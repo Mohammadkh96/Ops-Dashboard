@@ -397,6 +397,14 @@ model KycCase {
   /// verifications as one more record that failed to link to an account, and
   /// is counted in both the total and the spend per client.
   service        String?
+  /// WHICH CHECKS RAN — "Profile, Document, Liveness, Address, Database
+  /// Screening, Adverse Media Check", the provider's `verification_types`.
+  ///
+  /// The column their own console shows beside every verification, and the
+  /// only record of what "approved" actually covered. The two entities run
+  /// different forms with different checks, so the word alone means different
+  /// things on the two sides of this table.
+  checks         String[]
   /// Why it failed, in the provider's words. Several at once, routinely.
   declineReasons String[]
   /// What this attempt was billed. A client verified four times was billed
@@ -405,8 +413,13 @@ model KycCase {
   /// Minutes from submission to decision. Zero for automation.
   processingMin  Int?
 
-  /// The whole row as it arrived. The field nobody mapped today is the one a
-  /// dispute needs next month, and a KYC export cannot always be re-pulled.
+  /// The row as it arrived, MINUS the identity fields this integration
+  /// refuses: name, date of birth, email, phone, tax id, wallet, telegram.
+  ///
+  /// The field nobody mapped today is the one a dispute needs next month, and
+  /// a year of KYCAID history is 365 requests to re-pull. Declared since this
+  /// table was created and never written to until the day somebody asked for a
+  /// column that was in the response all along.
   raw Json?
 
   @@unique([provider, verificationId])

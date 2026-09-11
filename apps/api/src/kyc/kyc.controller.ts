@@ -5,6 +5,7 @@ import {
   Get,
   Headers,
   HttpException,
+  Param,
   Post,
   Query,
   UseGuards,
@@ -56,6 +57,32 @@ export class KycController {
     @Query('account') account?: string,
   ) {
     return this.kyc.summary({ from, to, account });
+  }
+
+  /**
+   * Everything KYCAID holds about one verification's applicant, read live.
+   *
+   * NOT STORED. The table holds the outcome, the jurisdiction and the account
+   * reference; the person — name, date of birth, address, document — is
+   * fetched when somebody opens the row and kept nowhere. A dashboard that
+   * mirrored all of it would be a second copy of every client's identity
+   * documents, held to a lower standard than the system that is meant to hold
+   * them.
+   *
+   * Behind the session guard, like the client profile it sits beside, and for
+   * the same reason: this answers with a named person.
+   */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Get('cases/:id/applicant')
+  applicant(@Param('id') id: string) {
+    return this.kyc.applicantDetail(id).catch((e: unknown) => {
+      if (e instanceof HttpException) throw e;
+      const why = e instanceof Error ? e.message : String(e);
+      throw new BadRequestException(
+        `The provider could not be asked about this applicant: ${why.slice(0, 400)}`,
+      );
+    });
   }
 
   /**

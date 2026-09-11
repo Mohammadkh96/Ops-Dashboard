@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, Check, AlertTriangle } from "lucide-react";
+import { ArrowLeft, Check, AlertTriangle, UserSearch } from "lucide-react";
 
 import { PageHeader } from "@/components/ui/page-header";
 import { SyncProvider } from "@/components/compliance/sync-provider";
@@ -13,9 +13,10 @@ import { FilterBar } from "@/components/ui/filter-bar";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Drawer } from "@/components/ui/drawer";
 import { Button } from "@/components/ui/button";
+import { ClientDetail } from "@/components/payments/client-detail";
 import { type KycCase } from "@/lib/modules";
 import { useKycCases, useKycCaseCount } from "@/hooks/use-modules";
-import { useKycProvider, useKycSummary } from "@/hooks/use-kyc";
+import { useApplicant, useKycProvider, useKycSummary } from "@/hooks/use-kyc";
 
 const STATUS_OPTIONS: { label: string; value: KycCase["status"] }[] = [
   { label: "Pending", value: "pending" },
@@ -116,6 +117,18 @@ function Kyc() {
   const [status, setStatus] = useState("");
   const [page, setPage] = useState(0);
   const [selected, setSelected] = useState<KycCase | null>(null);
+  /**
+   * The CU reference whose payments are open.
+   *
+   * `external_applicant_id` is the CRM's own account reference and it is on
+   * every payment in the ledger, which is the whole reason this integration is
+   * worth having: it is the one field that connects a person who was verified
+   * to the money they moved. The panel is the same one the payment screens
+   * use — one client history, not two that can disagree.
+   */
+  const [client, setClient] = useState<string | null>(null);
+  /** Asked of the provider only when somebody asks for it. */
+  const [showApplicant, setShowApplicant] = useState(false);
 
   const q = useSettled(search);
   // A filter changes what the pages ARE, so it goes back to the first one.
@@ -209,7 +222,30 @@ function Kyc() {
    * would hold the same word on every row.
    */
   const columns: Column<KycCase>[] = [
-    { key: "client", header: "Client", render: (c) => <span className="font-medium">{c.client}</span> },
+    /* The CU reference opens that client's payments — the same panel the
+       payment screens use. It is the join this whole integration exists for:
+       every payment carries this reference, so "was the person who moved this
+       money ever checked" is finally one click rather than two systems. */
+    {
+      key: "client",
+      header: "Client",
+      render: (c) =>
+        c.client.startsWith("CU") ? (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setClient(c.client);
+            }}
+            className="font-medium underline decoration-dotted underline-offset-4 hover:text-accent-blue"
+            title={`Payments for ${c.client}`}
+          >
+            {c.client}
+          </button>
+        ) : (
+          <span className="text-muted">{c.client}</span>
+        ),
+    },
     ...(entity
       ? []
       : [
@@ -236,6 +272,20 @@ function Kyc() {
        reads as a verification that failed to link to an account. */
     { key: "service", header: "Type", render: (c) => <span className="text-muted">{c.service ?? "—"}</span> },
     { key: "form", header: "Form", render: (c) => <span className="text-muted" title={c.form ?? ""}>{c.form ?? "—"}</span> },
+    /* What the approval actually covered. Six checks and three are not the
+       same verification, and the two entities' forms do not run the same set —
+       so this is the column that says two clients were held to different
+       standards. Counted in the table, named in full in the drawer. */
+    {
+      key: "checks",
+      header: "Checks",
+      align: "right",
+      render: (c) => (
+        <span className="tnum text-muted" title={(c.checks ?? []).join(", ")}>
+          {c.checks?.length ? c.checks.length : "—"}
+        </span>
+      ),
+    },
     { key: "method", header: "Method", render: (c) => <span className="text-muted">{c.method ?? "—"}</span> },
     { key: "priceEur", header: "Cost", align: "right", render: (c) => <span className="tnum text-muted-foreground">{c.priceEur === null || c.priceEur === undefined ? "—" : `€${c.priceEur.toFixed(2)}`}</span> },
     { key: "processingMin", header: "Mins", align: "right", render: (c) => <span className="tnum text-muted">{c.processingMin ?? "—"}</span> },
@@ -359,13 +409,29 @@ function Kyc() {
 
       <Drawer
         open={selected !== null}
-        onOpenChange={(o) => !o && setSelected(null)}
+        onOpenChange={(o) => {
+          if (!o) {
+            setSelected(null);
+            // The applicant is read live and kept nowhere; closing the row is
+            // what "gone" means, so the next open asks again deliberately.
+            setShowApplicant(false);
+          }
+        }}
         title={selected?.client ?? ""}
         subtitle={selected ? `${selected.country} · ${selected.attempts} attempt${selected.attempts === 1 ? "" : "s"}` : ""}
         footer={
           selected ? (
             <div className="flex gap-2">
-              <Button variant="secondary" className="flex-1">Escalate</Button>
+              {/* The join, as a button: this client's whole payment history,
+                  in the same panel the payment screens open. */}
+              <Button
+                variant="secondary"
+                className="flex-1"
+                disabled={!selected.client.startsWith("CU")}
+                onClick={() => setClient(selected.client)}
+              >
+                View payments
+              </Button>
               {needsDocs ? (
                 <Button className="flex-1">Request docs</Button>
               ) : (
@@ -432,6 +498,36 @@ function Kyc() {
               ))}
             </dl>
 
+            {/* WHICH CHECKS RAN. The provider's own list, and the honest
+                version of the checklist that used to sit further down this
+                drawer: that one showed Sanctions / PEP / AML / EDD derived
+                from a risk level nothing computed. This is what KYCAID says
+                it actually ran. */}
+            {selected.checks?.length ? (
+              <div className="flex flex-col gap-2">
+                <span className="text-xs font-medium uppercase tracking-wider text-muted">
+                  Checks run
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {selected.checks.map((check) => (
+                    <span
+                      key={check}
+                      className="rounded-md border border-border bg-card px-2 py-0.5 text-[11px] text-muted-foreground"
+                    >
+                      {check.replace(/_/g, " ")}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {/* The person, from the provider, at the moment you ask. */}
+            <Applicant
+              caseId={selected.id}
+              show={showApplicant}
+              onShow={() => setShowApplicant(true)}
+            />
+
             {/* Was a Sanctions / PEP / AML / EDD checklist derived from the
                 risk level — which is to say, from nothing. On a compliance
                 screen a green "Sanctions: Clear" that no screening produced is
@@ -463,6 +559,128 @@ function Kyc() {
           </div>
         ) : null}
       </Drawer>
+
+      {/* One client's whole payment history, opened from their CU reference.
+          The same panel the payment screens use — two panels answering the
+          same question is two panels that can disagree about it. */}
+      <Drawer
+        open={client !== null}
+        onOpenChange={(o) => !o && setClient(null)}
+        title={client ?? ""}
+        subtitle="Payments for this account reference"
+      >
+        {client ? <ClientDetail reference={client} /> : null}
+      </Drawer>
+    </div>
+  );
+}
+
+/**
+ * The applicant as the provider holds them, read on request.
+ *
+ * BEHIND A BUTTON, AND NOT BY ACCIDENT. This is the one call in the KYC
+ * integration that returns a named person — name, date of birth, address,
+ * document — and none of it is stored here. Firing it as part of opening a row
+ * would mean reading the identity of every verification anybody glances at;
+ * asking for it is a deliberate act, which is what it should be.
+ */
+function Applicant({
+  caseId,
+  show,
+  onShow,
+}: {
+  caseId: string;
+  show: boolean;
+  onShow: () => void;
+}) {
+  const { data, isLoading, isError, error } = useApplicant(caseId, show);
+
+  if (!show)
+    return (
+      <Button variant="secondary" size="sm" onClick={onShow}>
+        <UserSearch className="size-3.5" /> Look up the applicant at KYCAID
+      </Button>
+    );
+
+  if (isLoading)
+    return <p className="text-sm text-muted">Asking KYCAID…</p>;
+
+  if (isError)
+    return (
+      <p className="text-sm text-accent-orange">
+        {error instanceof Error
+          ? error.message
+          : "KYCAID could not be asked about this applicant."}
+      </p>
+    );
+
+  if (!data) return null;
+
+  const a = data.applicant;
+  const fields: [string, string | null][] = [
+    ["Name", a.name],
+    ["Date of birth", a.dob],
+    ["Residence", a.residenceCountry],
+    ["Citizenship", a.citizenshipCountry],
+    ["Email", a.email],
+    ["Phone", a.phone],
+  ];
+
+  return (
+    <div className="flex flex-col gap-3">
+      <span className="text-xs font-medium uppercase tracking-wider text-muted">
+        Applicant, read live from KYCAID
+      </span>
+
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+        {fields
+          .filter(([, v]) => v)
+          .map(([k, v]) => (
+            <div key={k} className="flex flex-col gap-0.5">
+              <dt className="text-xs text-muted">{k}</dt>
+              <dd className="break-all">{v}</dd>
+            </div>
+          ))}
+      </dl>
+
+      {a.addresses.length ? (
+        <div className="flex flex-col gap-1">
+          <span className="text-xs text-muted">Address</span>
+          {a.addresses.map((ad, i) => (
+            <p key={i} className="text-sm">
+              {[ad.street, ad.city, ad.region, ad.postalCode, ad.country]
+                .filter(Boolean)
+                .join(", ")}
+            </p>
+          ))}
+        </div>
+      ) : null}
+
+      {a.documents.length ? (
+        <div className="flex flex-col gap-1">
+          <span className="text-xs text-muted">Documents</span>
+          {a.documents.map((d, i) => (
+            <p key={i} className="text-sm">
+              {[
+                d.type?.replace(/_/g, " "),
+                d.number,
+                d.issuedCountry,
+                d.expiresAt ? `expires ${d.expiresAt}` : null,
+                d.status,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+            </p>
+          ))}
+        </div>
+      ) : null}
+
+      {/* Said plainly, because the alternative is somebody assuming this
+          dashboard holds a copy of everyone's passport. It does not. */}
+      <p className="text-[11px] text-muted">
+        {data.note} Document numbers are shown as their last four — KYCAID holds
+        the full one.
+      </p>
     </div>
   );
 }

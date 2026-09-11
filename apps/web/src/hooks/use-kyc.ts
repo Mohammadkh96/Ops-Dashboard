@@ -58,6 +58,65 @@ export type KycSummary = {
   mostAttempts: number;
 };
 
+/**
+ * Everything KYCAID holds about one applicant, read live and kept nowhere.
+ *
+ * The table holds the outcome, the jurisdiction and the account reference. The
+ * person is fetched when somebody opens the row, which is why this is a query
+ * with an `enabled` flag rather than part of the row: one request per row
+ * actually looked at, and no second permanent copy of everybody's identity
+ * documents sitting in a dashboard.
+ */
+export type KycApplicant = {
+  account: string;
+  applicantId: string;
+  verificationId: string | null;
+  applicant: {
+    name: string | null;
+    dob: string | null;
+    gender: string | null;
+    residenceCountry: string | null;
+    citizenshipCountry: string | null;
+    email: string | null;
+    phone: string | null;
+    externalApplicantId: string | null;
+    createdAt: string | null;
+    type: string | null;
+    addresses: {
+      country: string | null;
+      region: string | null;
+      city: string | null;
+      street: string | null;
+      postalCode: string | null;
+    }[];
+    /** Numbers are masked to their last four — KYCAID holds the full one. */
+    documents: {
+      type: string | null;
+      number: string | null;
+      issuedCountry: string | null;
+      issuedAt: string | null;
+      expiresAt: string | null;
+      status: string | null;
+    }[];
+  };
+  note: string;
+};
+
+export function useApplicant(caseId: string | null, enabled: boolean) {
+  return useQuery<KycApplicant>({
+    queryKey: ["kyc-applicant", caseId],
+    queryFn: () =>
+      apiFetch<KycApplicant>(
+        `/kyc/cases/${encodeURIComponent(caseId ?? "")}/applicant`,
+      ),
+    enabled: enabled && Boolean(caseId),
+    // Nothing about a submitted applicant changes while a drawer is open, and
+    // re-asking the provider on every focus is a request per tab switch.
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+}
+
 /** Who has moved money, and whether anybody checked them. */
 export type KycCoverage = {
   tradingClients: number;

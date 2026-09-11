@@ -80,6 +80,12 @@ export type KycCase = {
    * reads as a verification that failed to link to an account.
    */
   service?: string | null;
+  /**
+   * Which checks ran — Profile, Document, Liveness, Address, Database
+   * Screening, Adverse Media. What "Approved" actually covered, and the two
+   * entities' forms do not run the same ones.
+   */
+  checks?: string[];
   /** The provider's id, which is how a row here is found in their console. */
   verificationId?: string | null;
   /** The submission instant. `submittedAt` is "3 months ago" and cannot be

@@ -1306,6 +1306,15 @@ export class ModulesService {
          * screen as a verification that failed to link to an account.
          */
         service: c.service ?? null,
+        /**
+         * WHICH CHECKS RAN — the provider's own "Checks" column.
+         *
+         * Profile, Document, Liveness, Address, Database Screening, Adverse
+         * Media. Two entities run two forms and the forms do not include the
+         * same checks, so "Approved" means different things on the two halves
+         * of this table and this is the only column that says so.
+         */
+        checks: c.checks,
         declineReasons: c.declineReasons,
         submittedAt: this.ago(c.submittedAt),
         /** The date itself. "3 months ago" cannot be read against a filter. */

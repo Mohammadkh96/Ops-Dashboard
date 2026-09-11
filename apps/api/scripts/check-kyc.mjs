@@ -297,6 +297,58 @@ async function run() {
          toVerificationRow({ status: 'completed' }) === null);
     }
 
+    section('what an approval actually covered, and what is never kept');
+    {
+      // The console's "Checks" column: Profile, Document, Liveness, Address,
+      // Database Screening, Adverse Media. The two entities run two forms and
+      // the forms do not include the same checks, so "Approved" means
+      // different things on the two halves of the table — and nothing on the
+      // screen said so.
+      const full = toVerificationRow({
+        verification_id: 'chk-1',
+        external_applicant_id: 'CU7801',
+        status: 'completed',
+        decline_reasons: [],
+        country_code: 'AL',
+        verification_types: ['PROFILE', 'DOCUMENT', 'LIVENESS', 'ADDRESS'],
+        // Everything this integration refuses to hold, sent by the provider in
+        // the same row as everything it does.
+        first_name: 'Julie Ann',
+        last_name: 'Macaron',
+        dob: '1990-04-02',
+        email: 'someone@example.com',
+        phone: '+639000000',
+        tax_id_number: 'TIN-1',
+        wallet_address: '0xdead',
+        telegram_username: '@someone',
+      });
+
+      ok('the checks that ran are read', full.checks.length === 4, full.checks);
+      ok('a comma-separated list is read too, since the vendor sends both',
+         toVerificationRow({ verification_id: 'chk-2',
+                             verification_types: 'PROFILE, DOCUMENT' }).checks.length === 2);
+
+      // The rest of the row is kept so the column nobody has asked for yet
+      // does not cost a year of re-fetching — but it is NOT a copy of the
+      // person. This is the assertion that keeps that true.
+      const kept = Object.keys(full.raw);
+      const forbidden = ['first_name', 'last_name', 'dob', 'email', 'phone',
+                         'tax_id_number', 'wallet_address', 'telegram_username'];
+      ok('the rest of the row is kept for later',
+         kept.includes('verification_types') && kept.includes('country_code'), kept);
+      ok('but every identity field is stripped before it can be stored',
+         forbidden.every((f) => !kept.includes(f)), kept);
+
+      await kyc.importVerifications([full]);
+      const stored = await prisma.kycCase.findFirst({
+        where: { verificationId: 'chk-1' },
+      });
+      ok('the checks reach the table', stored.checks.length === 4, stored.checks);
+      // The database is the thing that outlives every decision made above it.
+      ok('and no name, date of birth, email or phone reaches the database',
+         forbidden.every((f) => !(f in stored.raw)), Object.keys(stored.raw));
+    }
+
     section('"completed" is not "passed"');
     {
       // The trap this endpoint sets. The same verification the console export
@@ -911,6 +963,49 @@ async function run() {
          accounts.length > 0 && accounts.every((a) => a.form), accounts.map((a) => a.form));
       ok('while the fetch panel still reports what is unattributed',
          (await kyc.providerStatus()).unattributed > 0);
+    }
+
+    section('looking one applicant up, and the two ways it must refuse');
+    {
+      // The live lookup is the only call in this integration that returns a
+      // named person, and nothing about it is stored. These are its refusals —
+      // the network is never reached in either.
+      const lookup = await prisma.kycCase.findFirst({
+        where: { verificationId: 'chk-1' },
+      });
+      let msg = '';
+      try { await kyc.applicantDetail(lookup.id); } catch (e) { msg = e.message; }
+      // A SERVICE row is a paid database lookup, not a person. A 404 from the
+      // provider would read as a deleted applicant instead of as a row that
+      // never had one.
+      ok('a verification with no applicant says why, rather than 404ing',
+         /no applicant/i.test(msg), msg);
+
+      const before = { ...process.env };
+      process.env.KYCAID_API_TOKENMU = 'mu-token';
+      process.env.KYCAID_API_TOKENSL = 'sl-token';
+      delete process.env.KYCAID_API_TOKEN;
+
+      const mu = await prisma.kycCase.findFirst({ where: { verificationId: 'mu-1' } });
+      ok('a row records the account whose token can see it', mu.account === 'MU');
+
+      await prisma.kycCase.update({
+        where: { id: mu.id }, data: { account: 'ZZ', applicantId: 'app-mu-1' },
+      });
+      msg = '';
+      try { await kyc.applicantDetail(mu.id); } catch (e) { msg = e.message; }
+      // Asking the wrong entity's token returns 404 — which reads as a deleted
+      // applicant rather than as the wrong credential. So it is refused here
+      // instead, naming the variable to set.
+      ok('an account with no token is refused before the provider is asked',
+         /KYCAID_API_TOKENZZ/.test(msg), msg);
+      await prisma.kycCase.update({
+        where: { id: mu.id }, data: { account: 'MU' },
+      });
+
+      for (const k of Object.keys(process.env))
+        if (/^KYCAID_API_TOKEN/.test(k)) delete process.env[k];
+      Object.assign(process.env, before);
     }
 
     section('what the direct reader refuses');

@@ -121,6 +121,19 @@ export type VerificationRow = {
   /** Residence country, two letters. The jurisdiction, not the person. */
   country?: string | null;
   /**
+   * Which checks ran — Profile, Document, Liveness, Address, Database
+   * Screening, Adverse Media. What an approval actually covered.
+   */
+  checks?: string[];
+  /**
+   * The provider's row, less the identity fields it is never given.
+   *
+   * Kept so the column somebody asks for next month does not cost a year of
+   * re-fetching. Stripped in the reader, so nothing downstream can store a
+   * name by accident.
+   */
+  raw?: Record<string, unknown> | null;
+  /**
    * Which KYCAID account it came from — "MU", "SL".
    *
    * Set by the direct reader from the credential that fetched the row, so it
@@ -185,6 +198,73 @@ export type KycWindow = {
  * Written as `lte: to` it would cover exactly the midnight instant and drop the
  * rest — the same off-by-one that once cost a month of payment reconciliation.
  */
+/** A string field of a provider object, under any of its spellings. */
+function pick(o: Record<string, unknown>, ...keys: string[]): string | null {
+  for (const k of keys) {
+    const v = o[k];
+    if (typeof v === 'string' && v.trim()) return v.trim();
+    if (typeof v === 'number') return String(v);
+  }
+  return null;
+}
+
+function objects(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (v): v is Record<string, unknown> => Boolean(v) && typeof v === 'object',
+  );
+}
+
+/**
+ * The applicant, cut down to what a compliance desk asks about.
+ *
+ * NOT A PASSTHROUGH. The provider's object carries whatever the provider
+ * decides it carries; returning it whole would put all of that into a browser
+ * and into whatever records a response on the way. These fields are chosen.
+ *
+ * DOCUMENT NUMBERS ARE MASKED to their last four. The desk's question is
+ * "which document, issued where, expiring when" — the full number is in
+ * KYCAID, which is the system of record for it and is one click away. Showing
+ * it in full is a one-line change here if the work actually needs it.
+ */
+function narrowApplicant(a: Record<string, unknown>) {
+  const mask = (n: string | null) =>
+    !n ? null : n.length <= 4 ? '••••' : `••••${n.slice(-4)}`;
+
+  return {
+    name:
+      pick(a, 'full_name') ??
+      ([pick(a, 'first_name'), pick(a, 'middle_name'), pick(a, 'last_name')]
+        .filter(Boolean)
+        .join(' ') ||
+        null),
+    dob: pick(a, 'dob', 'date_of_birth'),
+    gender: pick(a, 'gender'),
+    residenceCountry: pick(a, 'residence_country', 'country', 'country_code'),
+    citizenshipCountry: pick(a, 'citizenship_country', 'nationality'),
+    email: pick(a, 'email'),
+    phone: pick(a, 'phone', 'phone_number'),
+    externalApplicantId: pick(a, 'external_applicant_id'),
+    createdAt: pick(a, 'created_at'),
+    type: pick(a, 'type'),
+    addresses: objects(a.addresses).map((ad) => ({
+      country: pick(ad, 'country', 'country_code'),
+      region: pick(ad, 'region', 'state'),
+      city: pick(ad, 'city'),
+      street: pick(ad, 'street', 'address', 'full_address'),
+      postalCode: pick(ad, 'postal_code', 'postcode', 'zip'),
+    })),
+    documents: objects(a.documents).map((d) => ({
+      type: pick(d, 'type', 'document_type'),
+      number: mask(pick(d, 'number', 'document_number')),
+      issuedCountry: pick(d, 'issue_country', 'country', 'country_code'),
+      issuedAt: pick(d, 'issue_date', 'issued_at'),
+      expiresAt: pick(d, 'expiry_date', 'expires_at'),
+      status: pick(d, 'status'),
+    })),
+  };
+}
+
 function windowWhere(w: KycWindow = {}): Prisma.KycCaseWhereInput {
   const where: Prisma.KycCaseWhereInput = {};
   const account = (w.account ?? '').trim().toUpperCase();
@@ -515,6 +595,15 @@ export class KycService {
         service: row.service?.trim().toUpperCase() || null,
         account: row.account?.trim().toUpperCase() || null,
         country: row.country?.trim().toUpperCase() || null,
+        /** What an approval covered. The file import carries none, hence []. */
+        checks: (row.checks ?? []).filter(Boolean),
+        /**
+         * The rest of the provider's row, identity fields already removed by
+         * the reader. Null rather than {} where there is nothing, so "we never
+         * stored this" and "the provider sent an empty row" stay different
+         * answers.
+         */
+        raw: (row.raw ?? undefined) as Prisma.InputJsonValue | undefined,
         declineReasons: row.declineReasons.filter(Boolean),
         priceEur: row.priceEur,
         /**
@@ -793,6 +882,72 @@ export class KycService {
       from = back.toISOString().slice(0, 10);
     }
     return this.syncFromProvider({ from, to, budgetMs: opts.budgetMs });
+  }
+
+  /**
+   * Everything the provider holds about one verification's applicant, live.
+   *
+   * NOT STORED, AND THAT IS THE DESIGN. The report gives the outcome; this
+   * gives the person. Keeping it would make this dashboard a second permanent
+   * copy of every client's identity documents, held to a lower standard than
+   * the system that is supposed to hold them — so it is fetched when somebody
+   * opens a row, shown, and forgotten.
+   *
+   * THE TOKEN IS CHOSEN BY THE ROW'S OWN ACCOUNT. Mauritius and Saint Lucia
+   * hold separate KYCAID accounts, and each token can only see its own: asking
+   * the wrong one returns 404, which reads as a deleted applicant rather than
+   * as the wrong credential. The row records which account fetched it, so this
+   * asks that one.
+   */
+  async applicantDetail(caseId: string) {
+    const row = await this.prisma.kycCase.findUnique({
+      where: { id: caseId },
+      select: {
+        applicantId: true,
+        account: true,
+        verificationId: true,
+        country: true,
+      },
+    });
+    if (!row) throw new BadRequestException('No such verification.');
+    if (!row.applicantId) {
+      // A SERVICE row is a paid database lookup, not a person. Saying so is
+      // better than a 404 that looks like a provider failure.
+      throw new BadRequestException(
+        'This verification carries no applicant — a paid lookup rather than a person being checked, or an application abandoned before one was created.',
+      );
+    }
+
+    const wanted = (row.account ?? '').trim().toUpperCase();
+    const accounts = kycaidAccounts();
+    const account =
+      accounts.find((a) => a.label === wanted) ??
+      (accounts.length === 1 ? accounts[0] : undefined);
+    if (!account) {
+      throw new BadRequestException(
+        wanted
+          ? `No token is configured for ${wanted}, so its applicants cannot be read. Set KYCAID_API_TOKEN${wanted} on the API.`
+          : 'This verification does not record which KYCAID account it came from, and more than one is configured — fetch its date again to attribute it.',
+      );
+    }
+
+    const client = new KycaidClient({ token: account.token });
+    const applicant = await client.applicant(row.applicantId);
+    return {
+      account: account.label,
+      applicantId: row.applicantId,
+      verificationId: row.verificationId,
+      /**
+       * Narrowed on the way out, not passed through.
+       *
+       * The applicant object carries whatever KYCAID decides it carries, and
+       * a passthrough would put all of it into a browser and into any log that
+       * records a response. These are the fields a compliance desk asks about.
+       */
+      applicant: narrowApplicant(applicant),
+      /** The whole thing is deliberately not returned. Say so on the screen. */
+      note: 'Read live from KYCAID and not stored. Close this and it is gone.',
+    };
   }
 
   /**

@@ -280,7 +280,72 @@ export function toVerificationRow(
       String(row.country_code ?? '')
         .trim()
         .toUpperCase() || null,
+    /**
+     * WHICH CHECKS RAN — the console's "Checks" column.
+     *
+     * "Profile, Document, Liveness, Address, Database Screening, Adverse Media
+     * Check". It is the only record of what an approval actually covered, and
+     * it matters here more than at most brokers: the two entities run
+     * different forms, one of them includes ADDRESS and the other does not, so
+     * the same word means two different things on the two halves of this
+     * table.
+     */
+    checks: readList(row.verification_types),
+    /**
+     * The rest of the row, for the column nobody has asked for yet.
+     *
+     * STRIPPED OF THE IDENTITY FIELDS, which is what makes it safe to keep.
+     * The report carries name, date of birth, email, phone, tax id, wallet
+     * address and telegram username; those are removed here rather than
+     * anywhere later, so nothing downstream can store them by accident. What
+     * is left is the provider's own record of the check, and re-pulling a year
+     * of it is 365 requests.
+     */
+    raw: withoutIdentity(row),
   };
+}
+
+/**
+ * The identity fields this integration refuses to hold.
+ *
+ * Listed rather than inferred: a field is personal because it names a person,
+ * and no rule over key spellings is going to be right about that. Anything the
+ * provider adds later arrives in `raw` until somebody looks at it, which is
+ * the trade — so this list is the thing to extend when they do.
+ */
+const IDENTITY_FIELDS = [
+  'name',
+  'first_name',
+  'last_name',
+  'middle_name',
+  'full_name',
+  'dob',
+  'date_of_birth',
+  'email',
+  'phone',
+  'phone_number',
+  'tax_id_number',
+  'wallet_address',
+  'telegram_username',
+];
+
+function withoutIdentity(row: ReportRow): Record<string, unknown> {
+  const kept: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(row as Record<string, unknown>))
+    if (!IDENTITY_FIELDS.includes(k.toLowerCase())) kept[k] = v;
+  return kept;
+}
+
+/** A list of words, however the provider chose to send it this time. */
+export function readList(value: unknown): string[] {
+  if (Array.isArray(value))
+    return value.map((v) => String(v ?? '').trim()).filter(Boolean);
+  if (typeof value === 'string')
+    return value
+      .split(',')
+      .map((v) => v.trim())
+      .filter(Boolean);
+  return [];
 }
 
 export class KycaidError extends Error {
@@ -389,6 +454,29 @@ export class KycaidClient {
       count: String(count),
     });
     return readRows(body);
+  }
+
+  /**
+   * Everything the provider holds about one applicant, read at the moment
+   * somebody opens the row.
+   *
+   * READ AND SHOWN, NEVER STORED. This is the endpoint that answers with the
+   * person — name, date of birth, addresses, documents — and it is the one
+   * thing this integration will not keep a copy of. Fetched live, handed to
+   * the screen that asked, and gone; the database keeps the account reference,
+   * the jurisdiction and the outcome, which is what the desk needs to work
+   * from. The trade is a request per row opened, against a second permanent
+   * copy of every client's identity documents sitting in a dashboard.
+   *
+   * `GET /applicants/{id}` is the one by-id route that was answering while the
+   * enumeration attempts were 404ing — 237ms with the whole applicant.
+   */
+  async applicant(applicantId: string): Promise<Record<string, unknown>> {
+    const id = applicantId.trim();
+    if (!id) throw new KycaidError('No applicant id to look up.', 400);
+    return await this.get<Record<string, unknown>>(
+      `/applicants/${encodeURIComponent(id)}`,
+    );
   }
 
   /** The forms, so the report's form ids can be stored as their names. */
