@@ -13,14 +13,19 @@ import { ApiBearerAuth, ApiExcludeEndpoint, ApiTags } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { assertCronSecret } from '../common/cron-secret';
-import { KycService, type VerificationRow } from './kyc.service';
+import { KycService } from './kyc.service';
 
 /**
  * Verifications, and who has none.
  *
  * A plain session throughout. Reading who is verified is desk work — the same
- * act as reading a payment ledger — and the import spends no credential at all:
- * the person doing it already has the file.
+ * act as reading a payment ledger — and every call this makes to the provider
+ * is a GET.
+ *
+ * THERE IS NO FILE IMPORT. There was, built on the finding that KYCAID would
+ * not enumerate; that was wrong, the provider reads back directly, and a second
+ * way in that nobody should use is a second way to be wrong about where the
+ * numbers came from.
  */
 @ApiTags('kyc')
 @Controller('kyc')
@@ -115,56 +120,5 @@ export class KycController {
       ranAt: new Date().toISOString(),
       result: await this.kyc.syncRecent(),
     };
-  }
-
-  /**
-   * A provider export, already reduced to the columns that matter.
-   *
-   * The browser parses the file and sends these rows; names, dates of birth,
-   * passport numbers and addresses are dropped before the request is made. A
-   * KYC export should not travel further than the job needs, and the job needs
-   * an id, a reference and a verdict.
-   */
-  @ApiBearerAuth()
-  @UseGuards(JwtAuthGuard)
-  @Post('import')
-  importRows(
-    @Body()
-    body: {
-      rows?: VerificationRow[];
-      provider?: string;
-      mapping?: Record<string, string>;
-    },
-  ) {
-    // Dates arrive as strings over JSON and are needed as instants.
-    const rows = (body?.rows ?? []).map((r) => ({
-      ...r,
-      at: r.at ? new Date(r.at) : null,
-      declineReasons: Array.isArray(r.declineReasons) ? r.declineReasons : [],
-    }));
-    return this.kyc
-      .importVerifications(rows, {
-        provider: body?.provider,
-        mapping: body?.mapping,
-      })
-      .catch((e: unknown) => {
-        // A bare "Internal server error" is what this returned twice, and it
-        // cost two rounds of guessing. Anything the import throws that is not
-        // already a considered refusal is re-raised WITH its message, because
-        // the alternative is a screen that says nothing and a log nobody can
-        // reach from the dashboard.
-        //
-        // Nothing secret travels this way: the failures here are about the
-        // shape of the caller's own file — a value too long for a column, a
-        // number where a date belongs, a batch too large for the database to
-        // take in one go.
-        if (e instanceof HttpException) throw e;
-        const why = e instanceof Error ? e.message : String(e);
-        const code =
-          e && typeof e === 'object' && 'code' in e ? String(e.code) : null;
-        throw new BadRequestException(
-          `The import failed on this batch of ${rows.length.toLocaleString()}${code ? ` (${code})` : ''}: ${why.slice(0, 600)}`,
-        );
-      });
   }
 }

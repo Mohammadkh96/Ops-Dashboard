@@ -4,7 +4,6 @@ import { useEffect, useMemo, useState } from "react";
 import { ShieldPlus, Check, AlertTriangle } from "lucide-react";
 
 import { PageHeader } from "@/components/ui/page-header";
-import { ImportVerifications } from "@/components/compliance/import-verifications";
 import { SyncProvider } from "@/components/compliance/sync-provider";
 import { ByBrand } from "@/components/compliance/by-brand";
 import { StatTileRow, type Stat } from "@/components/ui/stat-tile";
@@ -177,8 +176,8 @@ export default function CompliancePage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        title="Compliance"
-        description="KYC, AML, EDD and risk reviews."
+        title="KYC"
+        description="Verifications read from KYCAID, by entity."
         actions={
           <Button size="sm">
             <ShieldPlus className="size-4" /> New review
@@ -188,12 +187,10 @@ export default function CompliancePage() {
 
       <StatTileRow stats={stats} />
 
-      {/* The provider first, the file second: reading KYCAID directly is the
-          ordinary way to keep this current, and the export is what you reach
-          for to load history or when the provider is down. */}
-      <SyncProvider />
-      <ImportVerifications />
+      {/* One card per entity above the fetch control: the first question is
+          whether each brand is loaded, not how to load it. */}
       <ByBrand />
+      <SyncProvider />
 
       <div className="flex flex-col gap-4">
         <FilterBar

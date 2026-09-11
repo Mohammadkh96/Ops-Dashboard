@@ -36,7 +36,7 @@ export const primaryNav: NavItem[] = [
   { label: "Providers", href: "/providers", icon: Landmark },
   { label: "Deposits", href: "/deposits", icon: ArrowDownToLine },
   { label: "Withdrawals", href: "/withdrawals", icon: ArrowUpFromLine },
-  { label: "Compliance", href: "/compliance", icon: ShieldCheck },
+  { label: "KYC", href: "/compliance", icon: ShieldCheck },
   { label: "Reconciliation", href: "/reconciliation", icon: Scale },
   { label: "Incidents", href: "/incidents", icon: AlertTriangle },
   { label: "Analytics", href: "/analytics", icon: BarChart3 },

@@ -13,17 +13,15 @@ import {
 /**
  * Verifications read from KYCAID directly.
  *
- * THIS PANEL EXISTS BECAUSE THE PANEL BELOW IT WAS BUILT ON A WRONG FINDING.
- * The import screen was written after four probes — `/applicants`,
+ * THIS PANEL REPLACED A FILE IMPORT BUILT ON A WRONG FINDING.
+ * That screen was written after four probes — `/applicants`,
  * `/verifications`, `/applicants/{id}/verifications`, `/forms/{id}` — all
  * returned 404, and the conclusion drawn was that the provider will not
  * enumerate. It does: `GET /verifications/report?date=…` returns a day at a
  * time, with very nearly the columns the console export has.
  *
- * The file import stays and is not deprecated. It needs no credential, it
- * loads history from before any of this was wired up, and it works on a day
- * the provider does not. This is simply the path that does not require anybody
- * to export anything.
+ * The file import that preceded it is gone. A second way in that nobody should
+ * use is a second way to be wrong about where the numbers came from.
  *
  * WHY A DATE RANGE AND NOT A BUTTON. The provider has no range query — `date`
  * is required and returns that date — so a year is three hundred and sixty-five
@@ -92,8 +90,7 @@ export function SyncProvider() {
           <code className="text-muted-foreground">KYCAID_API_TOKENMU</code> and{" "}
           <code className="text-muted-foreground">KYCAID_API_TOKENSL</code>.
           Each entity holds its own KYCAID account, and a token can only read
-          its own. Until then the file import below does the same job and needs
-          no credential.
+          its own.
         </span>
       </div>
     );

@@ -3,7 +3,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiFetch } from "@/lib/api";
-import type { VerificationRow } from "@/lib/kyc/read-export";
 
 /** One verification as the compliance screen reads it. */
 export type KycCase = {
@@ -32,7 +31,12 @@ export type KycCase = {
  * compliance officer is asked about.
  */
 export type KycFormBreakdown = {
-  /** null where the import carried no form — kept, never folded into a brand. */
+  /**
+   * The group's value — a form name, or a KYCAID account label.
+   *
+   * null where the row does not carry one; kept as its own line rather than
+   * folded into an entity that may not have produced it.
+   */
   form: string | null;
   verifications: number;
   byStatus: Record<string, number>;
@@ -43,6 +47,8 @@ export type KycFormBreakdown = {
 export type KycSummary = {
   verifications: number;
   byForm: KycFormBreakdown[];
+  /** The same figures per KYCAID account — which is per entity. */
+  byAccount: KycFormBreakdown[];
   byStatus: { status: string; count: number }[];
   declineReasons: { reason: string; count: number }[];
   spentEur: number;
@@ -61,6 +67,12 @@ export type KycCoverage = {
   byStatus: { status: string; clients: number }[];
 };
 
+/**
+ * What a write into the compliance table did.
+ *
+ * Still called an import because that is what the provider read performs: the
+ * rows come from KYCAID rather than a file, and land the same way.
+ */
 export type KycImportResult = {
   read: number;
   created: number;
@@ -93,84 +105,6 @@ export function useKycCoverage() {
     queryKey: ["kyc-coverage"],
     queryFn: () => apiFetch<KycCoverage>("/kyc/coverage"),
   });
-}
-
-/**
- * How many verifications go in one request.
- *
- * NOT a tuning knob — a platform limit. The serverless host refuses a request
- * body over 4.5MB, and it refuses it at the edge, before any of our code runs
- * and therefore before any CORS header is attached. The browser cannot read a
- * response it is not allowed to see, so a 30,111-row export arrived as a bare
- * "Failed to fetch" with nothing in the server log at all.
- *
- * Four hundred rows is roughly 120KB — far under the ceiling, and small enough
- * that one request is a short piece of work rather than a long one. A 30,000
- * row export is seventy-five requests, which the progress counter makes
- * legible.
- */
-const ROWS_PER_REQUEST = 400;
-
-/**
- * Sends an export in batches and adds up what came back.
- *
- * Sequential on purpose. Each batch creates clients the next may refer to, and
- * firing them together turns one import into a race for the same rows.
- */
-async function importInBatches(
-  rows: VerificationRow[],
-  mapping: Record<string, string> | undefined,
-  onProgress?: (done: number, total: number) => void,
-): Promise<KycImportResult> {
-  const total: KycImportResult = {
-    read: 0, created: 0, updated: 0, unusable: 0, unlinked: 0,
-    clientsCreated: 0, clientsUpdated: 0, statuses: [], forms: [],
-  };
-  const statuses = new Map<string, number>();
-  const forms = new Map<string, number>();
-
-  for (let i = 0; i < rows.length; i += ROWS_PER_REQUEST) {
-    const batch = rows.slice(i, i + ROWS_PER_REQUEST);
-    let r: KycImportResult;
-    try {
-      r = await apiFetch<KycImportResult>("/kyc/import", {
-        method: "POST",
-        body: JSON.stringify({ rows: batch, mapping }),
-      });
-    } catch (e) {
-      // An import is not atomic across batches, so a failure halfway leaves
-      // real rows behind. Saying how many landed turns "it broke" into "start
-      // again and the first N will update rather than duplicate" — which is
-      // true, because the verification id is the key.
-      const done = total.created + total.updated;
-      const why = e instanceof Error ? e.message : String(e);
-      throw new Error(
-        done
-          ? `Imported ${done.toLocaleString()} of ${rows.length.toLocaleString()} before this failed: ${why} — re-running is safe, what landed will update rather than duplicate.`
-          : why,
-      );
-    }
-    total.read += r.read;
-    total.created += r.created;
-    total.updated += r.updated;
-    total.unusable += r.unusable;
-    total.unlinked += r.unlinked;
-    total.clientsCreated += r.clientsCreated;
-    total.clientsUpdated += r.clientsUpdated;
-    for (const s of r.statuses)
-      statuses.set(s.status, (statuses.get(s.status) ?? 0) + s.rows);
-    for (const f of r.forms)
-      forms.set(f.form, (forms.get(f.form) ?? 0) + f.rows);
-    onProgress?.(Math.min(i + batch.length, rows.length), rows.length);
-  }
-
-  total.statuses = [...statuses.entries()]
-    .map(([status, rows]) => ({ status, rows }))
-    .sort((a, b) => b.rows - a.rows);
-  total.forms = [...forms.entries()]
-    .map(([form, rows]) => ({ form, rows }))
-    .sort((a, b) => b.rows - a.rows);
-  return total;
 }
 
 /** What the direct reader can do, and what is already loaded. */
@@ -305,18 +239,3 @@ export function useSyncProvider(
   });
 }
 
-export function useImportVerifications(
-  onProgress?: (done: number, total: number) => void,
-) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (body: {
-      rows: VerificationRow[];
-      mapping?: Record<string, string>;
-    }) => importInBatches(body.rows, body.mapping, onProgress),
-    onSuccess: () => {
-      for (const key of ["kyc-cases", "kyc-summary", "kyc-coverage", "kyc-provider"])
-        void queryClient.invalidateQueries({ queryKey: [key] });
-    },
-  });
-}

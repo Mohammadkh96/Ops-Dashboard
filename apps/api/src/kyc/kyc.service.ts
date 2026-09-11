@@ -926,14 +926,29 @@ export class KycService {
    * gap silently added to one brand's count is worse than a gap that says so.
    */
   async byForm() {
+    return this.breakdown('form');
+  }
+
+  /**
+   * The same figures per KYCAID ACCOUNT — which is per entity.
+   *
+   * The account is the stronger record of the two. A form can be renamed and a
+   * console export need not carry one, but a verification is fetched with the
+   * credential of exactly one account and cannot be attributed to the other.
+   */
+  async byAccount() {
+    return this.breakdown('account');
+  }
+
+  private async breakdown(key: 'form' | 'account') {
     const [grouped, unlinked] = await Promise.all([
       this.prisma.kycCase.groupBy({
-        by: ['form', 'status'],
+        by: [key, 'status'],
         _count: { _all: true },
         _sum: { priceEur: true },
       }),
       this.prisma.kycCase.groupBy({
-        by: ['form'],
+        by: [key],
         where: { clientId: null },
         _count: { _all: true },
       }),
@@ -942,6 +957,7 @@ export class KycService {
     const forms = new Map<
       string,
       {
+        /** The group's value — a form name, or an account label. */
         form: string | null;
         verifications: number;
         byStatus: Record<string, number>;
@@ -956,9 +972,10 @@ export class KycService {
     const keyOf = (form: string | null) => form ?? '\u0000none';
 
     for (const g of grouped) {
-      const key = keyOf(g.form);
-      const row = forms.get(key) ?? {
-        form: g.form,
+      const value = (g as Record<string, unknown>)[key] as string | null;
+      const mapKey = keyOf(value);
+      const row = forms.get(mapKey) ?? {
+        form: value,
         verifications: 0,
         byStatus: {},
         spentEur: 0,
@@ -967,10 +984,12 @@ export class KycService {
       row.verifications += g._count._all;
       row.byStatus[g.status] = (row.byStatus[g.status] ?? 0) + g._count._all;
       row.spentEur += g._sum.priceEur === null ? 0 : Number(g._sum.priceEur);
-      forms.set(key, row);
+      forms.set(mapKey, row);
     }
     for (const u of unlinked) {
-      const row = forms.get(keyOf(u.form));
+      const row = forms.get(
+        keyOf((u as Record<string, unknown>)[key] as string | null),
+      );
       if (row) row.unlinked = u._count._all;
     }
 
@@ -1007,6 +1026,7 @@ export class KycService {
     return {
       verifications: total,
       byForm: await this.byForm(),
+      byAccount: await this.byAccount(),
       byStatus: byStatus.map((s) => ({
         status: s.status,
         count: s._count._all,
