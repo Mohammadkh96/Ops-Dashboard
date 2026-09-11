@@ -65,7 +65,22 @@ export type ReportRow = {
   mode?: string | null;
 };
 
-export type KycaidForm = { form_id?: string | null; name?: string | null };
+/**
+ * One row of `GET /forms`, in every spelling it has been seen to use.
+ *
+ * The screen is showing raw form ids — "12666" where the console says "DEFAULT
+ * KYC Tradin MAU" — which means this lookup came back with nothing. Either the
+ * endpoint refused, or it names its columns differently from the report that
+ * references them. Both spellings are read rather than guessed at, and the
+ * failure is no longer swallowed silently: `formsFailed` says so.
+ */
+export type KycaidForm = {
+  form_id?: string | null;
+  id?: string | null;
+  name?: string | null;
+  form_name?: string | null;
+  title?: string | null;
+};
 
 /** One KYCAID account: one entity, one token, one set of verifications. */
 export type KycaidAccount = {
@@ -250,6 +265,21 @@ export function toVerificationRow(
       String(row.mode ?? '')
         .trim()
         .toUpperCase() || null,
+    /**
+     * The jurisdiction, and the one identifying field this file reads.
+     *
+     * IT WAS DECLARED, DOCUMENTED AND NEVER ASSIGNED. `country_code` is on the
+     * row type above with a paragraph explaining why it is the single
+     * exception to reading no personal data — and the mapping simply did not
+     * set it, so every verification fetched from the API landed with an empty
+     * country while the provider's own console showed Philippines, Albania,
+     * Nigeria. The column read "—" on ten thousand rows and looked like a
+     * provider that does not report country.
+     */
+    country:
+      String(row.country_code ?? '')
+        .trim()
+        .toUpperCase() || null,
   };
 }
 
@@ -367,17 +397,31 @@ export class KycaidClient {
     try {
       const body = await this.get<unknown>('/forms');
       for (const f of readRows(body) as KycaidForm[]) {
-        const id = String(f.form_id ?? '').trim();
-        const name = String(f.name ?? '').trim();
+        const id = String(f.form_id ?? f.id ?? '').trim();
+        const name = String(f.name ?? f.form_name ?? f.title ?? '').trim();
         if (id && name) names.set(id, name);
       }
-    } catch {
+      this.formsFailed = names.size ? null : 'the list came back empty';
+    } catch (e) {
       // Not worth failing a sync over. Without it the form column holds ids
       // instead of names, which is legible and correctable; refusing to import
       // anything because a decoration could not be resolved is not.
+      //
+      // But it IS worth saying. Swallowed in silence, this is a screen full of
+      // "12666" where the console says "DEFAULT KYC Tradin MAU", and nothing
+      // anywhere to suggest a request failed.
+      this.formsFailed = e instanceof Error ? e.message : String(e);
     }
     return names;
   }
+
+  /**
+   * Why the form names are missing, if they are. Null once they resolve.
+   *
+   * Read after `forms()`, so a sync can report "form names unavailable: 404"
+   * instead of quietly filling the column with ids.
+   */
+  formsFailed: string | null = null;
 }
 
 /**

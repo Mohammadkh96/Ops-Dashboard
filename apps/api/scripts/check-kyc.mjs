@@ -271,6 +271,7 @@ async function run() {
         decline_reasons: [],
         processing_time: 4,
         price: 1.5,
+        country_code: 'ph',
       }, new Map([['form-mau', MAU]]));
 
       ok('price is already euros — the documented /100 is wrong',
@@ -278,6 +279,12 @@ async function run() {
       ok('processing time is already minutes — the documented /60 is wrong',
          row.processingMin === 4, row.processingMin);
       ok('the form id is resolved to its name', row.form === MAU, row.form);
+      // Declared on the row type, documented as the one exception to reading
+      // no personal data — and never actually assigned, so every verification
+      // fetched from the API landed with an empty country while the console
+      // showed Philippines and Albania.
+      ok('the country code is read, and upper-cased',
+         row.country === 'PH', row.country);
       ok('the account reference survives', row.externalApplicantId === 'CU5001');
       ok('their status word is kept verbatim', row.status === 'completed');
       ok('a completed check with no reason to decline passed',
@@ -637,6 +644,27 @@ async function run() {
       });
       ok('an account that returned nothing says so rather than averaging away',
          quiet.accounts.find((a) => a.account === 'SL').rows === 0, quiet.accounts);
+
+      // A form lookup that fails leaves the Form column full of provider ids —
+      // "12666" where the console says "DEFAULT KYC Tradin MAU". It used to do
+      // that in silence, so the ids read as the best the provider offers.
+      const broken = {
+        label: 'MU',
+        client: {
+          formsFailed: 'GET /forms: 404 not_found',
+          forms: async () => new Map(),
+          report: async () => [row('mu-4', 'CU9104', 'MU')],
+        },
+      };
+      const warned = await kyc.syncFromProvider({
+        from: '2026-05-06', to: '2026-05-06', clients: [broken],
+      });
+      ok('a form lookup that failed is reported, not swallowed',
+         warned.formNamesUnavailable.length === 1 &&
+           /404/.test(warned.formNamesUnavailable[0].why),
+         warned.formNamesUnavailable);
+      ok('and the rows still land — a name is a decoration, the row is not',
+         warned.created === 1, warned.created);
     }
 
     section('which accounts are configured, and what each holds');

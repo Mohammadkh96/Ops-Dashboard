@@ -235,6 +235,14 @@ export type SyncResult = ImportResult & {
   testSkipped: number;
   /** What each entity's account returned. A zero here is the finding. */
   accounts: { account: string; rows: number }[];
+  /**
+   * Accounts whose form names could not be read, and why.
+   *
+   * The Form column showing "12666" where the console says "DEFAULT KYC Tradin
+   * MAU" is this, and it used to be entirely silent — `forms()` swallowed the
+   * failure and the ids looked like the best the provider offers.
+   */
+  formNamesUnavailable: { account: string; why: string }[];
 };
 
 const DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -639,7 +647,12 @@ export class KycService {
     // Once per sync per account, not once per day. Each account has its own
     // forms, so one shared map would name the other entity's forms wrongly.
     const formNames = new Map<string, Map<string, string>>();
-    for (const a of accounts) formNames.set(a.label, await a.client.forms());
+    const formNamesUnavailable: { account: string; why: string }[] = [];
+    for (const a of accounts) {
+      formNames.set(a.label, await a.client.forms());
+      const why = a.client.formsFailed;
+      if (why) formNamesUnavailable.push({ account: a.label, why });
+    }
 
     const total = emptyResult();
     const statuses = new Map<string, number>();
@@ -737,6 +750,7 @@ export class KycService {
         account: a.label,
         rows: perAccount.get(a.label) ?? 0,
       })),
+      formNamesUnavailable,
     };
   }
 

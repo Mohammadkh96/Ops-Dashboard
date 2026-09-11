@@ -168,6 +168,8 @@ export type KycSyncResult = KycImportResult & {
   testSkipped: number;
   /** What each entity's account returned. A zero here is the finding. */
   accounts: { account: string; rows: number }[];
+  /** Accounts whose form names could not be read — why the column shows ids. */
+  formNamesUnavailable: { account: string; why: string }[];
 };
 
 export function useKycProvider() {
@@ -198,7 +200,7 @@ async function syncUntilDone(
     read: 0, created: 0, updated: 0, unusable: 0, unlinked: 0,
     clientsCreated: 0, clientsUpdated: 0, statuses: [], forms: [],
     from, to, days: 0, fetched: 0, nextDate: null, done: false, truncated: [],
-    testSkipped: 0, accounts: [],
+    testSkipped: 0, accounts: [], formNamesUnavailable: [],
   };
   const statuses = new Map<string, number>();
   const forms = new Map<string, number>();
@@ -240,6 +242,11 @@ async function syncUntilDone(
       if (seen) seen.rows += a.rows;
       else total.accounts.push({ ...a });
     }
+    // Once per account, not once per call: the same 404 on every day of a
+    // year-long range is one finding, not three hundred and sixty-five.
+    for (const f of r.formNamesUnavailable ?? [])
+      if (!total.formNamesUnavailable.some((x) => x.account === f.account))
+        total.formNamesUnavailable.push(f);
     total.truncated.push(...r.truncated);
     for (const s of r.statuses)
       statuses.set(s.status, (statuses.get(s.status) ?? 0) + s.rows);
@@ -267,6 +274,24 @@ async function syncUntilDone(
   return total;
 }
 
+/**
+ * Everything a completed read invalidates.
+ *
+ * `module` IS IN THIS LIST and was not. The compliance table is fetched
+ * through useApi, whose keys start with "module" — so a sync refreshed the
+ * cards, the coverage and the provider status, and left the table showing
+ * what it held before the fetch. It corrected itself thirty seconds later on
+ * that hook's own interval, which is exactly long enough to press Fetch,
+ * watch the table not change, and conclude the fetch did nothing.
+ */
+const STALE_AFTER_SYNC = [
+  "kyc-cases",
+  "kyc-summary",
+  "kyc-coverage",
+  "kyc-provider",
+  "module",
+];
+
 export function useSyncProvider(
   onProgress?: (day: string, days: number) => void,
 ) {
@@ -275,9 +300,59 @@ export function useSyncProvider(
     mutationFn: (body: { from: string; to: string }) =>
       syncUntilDone(body.from, body.to, onProgress),
     onSuccess: () => {
-      for (const key of ["kyc-cases", "kyc-summary", "kyc-coverage", "kyc-provider"])
+      for (const key of STALE_AFTER_SYNC)
         void queryClient.invalidateQueries({ queryKey: [key] });
     },
+  });
+}
+
+/** How often an open KYC page asks the provider what is new. */
+const CATCH_UP_MS = 5 * 60_000;
+
+function isoDay(shiftDays = 0): string {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() + shiftDays);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Keeps the page current without anybody pressing anything.
+ *
+ * WHY THIS EXISTS. Nothing read the provider between the nightly cron and
+ * somebody pressing Fetch. A verification that arrived three minutes ago was
+ * therefore not missing, not filtered and not late — it had never been asked
+ * for, and would not be until 04:00 the next morning. The screen gave no hint
+ * of that: it showed the newest row it held as though that were the newest row
+ * there is.
+ *
+ * TWO DAYS, NOT ONE. The provider's report takes a single `date` and our days
+ * are UTC, so at 01:00 in Mauritius (UTC+4) "today" here is still yesterday
+ * there. Re-reading yesterday costs one extra request per account and removes
+ * the whole class of bug; re-reading is free in any case, because the
+ * verification id is the key and what is already stored simply updates.
+ *
+ * A QUERY, THOUGH IT POSTS. The sync is idempotent — it reads the provider and
+ * upserts the rows it finds — which is what makes it safe to run on a timer,
+ * and useQuery is what gives it a timer, a de-duplicated in-flight request,
+ * a refetch when the tab is focused again, and an honest "last checked".
+ */
+export function useCatchUp(enabled: boolean) {
+  const queryClient = useQueryClient();
+  return useQuery<KycSyncResult>({
+    queryKey: ["kyc-catch-up"],
+    queryFn: async () => {
+      const result = await syncUntilDone(isoDay(-1), isoDay(0));
+      for (const key of STALE_AFTER_SYNC)
+        void queryClient.invalidateQueries({ queryKey: [key] });
+      return result;
+    },
+    enabled,
+    refetchInterval: CATCH_UP_MS,
+    refetchOnWindowFocus: true,
+    // A provider that is down should not retry three times every five
+    // minutes; the next tick is the retry.
+    retry: false,
+    staleTime: CATCH_UP_MS,
   });
 }
 
