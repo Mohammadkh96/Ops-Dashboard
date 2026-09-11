@@ -60,6 +60,21 @@ export class KycController {
   }
 
   /**
+   * What the provider actually sends, measured on the rows it sent.
+   *
+   * Every column here has been argued from the documentation at some point,
+   * and the documentation has been wrong twice. This answers "what can we get
+   * from this API" with the account's own data: which fields arrive, how often
+   * they carry a value, and which of them anything stores.
+   */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Get('fields')
+  fields(@Query('limit') limit?: string) {
+    return this.kyc.providerFields(limit ? Number(limit) : undefined);
+  }
+
+  /**
    * Everything KYCAID holds about one verification's applicant, read live.
    *
    * NOT STORED. The table holds the outcome, the jurisdiction and the account

@@ -6,6 +6,7 @@ import { CloudDownload, Info, Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   useCatchUp,
+  useKycFields,
   useKycProvider,
   useSyncProvider,
   type KycSyncResult,
@@ -213,7 +214,99 @@ export function SyncProvider({ from, to }: { from: string; to: string }) {
       ) : null}
 
       {result ? <Result result={result} /> : null}
+
+      <ProviderFields />
     </div>
+  );
+}
+
+/**
+ * Which fields KYCAID sends, how often they carry anything, and which of them
+ * this dashboard keeps.
+ *
+ * Folded away because it is not daily work — and present because "what can we
+ * get from this API" has been answered from the documentation twice and the
+ * documentation was wrong both times. Measured on the rows the account
+ * actually returned.
+ */
+function ProviderFields() {
+  const [open, setOpen] = useState(false);
+  const fields = useKycFields(open);
+
+  return (
+    <details
+      className="text-[11px]"
+      onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
+    >
+      <summary className="cursor-pointer text-muted hover:text-muted-foreground">
+        What KYCAID sends, and what is kept
+      </summary>
+
+      <div className="mt-2 flex flex-col gap-2">
+        {fields.isLoading ? <p className="text-muted">Reading…</p> : null}
+
+        {fields.data ? (
+          <>
+            <p className="text-muted">
+              Measured on {fields.data.sampled.toLocaleString()} stored row
+              {fields.data.sampled === 1 ? "" : "s"}.
+              {fields.data.withoutRaw
+                ? ` ${fields.data.withoutRaw.toLocaleString()} older verification${
+                    fields.data.withoutRaw === 1 ? "" : "s"
+                  } predate keeping the whole row — fetch those dates again and they join this.`
+                : ""}
+            </p>
+
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[520px] border-collapse">
+                <thead>
+                  <tr className="text-left text-muted">
+                    <th className="py-1 pr-3 font-medium">Field</th>
+                    <th className="py-1 pr-3 font-medium">Filled</th>
+                    <th className="py-1 pr-3 font-medium">Example</th>
+                    <th className="py-1 font-medium">Kept as</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {fields.data.fields.map((f) => (
+                    <tr key={f.field} className="border-t border-border">
+                      <td className="py-1 pr-3 font-medium text-muted-foreground">
+                        {f.field}
+                      </td>
+                      <td
+                        className={`tnum py-1 pr-3 ${f.fillRate ? "text-muted" : "text-accent-orange"}`}
+                      >
+                        {f.fillRate}%
+                      </td>
+                      <td className="py-1 pr-3 text-muted">
+                        {f.example ?? "—"}
+                      </td>
+                      {/* Nothing in this column is the finding: the provider
+                          is sending it and we are throwing it away. */}
+                      <td
+                        className={
+                          f.storedAs ? "py-1 text-muted" : "py-1 text-accent-orange"
+                        }
+                      >
+                        {f.storedAs ?? "not kept — available if you want it"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <p className="text-muted">
+              Read and deliberately not stored:{" "}
+              {fields.data.refused.join(", ")}. They are in the response, and
+              keeping them would make this dashboard a second copy of every
+              client&rsquo;s identity documents. Any one row&rsquo;s applicant
+              can be looked up live from the row itself.
+            </p>
+          </>
+        ) : null}
+      </div>
+    </details>
   );
 }
 

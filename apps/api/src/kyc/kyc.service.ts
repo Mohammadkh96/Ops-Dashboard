@@ -198,6 +198,51 @@ export type KycWindow = {
  * Written as `lte: to` it would cover exactly the midnight instant and drop the
  * rest — the same off-by-one that once cost a month of payment reconciliation.
  */
+/**
+ * Which column of ours each field of theirs ends up in.
+ *
+ * The answer to "what can we get from this API", written where it can be
+ * checked against the data rather than against the documentation. Anything the
+ * provider sends that is not in this map is available and unused.
+ */
+const STORED_AS: Record<string, string> = {
+  verification_id: 'verificationId',
+  applicant_id: 'applicantId',
+  external_applicant_id: 'client (the CU reference, and the join to payments)',
+  created_at: 'submittedAt',
+  status: 'providerStatus, and the verdict derived from decline_reasons',
+  form_id: 'form (resolved to its name via GET /forms)',
+  method: 'method',
+  service: 'service (KYC / KYB / SERVICE)',
+  verification_types: 'checks',
+  country_code: 'country',
+  decline_reasons: 'declineReasons',
+  price: 'priceEur',
+  processing_time: 'processingMin',
+  mode: 'dropped where TEST — never stored, and counted in the reply',
+};
+
+/**
+ * What the provider sends and this integration will not keep.
+ *
+ * Not a technical limit: the report carries all of these and reading them
+ * would be one line each. The dashboard's job is to know who is verified and
+ * what it cost, not to be a second copy of everybody's identity documents held
+ * to a lower standard than the system that is meant to hold them. Available
+ * live, per row, from `GET /applicants/{id}` — see applicantDetail.
+ */
+const REFUSED_FIELDS = [
+  'first_name',
+  'last_name',
+  'middle_name',
+  'dob',
+  'email',
+  'phone',
+  'tax_id_number',
+  'wallet_address',
+  'telegram_username',
+];
+
 /** A string field of a provider object, under any of its spellings. */
 function pick(o: Record<string, unknown>, ...keys: string[]): string | null {
   for (const k of keys) {
@@ -882,6 +927,92 @@ export class KycService {
       from = back.toISOString().slice(0, 10);
     }
     return this.syncFromProvider({ from, to, budgetMs: opts.budgetMs });
+  }
+
+  /**
+   * WHAT THE PROVIDER ACTUALLY SENDS, from the rows it actually sent.
+   *
+   * Every column on this screen has at some point been argued from the
+   * documentation, and the documentation has been wrong twice: it says `price`
+   * is euro cents and `processing_time` seconds, and this account's data says
+   * neither. Meanwhile `country_code` sat in every response for a year while
+   * the Country column read "—", because nothing was looking at the response.
+   *
+   * So this reads the stored rows and reports what is in them: which keys
+   * arrive, how often they carry a value, one example, and whether anything
+   * here stores it. A field at 100% with "not stored" beside it is a column
+   * available for the asking; a mapped field at 0% is a column that will never
+   * fill however the screen is written.
+   *
+   * It reads `raw`, which is the row minus the identity fields — so rows
+   * fetched before `raw` was written have nothing to report, and the answer
+   * says how many of those there are rather than reporting no fields.
+   */
+  async providerFields(limit = 1000) {
+    const take = Math.min(Math.max(limit, 1), 5000);
+    const [rows, held] = await Promise.all([
+      this.prisma.kycCase.findMany({
+        // `not: DbNull` rather than a NOT wrapper: for a nullable Json column
+        // Prisma expresses "has a value" inside the filter, and the outer form
+        // does not typecheck.
+        where: { raw: { not: Prisma.DbNull } },
+        select: { raw: true },
+        orderBy: { submittedAt: 'desc' },
+        take,
+      }),
+      this.prisma.kycCase.count(),
+    ]);
+
+    const seen = new Map<
+      string,
+      { rows: number; filled: number; example: string | null }
+    >();
+    for (const r of rows) {
+      const row = r.raw as Record<string, unknown> | null;
+      if (!row || typeof row !== 'object') continue;
+      for (const [key, value] of Object.entries(row)) {
+        const f = seen.get(key) ?? { rows: 0, filled: 0, example: null };
+        f.rows++;
+        const empty =
+          value === null ||
+          value === undefined ||
+          value === '' ||
+          (Array.isArray(value) && value.length === 0);
+        if (!empty) {
+          f.filled++;
+          f.example ??= JSON.stringify(value).slice(0, 60);
+        }
+        seen.set(key, f);
+      }
+    }
+
+    return {
+      /** How many rows this was measured over, and how many are held. */
+      sampled: rows.length,
+      held,
+      /**
+       * Rows stored before the whole row was kept. Not a gap in the provider's
+       * data — a gap in ours, and fetching those dates again fills it.
+       */
+      withoutRaw: held - rows.length,
+      fields: [...seen.entries()]
+        .map(([field, f]) => ({
+          field,
+          filled: f.filled,
+          fillRate: f.rows ? Math.round((f.filled / f.rows) * 100) : 0,
+          example: f.example,
+          storedAs: STORED_AS[field] ?? null,
+        }))
+        .sort(
+          (a, b) => b.fillRate - a.fillRate || a.field.localeCompare(b.field),
+        ),
+      /**
+       * Named, because their absence is the point. These are in the provider's
+       * response and deliberately never stored, so they will never appear in
+       * the list above however many rows are sampled.
+       */
+      refused: REFUSED_FIELDS,
+    };
   }
 
   /**

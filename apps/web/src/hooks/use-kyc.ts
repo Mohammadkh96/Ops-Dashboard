@@ -117,6 +117,41 @@ export function useApplicant(caseId: string | null, enabled: boolean) {
   });
 }
 
+/**
+ * What the provider actually sends, measured on the rows it sent.
+ *
+ * The answer to "what data can we get from this API", from the account's own
+ * responses rather than from the reference — which has been wrong twice about
+ * this provider's units, and silent about a country field that was arriving in
+ * every row while the column read "—".
+ */
+export type KycFields = {
+  sampled: number;
+  held: number;
+  /** Rows stored before the whole row was kept. Ours to fix, by re-fetching. */
+  withoutRaw: number;
+  fields: {
+    field: string;
+    filled: number;
+    /** How often it carries a value. 0% is a column that will never fill. */
+    fillRate: number;
+    example: string | null;
+    /** Which column of ours it lands in, or null for "available, unused". */
+    storedAs: string | null;
+  }[];
+  /** Read from the provider and deliberately never stored. */
+  refused: string[];
+};
+
+export function useKycFields(enabled: boolean) {
+  return useQuery<KycFields>({
+    queryKey: ["kyc-fields"],
+    queryFn: () => apiFetch<KycFields>("/kyc/fields"),
+    enabled,
+    staleTime: 5 * 60_000,
+  });
+}
+
 /** Who has moved money, and whether anybody checked them. */
 export type KycCoverage = {
   tradingClients: number;
