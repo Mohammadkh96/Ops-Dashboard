@@ -479,6 +479,32 @@ export class KycaidClient {
     );
   }
 
+  /**
+   * One verification's checks, and what the provider said about each.
+   *
+   * THE REPORT SAYS WHICH CHECKS RAN; THIS SAYS WHICH ONES PASSED. The report's
+   * `verification_types` is a list of words — "Profile, Document, Liveness" —
+   * and a `decline_reasons` beside it that names the failure in the provider's
+   * own vocabulary, with no way to tell which of the six checks produced it. A
+   * row reading FAIL with "document_expired" leaves the desk guessing whether
+   * the face matched. This endpoint answers per check:
+   *
+   *   { status, verified, verifications: { document: { verified, comment }, … } }
+   *
+   * NON-PERSONAL, which is why the screen loads it on opening a row without
+   * asking first — unlike the applicant lookup beside it, there is no name, no
+   * date of birth and no document here, only the verdicts. Still not stored:
+   * it is one request against a figure that can change when a check is re-run,
+   * and a cached verdict that disagrees with the provider is worse than none.
+   */
+  async verification(verificationId: string): Promise<Record<string, unknown>> {
+    const id = verificationId.trim();
+    if (!id) throw new KycaidError('No verification id to look up.', 400);
+    return await this.get<Record<string, unknown>>(
+      `/verifications/${encodeURIComponent(id)}`,
+    );
+  }
+
   /** The forms, so the report's form ids can be stored as their names. */
   async forms(): Promise<Map<string, string>> {
     const names = new Map<string, string>();

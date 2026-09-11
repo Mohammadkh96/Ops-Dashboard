@@ -2,6 +2,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 
 import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import type { KycaidAccount } from './kycaid.client';
 import {
   KycaidClient,
   REPORT_PAGE_SIZE,
@@ -232,16 +233,81 @@ const STORED_AS: Record<string, string> = {
  * live, per row, from `GET /applicants/{id}` — see applicantDetail.
  */
 const REFUSED_FIELDS = [
-  'first_name',
-  'last_name',
-  'middle_name',
+  // The report's own identity columns, named as the reference names them. This
+  // list was written from the applicant object by mistake and claimed the
+  // report sends `first_name`/`last_name`/`middle_name`; it sends one `name`,
+  // so the screen reported refusing three fields that never arrive and did not
+  // mention the one that does.
+  'name',
   'dob',
+  'tax_id_number',
   'email',
   'phone',
-  'tax_id_number',
   'wallet_address',
   'telegram_username',
 ];
+
+/**
+ * Which KYCAID token can see this row.
+ *
+ * TWO ENTITIES, TWO ACCOUNTS, AND A TOKEN ONLY SEES ITS OWN. Asking Saint
+ * Lucia's account about a Mauritius verification returns 404 — which on screen
+ * reads as a deleted record rather than as the wrong credential, and sends
+ * somebody to the provider's console to look for a row that is sitting there
+ * perfectly intact. So the row's own account picks the token, and every failure
+ * to find one says which variable is missing.
+ *
+ * The single-account fallback is for the deployment that has one unlabelled
+ * `KYCAID_API_TOKEN`: there is no ambiguity to resolve, so an unattributed row
+ * is read with the only token there is.
+ */
+function accountFor(label: string | null): KycaidAccount {
+  const wanted = (label ?? '').trim().toUpperCase();
+  const accounts = kycaidAccounts();
+  const account =
+    accounts.find((a) => a.label === wanted) ??
+    (accounts.length === 1 ? accounts[0] : undefined);
+  if (!account) {
+    throw new BadRequestException(
+      wanted
+        ? `No token is configured for ${wanted}, so its verifications cannot be read. Set KYCAID_API_TOKEN${wanted} on the API.`
+        : 'This verification does not record which KYCAID account it came from, and more than one is configured — fetch its date again to attribute it.',
+    );
+  }
+  return account;
+}
+
+/**
+ * The provider's per-check verdicts, in the shape the drawer shows them.
+ *
+ * `GET /verifications/{id}` answers with a `verifications` object keyed by the
+ * check — `profile`, `document`, `facial`, `address`, `aml` — each carrying a
+ * `verified` boolean and a `comment`. Read defensively: the set of keys is the
+ * form's, not a fixed list, so this maps whatever arrives rather than asking
+ * for the five it has seen.
+ *
+ * NOTHING PERSONAL PASSES THROUGH HERE. A comment is the provider's note on a
+ * check ("document expired", "face does not match") and the rest of the reply
+ * is ids and booleans, which is why this can load without anyone pressing
+ * anything while the applicant lookup beside it cannot.
+ */
+export function readChecks(body: Record<string, unknown>) {
+  const bag = body.verifications;
+  if (!bag || typeof bag !== 'object' || Array.isArray(bag)) return [];
+  return Object.entries(bag as Record<string, unknown>).map(([type, v]) => {
+    const o = (v && typeof v === 'object' ? v : {}) as Record<string, unknown>;
+    return {
+      type,
+      /**
+       * Three states, not two. `undefined` is a check that has not finished,
+       * and rendering it as a failure is how a pending verification becomes a
+       * rejection on the screen.
+       */
+      verified: typeof o.verified === 'boolean' ? o.verified : null,
+      comment: pick(o, 'comment', 'reason', 'message'),
+    };
+  });
+}
 
 /** A string field of a provider object, under any of its spellings. */
 function pick(o: Record<string, unknown>, ...keys: string[]): string | null {
@@ -1049,19 +1115,7 @@ export class KycService {
       );
     }
 
-    const wanted = (row.account ?? '').trim().toUpperCase();
-    const accounts = kycaidAccounts();
-    const account =
-      accounts.find((a) => a.label === wanted) ??
-      (accounts.length === 1 ? accounts[0] : undefined);
-    if (!account) {
-      throw new BadRequestException(
-        wanted
-          ? `No token is configured for ${wanted}, so its applicants cannot be read. Set KYCAID_API_TOKEN${wanted} on the API.`
-          : 'This verification does not record which KYCAID account it came from, and more than one is configured — fetch its date again to attribute it.',
-      );
-    }
-
+    const account = accountFor(row.account);
     const client = new KycaidClient({ token: account.token });
     const applicant = await client.applicant(row.applicantId);
     return {
@@ -1078,6 +1132,59 @@ export class KycService {
       applicant: narrowApplicant(applicant),
       /** The whole thing is deliberately not returned. Say so on the screen. */
       note: 'Read live from KYCAID and not stored. Close this and it is gone.',
+    };
+  }
+
+  /**
+   * Which checks passed and which did not, read live for one verification.
+   *
+   * THE TABLE SAYS *WHICH* CHECKS RAN; THIS SAYS WHICH ONES THE PROVIDER WAS
+   * SATISFIED BY. The stored row carries `verification_types` — Profile,
+   * Document, Liveness, Address, Database Screening — and a decline reason in
+   * the provider's own vocabulary, and no link between the two. A rejected
+   * Mauritius application reading "Profile, Document, Liveness" with
+   * `document_expired` beside it leaves the desk unable to say whether the face
+   * matched, which is the difference between re-requesting one document and
+   * re-running the whole check.
+   *
+   * NOT STORED, AND UNLIKE THE APPLICANT LOOKUP, NOT GATED EITHER. There is no
+   * person in this reply — ids, booleans and the provider's note on each check
+   * — so the screen loads it on opening a row. It is not cached because a check
+   * can be re-run: a verdict of ours that disagrees with the provider's is
+   * worse than no verdict at all.
+   */
+  async verificationChecks(caseId: string) {
+    const row = await this.prisma.kycCase.findUnique({
+      where: { id: caseId },
+      select: { verificationId: true, account: true },
+    });
+    if (!row) throw new BadRequestException('No such verification.');
+    if (!row.verificationId)
+      throw new BadRequestException(
+        'This row carries no verification id, so the provider cannot be asked about it.',
+      );
+
+    const account = accountFor(row.account);
+    const client = new KycaidClient({ token: account.token });
+    const body = await client.verification(row.verificationId);
+
+    return {
+      account: account.label,
+      verificationId: row.verificationId,
+      /** Their processing state — `unused`, `pending`, `completed`. */
+      status: pick(body, 'status'),
+      /**
+       * Their overall verdict, which the report does not send.
+       *
+       * The report gives `status: completed` for a verification that failed,
+       * and this integration derives the pass/fail from `decline_reasons`
+       * being empty. This is the provider stating it outright — worth showing
+       * beside ours, because the day the two disagree is a day the derivation
+       * needs looking at.
+       */
+      verified: typeof body.verified === 'boolean' ? body.verified : null,
+      checks: readChecks(body),
+      note: 'Read live from KYCAID and not stored.',
     };
   }
 

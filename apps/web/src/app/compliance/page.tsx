@@ -16,7 +16,12 @@ import { Button } from "@/components/ui/button";
 import { ClientDetail } from "@/components/payments/client-detail";
 import { type KycCase } from "@/lib/modules";
 import { useKycCases, useKycCaseCount } from "@/hooks/use-modules";
-import { useApplicant, useKycProvider, useKycSummary } from "@/hooks/use-kyc";
+import {
+  useApplicant,
+  useKycProvider,
+  useKycSummary,
+  useVerificationChecks,
+} from "@/hooks/use-kyc";
 
 const STATUS_OPTIONS: { label: string; value: KycCase["status"] }[] = [
   { label: "Pending", value: "pending" },
@@ -498,28 +503,13 @@ function Kyc() {
               ))}
             </dl>
 
-            {/* WHICH CHECKS RAN. The provider's own list, and the honest
-                version of the checklist that used to sit further down this
-                drawer: that one showed Sanctions / PEP / AML / EDD derived
-                from a risk level nothing computed. This is what KYCAID says
-                it actually ran. */}
-            {selected.checks?.length ? (
-              <div className="flex flex-col gap-2">
-                <span className="text-xs font-medium uppercase tracking-wider text-muted">
-                  Checks run
-                </span>
-                <div className="flex flex-wrap gap-1.5">
-                  {selected.checks.map((check) => (
-                    <span
-                      key={check}
-                      className="rounded-md border border-border bg-card px-2 py-0.5 text-[11px] text-muted-foreground"
-                    >
-                      {check.replace(/_/g, " ")}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            ) : null}
+            {/* WHICH CHECKS RAN, AND WHICH ONES PASSED. The honest version of
+                the checklist that used to sit further down this drawer: that
+                one showed Sanctions / PEP / AML / EDD derived from a risk
+                level nothing computed. This is the provider's own verdict on
+                each check it actually ran. */}
+            <Checks caseId={selected.id} ran={selected.checks ?? []} />
+
 
             {/* The person, from the provider, at the moment you ask. */}
             <Applicant
@@ -571,6 +561,121 @@ function Kyc() {
       >
         {client ? <ClientDetail reference={client} /> : null}
       </Drawer>
+    </div>
+  );
+}
+
+/**
+ * What each check decided, asked of the provider as the row opens.
+ *
+ * THE STORED ROW CANNOT ANSWER THIS. It holds the list of checks that ran —
+ * Profile, Document, Liveness, Address, Database Screening — and, separately, a
+ * decline reason in the provider's own vocabulary. Nothing joins the two, so a
+ * rejected application reads as five checks and one word, and the desk cannot
+ * tell whether the face matched. `GET /verifications/{id}` answers per check,
+ * and the difference on a real row is between asking a client to re-send one
+ * document and putting them through the whole form again.
+ *
+ * NOT BEHIND A BUTTON, unlike the applicant panel below it. That one returns a
+ * named person and is a deliberate act; this returns ids, booleans and the
+ * provider's note on each check, so it loads with the drawer.
+ *
+ * FALLS BACK TO WHAT WE HOLD. If the lookup fails — a missing token for the
+ * entity, a provider outage — the stored list of checks is still shown, as
+ * chips, because "which checks ran" is worth reading on its own and losing it
+ * to a failed request would be a drawer that says less than it used to.
+ */
+function Checks({ caseId, ran }: { caseId: string; ran: string[] }) {
+  const { data, isLoading, isError } = useVerificationChecks(caseId, true);
+
+  const title = (
+    <span className="text-xs font-medium uppercase tracking-wider text-muted">
+      Checks
+    </span>
+  );
+
+  if (data?.checks.length) {
+    return (
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center justify-between">
+          {title}
+          {/* Their verdict, stated. The table's PASS/FAIL is inferred from the
+              decline reasons being empty, because the report sends no verdict
+              at all — so this is the figure to compare it against. */}
+          {data.verified === null ? (
+            <span className="text-[11px] text-muted">
+              {data.status ?? "not settled"}
+            </span>
+          ) : (
+            <span
+              className={`text-[11px] ${data.verified ? "text-accent-green" : "text-accent-red"}`}
+            >
+              provider says {data.verified ? "verified" : "not verified"}
+            </span>
+          )}
+        </div>
+        <ul className="flex flex-col gap-1.5">
+          {data.checks.map((c) => (
+            <li
+              key={c.type}
+              className="flex items-start gap-2 rounded-md border border-border bg-card px-2 py-1.5 text-[12px]"
+            >
+              {c.verified === null ? (
+                <span className="mt-1.5 size-2 shrink-0 rounded-full bg-muted" />
+              ) : c.verified ? (
+                <Check className="mt-0.5 size-3.5 shrink-0 text-accent-green" />
+              ) : (
+                <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-accent-red" />
+              )}
+              <span className="flex-1">
+                <span className="capitalize">{c.type.replace(/_/g, " ")}</span>
+                {c.comment ? (
+                  <span className="block text-[11px] text-muted">
+                    {c.comment}
+                  </span>
+                ) : null}
+              </span>
+              {/* A check with no verdict yet is neither a pass nor a failure,
+                  and colouring it as one is how a half-finished verification
+                  becomes a rejection on this screen. */}
+              {c.verified === null ? (
+                <span className="text-[11px] text-muted">pending</span>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  }
+
+  if (!ran.length && isLoading)
+    return <p className="text-sm text-muted">Asking KYCAID which checks ran…</p>;
+
+  if (!ran.length) return null;
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        {title}
+        {isError ? (
+          <span
+            className="text-[11px] text-accent-orange"
+            title="The stored list of checks is shown instead."
+          >
+            per-check verdicts unavailable
+          </span>
+        ) : null}
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {ran.map((check) => (
+          <span
+            key={check}
+            className="rounded-md border border-border bg-card px-2 py-0.5 text-[11px] text-muted-foreground"
+          >
+            {check.replace(/_/g, " ")}
+          </span>
+        ))}
+      </div>
     </div>
   );
 }

@@ -66,7 +66,7 @@ async function run() {
   const require_ = createRequire(import.meta.url);
   const { createApp } = require_('../dist/src/bootstrap');
   const { PrismaService } = require_('../dist/src/prisma/prisma.service');
-  const { KycService, defaultStatus, readDay, nextDay } =
+  const { KycService, defaultStatus, readDay, nextDay, readChecks } =
     require_('../dist/src/kyc/kyc.service');
   const { toVerificationRow, readDeclineReasons, readRows, kycaidAccounts } =
     require_('../dist/src/kyc/kycaid.client');
@@ -1002,6 +1002,73 @@ async function run() {
       await prisma.kycCase.update({
         where: { id: mu.id }, data: { account: 'MU' },
       });
+
+      for (const k of Object.keys(process.env))
+        if (/^KYCAID_API_TOKEN/.test(k)) delete process.env[k];
+      Object.assign(process.env, before);
+    }
+
+    section('which checks passed, not merely which ones ran');
+    {
+      // `GET /verifications/{id}` is the only thing that answers this. The
+      // stored row holds the list of checks and, separately, a decline reason
+      // in the provider's vocabulary, with nothing joining them — so a rejected
+      // application reads as five checks and one word, and nobody can say
+      // whether the face matched.
+      const parsed = readChecks({
+        status: 'completed',
+        verified: false,
+        verifications: {
+          profile: { verified: true },
+          document: { verified: false, comment: 'Document has expired' },
+          facial: { verified: true, comment: null },
+          address: {},
+        },
+      });
+      const by = Object.fromEntries(parsed.map((c) => [c.type, c]));
+      ok('every check the provider named comes back', parsed.length === 4,
+         parsed.map((c) => c.type));
+      ok('a failed check carries the provider\'s own words',
+         by.document.verified === false && /expired/i.test(by.document.comment),
+         by.document);
+      ok('a passed check is a pass with nothing said',
+         by.profile.verified === true && by.profile.comment === null, by.profile);
+
+      // THREE STATES, NOT TWO. A check with no verdict yet is not a failure,
+      // and rendering it as one turns every half-finished verification on the
+      // screen into a rejection.
+      ok('a check with no verdict yet is neither a pass nor a failure',
+         by.address.verified === null, by.address);
+
+      // The shape is the form's, not a fixed list of five: an account that runs
+      // a check this file has never seen must still show it.
+      const novel = readChecks({ verifications: { crypto_screening: { verified: true } } });
+      ok('a check nobody here has heard of is still reported',
+         novel.length === 1 && novel[0].type === 'crypto_screening', novel);
+
+      // A reply without the object at all — a pending verification, or a shape
+      // change — is no checks, not a crash in a drawer.
+      ok('a reply with no verdicts at all is empty rather than a throw',
+         readChecks({ status: 'pending' }).length === 0);
+
+      const before = { ...process.env };
+      process.env.KYCAID_API_TOKENMU = 'mu-token';
+      process.env.KYCAID_API_TOKENSL = 'sl-token';
+      delete process.env.KYCAID_API_TOKEN;
+      const mu = await prisma.kycCase.findFirst({ where: { verificationId: 'mu-1' } });
+      await prisma.kycCase.update({ where: { id: mu.id }, data: { account: 'ZZ' } });
+      let msg = '';
+      try { await kyc.verificationChecks(mu.id); } catch (e) { msg = e.message; }
+      // Same refusal as the applicant lookup, for the same reason: asking Saint
+      // Lucia's token about a Mauritius verification returns 404, which reads
+      // as a deleted record rather than as the wrong credential.
+      ok('the checks lookup picks the row\'s own account, and names what is missing',
+         /KYCAID_API_TOKENZZ/.test(msg), msg);
+      await prisma.kycCase.update({ where: { id: mu.id }, data: { account: 'MU' } });
+
+      msg = '';
+      try { await kyc.verificationChecks('no-such-row'); } catch (e) { msg = e.message; }
+      ok('a row that does not exist says so', /No such verification/i.test(msg), msg);
 
       for (const k of Object.keys(process.env))
         if (/^KYCAID_API_TOKEN/.test(k)) delete process.env[k];

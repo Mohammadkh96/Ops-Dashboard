@@ -118,6 +118,50 @@ export function useApplicant(caseId: string | null, enabled: boolean) {
 }
 
 /**
+ * Which checks the provider was satisfied by, per check.
+ *
+ * THE TABLE SAYS WHICH CHECKS RAN. This says which ones passed. A stored row
+ * carries "Profile, Document, Liveness" and a decline reason in the provider's
+ * vocabulary, with nothing joining them — so a rejection cannot be read as
+ * "the document expired, the face matched", which is the difference between
+ * asking the client for one document and re-running the whole form.
+ *
+ * Loaded on opening a row rather than behind a button, unlike the applicant
+ * beside it: there is no person in this reply, only verdicts.
+ */
+export type KycVerificationChecks = {
+  account: string;
+  verificationId: string;
+  /** Their processing state — `unused`, `pending`, `completed`. */
+  status: string | null;
+  /**
+   * Their overall verdict, stated rather than derived.
+   *
+   * The report does not send one, so the table's PASS/FAIL is inferred from
+   * `decline_reasons` being empty. Worth showing beside ours: the day they
+   * disagree is the day that inference needs looking at.
+   */
+  verified: boolean | null;
+  /** `null` is a check that has not finished — not a check that failed. */
+  checks: { type: string; verified: boolean | null; comment: string | null }[];
+  note: string;
+};
+
+export function useVerificationChecks(caseId: string | null, enabled: boolean) {
+  return useQuery<KycVerificationChecks>({
+    queryKey: ["kyc-checks", caseId],
+    queryFn: () =>
+      apiFetch<KycVerificationChecks>(
+        `/kyc/cases/${encodeURIComponent(caseId ?? "")}/checks`,
+      ),
+    enabled: enabled && Boolean(caseId),
+    // A settled verification's verdicts do not move while a drawer is open.
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+}
+
+/**
  * What the provider actually sends, measured on the rows it sent.
  *
  * The answer to "what data can we get from this API", from the account's own

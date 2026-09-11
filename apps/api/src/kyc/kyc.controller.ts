@@ -101,6 +101,33 @@ export class KycController {
   }
 
   /**
+   * Which of this verification's checks the provider was satisfied by.
+   *
+   * The table holds the list of checks that ran and the reason it was declined,
+   * with nothing joining the two. This asks the provider directly and gets a
+   * verdict per check — so "rejected" becomes "the document was expired, and
+   * the face matched", which is the difference between asking the client for
+   * one document and putting them through the whole form again.
+   *
+   * Behind the session guard like everything else here, though there is no
+   * person in the reply: ids, booleans, and the provider's note on each check.
+   * That is why the screen loads it on opening a row rather than behind a
+   * button, as the applicant lookup above it must be.
+   */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Get('cases/:id/checks')
+  checks(@Param('id') id: string) {
+    return this.kyc.verificationChecks(id).catch((e: unknown) => {
+      if (e instanceof HttpException) throw e;
+      const why = e instanceof Error ? e.message : String(e);
+      throw new BadRequestException(
+        `The provider could not be asked about this verification: ${why.slice(0, 400)}`,
+      );
+    });
+  }
+
+  /**
    * Which trading clients have no verification on record.
    *
    * The join this integration was built for, and the one question no screen
