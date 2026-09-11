@@ -194,6 +194,8 @@ export type KycSyncResult = KycImportResult & {
   nextDate: string | null;
   done: boolean;
   truncated: string[];
+  /** Rows the provider returned in TEST mode, dropped rather than counted. */
+  testSkipped: number;
 };
 
 export function useKycProvider() {
@@ -224,6 +226,7 @@ async function syncUntilDone(
     read: 0, created: 0, updated: 0, unusable: 0, unlinked: 0,
     clientsCreated: 0, clientsUpdated: 0, statuses: [], forms: [],
     from, to, days: 0, fetched: 0, nextDate: null, done: false, truncated: [],
+    testSkipped: 0,
   };
   const statuses = new Map<string, number>();
   const forms = new Map<string, number>();
@@ -246,6 +249,7 @@ async function syncUntilDone(
     total.clientsUpdated += r.clientsUpdated;
     total.days += r.days;
     total.fetched += r.fetched;
+    total.testSkipped += r.testSkipped ?? 0;
     total.truncated.push(...r.truncated);
     for (const s of r.statuses)
       statuses.set(s.status, (statuses.get(s.status) ?? 0) + s.rows);

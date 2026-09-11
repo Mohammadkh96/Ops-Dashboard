@@ -107,6 +107,16 @@ export type VerificationRow = {
   declineReasons: string[];
   priceEur: number | null;
   processingMin: number | null;
+  /**
+   * KYC, KYB or SERVICE, where the provider says.
+   *
+   * SERVICE is the one that matters: a paid lookup rather than a person being
+   * verified. It has a price and no applicant, so unlabelled it reads as a
+   * verification that failed to link to an account.
+   */
+  service?: string | null;
+  /** TEST or LIVE. The direct reader drops TEST before it gets this far. */
+  mode?: string | null;
 };
 
 export type ImportResult = {
@@ -165,6 +175,8 @@ export type SyncResult = ImportResult & {
   done: boolean;
   /** Days that hit the page cap, and may therefore be incomplete. */
   truncated: string[];
+  /** Rows the provider returned in TEST mode, dropped rather than counted. */
+  testSkipped: number;
 };
 
 const DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -434,9 +446,23 @@ export class KycService {
         status: statusFor(word, row.verdict),
         form: row.form?.trim() || null,
         method: row.method?.trim() || null,
+        service: row.service?.trim().toUpperCase() || null,
         declineReasons: row.declineReasons.filter(Boolean),
         priceEur: row.priceEur,
-        processingMin: row.processingMin,
+        /**
+         * ROUNDED, because the column is an integer and the sources are not.
+         *
+         * The API reports processing time in SECONDS, so 137 seconds is 2.28
+         * minutes, and Prisma refuses a fraction for an Int column — the
+         * backfill would have died on the first verification that did not take
+         * a whole number of minutes. The file export has the same shape of
+         * trap: a spreadsheet will happily write 4.5 into a minutes column.
+         *
+         * Rounded here rather than in either reader, so both paths are covered
+         * by one rule.
+         */
+        processingMin:
+          row.processingMin === null ? null : Math.round(row.processingMin),
         submittedAt: row.at ?? new Date(),
         reviewedAt: row.at,
       };
@@ -544,6 +570,7 @@ export class KycService {
     const statuses = new Map<string, number>();
     const forms = new Map<string, number>();
     const truncated: string[] = [];
+    let testSkipped = 0;
     let fetched = 0;
     let days = 0;
     let nextDate: string | null = null;
@@ -560,9 +587,22 @@ export class KycService {
       for (let page = 0; page < MAX_PAGES_PER_DAY; page++) {
         const raw = await client.report(day, offset, REPORT_PAGE_SIZE);
         fetched += raw.length;
-        const rows = raw
+        const mapped = raw
           .map((r) => toVerificationRow(r, formNames))
           .filter((r): r is VerificationRow => r !== null);
+
+        /**
+         * TEST rows never reach the compliance table.
+         *
+         * KYCAID's own documentation says test mode "is no different from the
+         * live mode except the priority", and the report returns both mixed
+         * together. That is exactly what makes them dangerous: same columns,
+         * same prices, same statuses, and nothing on the screen would ever
+         * look wrong. Dropped here — and counted, because quietly discarding
+         * rows is the other way to get this wrong.
+         */
+        const rows = mapped.filter((r) => r.mode !== 'TEST');
+        testSkipped += mapped.length - rows.length;
 
         if (rows.length) {
           const r = await this.importVerifications(rows, {
@@ -594,6 +634,7 @@ export class KycService {
       nextDate,
       done: nextDate === null,
       truncated,
+      testSkipped,
     };
   }
 
@@ -824,7 +865,10 @@ export class KycService {
         unlinked: number;
       }
     >();
-    const keyOf = (form: string | null) => form ?? ' none';
+    // A sentinel that no form name can collide with, written as an ESCAPE.
+    // A literal NUL in the source makes the whole file read as binary to
+    // grep, which is how it hid the last time this trick was used.
+    const keyOf = (form: string | null) => form ?? '\u0000none';
 
     for (const g of grouped) {
       const key = keyOf(g.form);

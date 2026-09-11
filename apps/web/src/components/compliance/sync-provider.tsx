@@ -209,6 +209,17 @@ function Result({ result: r }: { result: KycSyncResult }) {
           account still cost money and still carries a decline reason.
         </p>
       ) : null}
+      {/* Test-mode rows are dropped, and saying so is the point. The provider's
+          own documentation says test mode differs from live only in priority —
+          same columns, same prices, same statuses — so a test verification
+          counted into a compliance total would never look wrong on screen. */}
+      {r.testSkipped ? (
+        <p className="text-[11px] text-muted">
+          {r.testSkipped.toLocaleString()} test-mode verification
+          {r.testSkipped === 1 ? " was" : "s were"} returned and left out. They
+          are the provider&rsquo;s sandbox, not your clients.
+        </p>
+      ) : null}
       {/* A day the provider kept paging on. Said out loud, because the
           alternative is a day that quietly holds only its first 20,000 rows. */}
       {r.truncated.length ? (

@@ -485,6 +485,90 @@ async function run() {
     // total, filters applied to whatever those 500 happened to be, and an
     // attempts count taken over the same window.
 
+    section('minutes are whole, because the column is');
+    {
+      // The bug this replaces would have killed the backfill on the first
+      // verification that did not take a whole number of minutes: the API
+      // reports SECONDS, 137 of them is 2.28 minutes, and Prisma refuses a
+      // fraction for an Int column.
+      const odd = toVerificationRow({
+        verification_id: 'min-1', external_applicant_id: 'CU4001',
+        status: 'completed', decline_reasons: [], processing_time: 137,
+      });
+      ok('the reader keeps the exact conversion',
+         Math.abs(odd.processingMin - 137 / 60) < 1e-9, odd.processingMin);
+
+      await kyc.importVerifications([odd]);
+      const stored = await prisma.kycCase.findFirst({ where: { verificationId: 'min-1' } });
+      ok('and the store rounds it to something the column can hold',
+         stored.processingMin === 2, stored.processingMin);
+
+      // The file export has the same trap from the other direction: a
+      // spreadsheet will write 4.5 into a minutes column quite happily.
+      await kyc.importVerifications([
+        { ...v({ id: 'min-2', ref: 'CU4002', status: 'VALID' }), processingMin: 4.5 },
+      ]);
+      const half = await prisma.kycCase.findFirst({ where: { verificationId: 'min-2' } });
+      ok('from the file path too', half.processingMin === 5, half.processingMin);
+    }
+
+    section('test-mode rows never reach the compliance table');
+    {
+      // KYCAID's own docs: test mode "is no different from the live mode
+      // except the priority". Same columns, same prices, same statuses — which
+      // is exactly why counting them would never look wrong on screen.
+      const day = '2026-06-01';
+      const r = await kyc.syncFromProvider({
+        from: day, to: day,
+        client: {
+          forms: async () => new Map(),
+          report: async () => [
+            { created_at: `${day}T10:00:00Z`, verification_id: 'live-1',
+              external_applicant_id: 'CU4101', status: 'completed',
+              decline_reasons: [], price: 200, processing_time: 60, mode: 'LIVE' },
+            { created_at: `${day}T10:05:00Z`, verification_id: 'test-1',
+              external_applicant_id: 'CU4102', status: 'completed',
+              decline_reasons: [], price: 200, processing_time: 60, mode: 'TEST' },
+          ],
+        },
+      });
+      ok('both were fetched', r.fetched === 2, r.fetched);
+      ok('only the live one was stored', r.created === 1, r.created);
+      ok('and the test one is counted, not silently dropped',
+         r.testSkipped === 1, r.testSkipped);
+      ok('the test verification is not in the table',
+         (await prisma.kycCase.count({ where: { verificationId: 'test-1' } })) === 0);
+      ok('the live one is',
+         (await prisma.kycCase.count({ where: { verificationId: 'live-1' } })) === 1);
+    }
+
+    section('a paid lookup is not a person who failed to link');
+    {
+      // A SERVICE row has a price and no applicant. Unlabelled it reads as a
+      // verification that could not be linked to an account — it inflates the
+      // count, the spend per client, and appears under "no form recorded",
+      // which the by-form panel reports as a gap in the import. The absence of
+      // the label does not just lose information, it invents a finding.
+      const day = '2026-06-02';
+      await kyc.syncFromProvider({
+        from: day, to: day,
+        client: {
+          forms: async () => new Map(),
+          report: async () => [
+            { created_at: `${day}T10:00:00Z`, verification_id: 'svc-1',
+              status: 'completed', service: 'SERVICE', method: 'BR_CPF',
+              decline_reasons: [], price: 30, processing_time: 2, mode: 'LIVE' },
+          ],
+        },
+      });
+      const svc = await prisma.kycCase.findFirst({ where: { verificationId: 'svc-1' } });
+      ok('it is stored', Boolean(svc));
+      ok('and labelled as a service, not a verification',
+         svc.service === 'SERVICE', svc.service);
+      ok('the file import leaves the label unknown rather than guessing',
+         (await prisma.kycCase.findFirst({ where: { verificationId: 'min-2' } })).service === null);
+    }
+
     section('the two brands, split by their form');
     {
       // The two entities run separate forms and the checks are NOT the same —

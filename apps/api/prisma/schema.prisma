@@ -373,6 +373,14 @@ model KycCase {
   /// "Manual check" or "Automation check" — the split that explains the cost
   /// and the delay.
   method         String?
+  /// KYC, KYB or SERVICE.
+  ///
+  /// SERVICE is the reason this column exists. It is a paid lookup — a
+  /// Brazilian CPF check, say — not a person being verified: it carries a
+  /// price and no applicant, so without a label it sits among the real
+  /// verifications as one more record that failed to link to an account, and
+  /// is counted in both the total and the spend per client.
+  service        String?
   /// Why it failed, in the provider's words. Several at once, routinely.
   declineReasons String[]
   /// What this attempt was billed. A client verified four times was billed

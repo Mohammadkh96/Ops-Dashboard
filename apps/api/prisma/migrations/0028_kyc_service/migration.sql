@@ -1,0 +1,16 @@
+-- What kind of thing the provider billed for.
+--
+-- KYCAID's verifications report returns a `service` of KYC, KYB or SERVICE,
+-- and the third is not a person being checked at all: it is a paid lookup
+-- (a Brazilian CPF check, for instance). It carries a price and no applicant.
+--
+-- Without this column such a row is indistinguishable from a verification that
+-- failed to link to an account. It inflates the verification count, it lands
+-- in "no account reference", and on the by-form panel it appears under "no
+-- form recorded" — which that panel reports as a GAP IN THE IMPORT. So the
+-- absence of this column does not merely lose information, it manufactures a
+-- false finding.
+--
+-- Nullable: every row loaded from the console export predates this, and the
+-- export does not carry the field. Unknown is the honest value for those.
+ALTER TABLE "KycCase" ADD COLUMN "service" TEXT;

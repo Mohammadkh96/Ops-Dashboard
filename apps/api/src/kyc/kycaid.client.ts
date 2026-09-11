@@ -161,6 +161,33 @@ export function toVerificationRow(
     declineReasons,
     priceEur: priceCents === null ? null : priceCents / 100,
     processingMin: seconds === null ? null : seconds / 60,
+    /**
+     * KYC, KYB or SERVICE — and the third is not a person being checked.
+     *
+     * A SERVICE row is a lookup the account paid for (a Brazilian CPF check,
+     * say). It has a price and no applicant, so without this it lands beside
+     * the real verifications as one more record with no account reference: it
+     * inflates the count, it inflates the spend per client, and the By-form
+     * panel reports it as a gap in the import. Kept and labelled instead.
+     */
+    service:
+      String(row.service ?? '')
+        .trim()
+        .toUpperCase() || null,
+    /**
+     * TEST or LIVE.
+     *
+     * The report returns both. KYCAID's test mode is "no different from the
+     * live mode except the priority", which is precisely why its rows look
+     * real: same shape, same price field, same statuses. Counted into a
+     * compliance total they are simply false, so the sync drops them — and
+     * says how many it dropped, because silently discarding rows is the other
+     * way to be wrong here.
+     */
+    mode:
+      String(row.mode ?? '')
+        .trim()
+        .toUpperCase() || null,
   };
 }
 
