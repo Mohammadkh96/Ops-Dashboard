@@ -118,6 +118,8 @@ export type VerificationRow = {
   service?: string | null;
   /** TEST or LIVE. The direct reader drops TEST before it gets this far. */
   mode?: string | null;
+  /** Residence country, two letters. The jurisdiction, not the person. */
+  country?: string | null;
   /**
    * Which KYCAID account it came from — "MU", "SL".
    *
@@ -463,6 +465,7 @@ export class KycService {
         method: row.method?.trim() || null,
         service: row.service?.trim().toUpperCase() || null,
         account: row.account?.trim().toUpperCase() || null,
+        country: row.country?.trim().toUpperCase() || null,
         declineReasons: row.declineReasons.filter(Boolean),
         priceEur: row.priceEur,
         /**

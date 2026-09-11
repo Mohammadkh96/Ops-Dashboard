@@ -1267,7 +1267,21 @@ export class ModulesService {
         // not learn people's names from a KYC file — the reference is what
         // joins to their payments, which is what anybody here needs.
         client: c.client?.externalId ?? '(no account reference)',
-        country: c.client?.country ?? '—',
+        /**
+         * The verification's own country, falling back to the client's.
+         *
+         * The verification's is the better one: it is the jurisdiction the
+         * check was actually assessed against, and a client who moves does not
+         * retroactively change that.
+         */
+        country: c.country ?? c.client?.country ?? '—',
+        /** MU, SL — which entity's KYCAID account this was fetched from. */
+        account: c.account ?? null,
+        form: c.form ?? null,
+        /** Manual or automation — the split that explains cost and delay. */
+        method: c.method ?? null,
+        priceEur: c.priceEur === null ? null : Number(c.priceEur),
+        processingMin: c.processingMin,
         status: this.kycLabel(c.status),
         risk: this.lower(c.client?.riskLevel ?? 'LOW'),
         riskScore: c.riskScore,

@@ -381,6 +381,14 @@ model KycCase {
   /// weaker proxy for the same thing, since a form can be renamed and an
   /// export may not carry it at all.
   account        String?
+  /// Residence country as the provider reports it, two letters.
+  ///
+  /// Per VERIFICATION rather than per client, because it is what was true when
+  /// the check ran: a client who moves jurisdiction does not retroactively
+  /// change the country their last check was assessed against, and a
+  /// prohibited-jurisdiction decline only makes sense beside the country that
+  /// caused it.
+  country        String?
   /// KYC, KYB or SERVICE.
   ///
   /// SERVICE is the reason this column exists. It is a paid lookup — a

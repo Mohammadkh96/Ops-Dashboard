@@ -9,7 +9,7 @@ import { ByBrand } from "@/components/compliance/by-brand";
 import { StatTileRow, type Stat } from "@/components/ui/stat-tile";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { FilterBar } from "@/components/ui/filter-bar";
-import { StatusBadge, RiskBadge } from "@/components/ui/status-badge";
+import { StatusBadge } from "@/components/ui/status-badge";
 import { Drawer } from "@/components/ui/drawer";
 import { Button } from "@/components/ui/button";
 import { type KycCase } from "@/lib/modules";
@@ -31,31 +31,6 @@ const RISK_OPTIONS: { label: string; value: KycCase["risk"] }[] = [
   { label: "Critical", value: "critical" },
 ];
 
-type CheckState = "clear" | "hit" | "pass" | "required";
-
-// Derive a plausible screening checklist from the case's risk profile.
-function screening(kc: KycCase): { label: string; state: CheckState }[] {
-  const elevated = kc.risk === "high" || kc.risk === "critical";
-  return [
-    { label: "Sanctions", state: "clear" },
-    { label: "PEP", state: elevated ? "hit" : "clear" },
-    { label: "AML", state: "pass" },
-    { label: "EDD", state: kc.status === "edd_required" ? "required" : "clear" },
-  ];
-}
-
-const CHECK_TONE: Record<CheckState, { dot: string; text: string; label: string }> = {
-  clear: { dot: "bg-accent-green", text: "text-accent-green", label: "Clear" },
-  pass: { dot: "bg-accent-green", text: "text-accent-green", label: "Pass" },
-  hit: { dot: "bg-accent-red", text: "text-accent-red", label: "Hit" },
-  required: { dot: "bg-accent-orange", text: "text-accent-orange", label: "Required" },
-};
-
-function scoreTone(score: number): string {
-  if (score >= 80) return "text-accent-red";
-  if (score >= 50) return "text-accent-orange";
-  return "text-accent-green";
-}
 
 /** How many rows one page of the table holds. */
 const PAGE_SIZE = 200;
@@ -155,21 +130,35 @@ export default function CompliancePage() {
     [kycCases, search, status, risk],
   );
 
+  /**
+   * The columns the provider actually gives, in place of the ones it does not.
+   *
+   * COUNTRY was empty on every row until the reader started mapping
+   * `country_code`; RISK and RISK SCORE were a level nothing assigns and a
+   * score nothing computes, printed with the confidence of a measurement; and
+   * ASSIGNEE read "Unassigned" for all ten thousand rows because nothing
+   * assigns them. Three columns of furniture on the one screen where an
+   * invented number is least excusable.
+   *
+   * What replaced them is what KYCAID returns: which entity paid for the
+   * check, where the applicant lives, whether a person or a machine decided
+   * it, what it cost, and how long it took.
+   */
   const columns: Column<KycCase>[] = [
     { key: "client", header: "Client", render: (c) => <span className="font-medium">{c.client}</span> },
+    { key: "account", header: "Entity", render: (c) => <span className={c.account ? "text-muted-foreground" : "text-muted"}>{c.account ?? "—"}</span> },
     { key: "country", header: "Country", render: (c) => <span className="text-muted-foreground">{c.country}</span> },
-    /* Was a "Documents" count computed as 2 + (riskScore % 5) — a number with
-       the shape of a fact and nothing behind it, on the one screen where that
-       is least excusable. Attempts is real, and is the more useful column: a
-       client verified four times in an afternoon is the finding. */
-    { key: "attempts", header: "Attempts", align: "right", render: (c) => <span className={`tnum ${c.attempts > 1 ? "text-accent-orange" : "text-muted-foreground"}`}>{c.attempts}</span> },
-    { key: "declineReasons", header: "Why", render: (c) => <span className="text-muted" title={c.declineReasons.join(", ")}>{c.declineReasons.length ? c.declineReasons.join(", ") : "—"}</span> },
-    { key: "risk", header: "Risk", render: (c) => <RiskBadge level={c.risk} /> },
-    { key: "riskScore", header: "Risk score", align: "right", render: (c) => <span className={`tnum font-medium ${scoreTone(c.riskScore)}`}>{c.riskScore}</span> },
     { key: "status", header: "Status", render: (c) => <StatusBadge status={c.status} /> },
+    /* Several at once, routinely: "Wrong name, Other, Expired document". */
+    { key: "declineReasons", header: "Why", render: (c) => <span className="text-muted" title={c.declineReasons.join(", ")}>{c.declineReasons.length ? c.declineReasons.join(", ") : "—"}</span> },
+    /* A client verified four times in an afternoon is the finding. */
+    { key: "attempts", header: "Attempts", align: "right", render: (c) => <span className={`tnum ${c.attempts > 1 ? "text-accent-orange" : "text-muted-foreground"}`}>{c.attempts}</span> },
+    { key: "method", header: "Method", render: (c) => <span className="text-muted">{c.method ?? "—"}</span> },
+    { key: "priceEur", header: "Cost", align: "right", render: (c) => <span className="tnum text-muted-foreground">{c.priceEur === null || c.priceEur === undefined ? "—" : `€${c.priceEur.toFixed(2)}`}</span> },
+    { key: "processingMin", header: "Mins", align: "right", render: (c) => <span className="tnum text-muted">{c.processingMin ?? "—"}</span> },
     { key: "submittedAt", header: "Submitted", align: "right", render: (c) => <span className="tnum text-muted">{c.submittedAt}</span> },
-    { key: "assignee", header: "Assignee", render: (c) => <span className={c.assignee === "Unassigned" ? "text-muted" : "text-muted-foreground"}>{c.assignee}</span> },
   ];
+
 
   const needsDocs = selected?.status === "rejected" || selected?.status === "edd_required";
 
@@ -272,15 +261,20 @@ export default function CompliancePage() {
       >
         {selected ? (
           <div className="flex flex-col gap-5">
+            {/* Was a risk score and a risk badge. Nothing computes either, so
+                every row read 0 and Low — a measurement's confidence attached
+                to no measurement. The verdict and the provider's own word for
+                it are the two facts there are. */}
             <div className="flex items-center justify-between rounded-xl border border-border bg-card p-4">
               <div className="flex flex-col">
-                <span className="text-xs uppercase tracking-wider text-muted">Risk score</span>
-                <span className={`tnum text-2xl font-semibold ${scoreTone(selected.riskScore)}`}>{selected.riskScore}</span>
+                <span className="text-xs uppercase tracking-wider text-muted">
+                  {selected.account ?? "Entity unknown"}
+                </span>
+                <span className="text-sm text-muted-foreground">
+                  {selected.form ?? "No form recorded"}
+                </span>
               </div>
-              <div className="flex flex-col items-end gap-2">
-                <StatusBadge status={selected.status} />
-                <RiskBadge level={selected.risk} />
-              </div>
+              <StatusBadge status={selected.status} />
             </div>
 
             <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
@@ -289,8 +283,20 @@ export default function CompliancePage() {
                 ["Country", selected.country],
                 ["Attempts", String(selected.attempts)],
                 ["Provider said", selected.providerStatus ?? "—"],
-                ["Decline reasons", selected.declineReasons.length ? selected.declineReasons.join(", ") : "—"],
-                ["Assignee", selected.assignee],
+                ["Method", selected.method ?? "—"],
+                [
+                  "Cost",
+                  selected.priceEur === null || selected.priceEur === undefined
+                    ? "—"
+                    : `€${selected.priceEur.toFixed(2)}`,
+                ],
+                [
+                  "Processing",
+                  selected.processingMin === null ||
+                  selected.processingMin === undefined
+                    ? "—"
+                    : `${selected.processingMin} min`,
+                ],
                 ["Submitted", selected.submittedAt],
               ].map(([k, v]) => (
                 <div key={k} className="flex flex-col gap-0.5">
@@ -300,29 +306,33 @@ export default function CompliancePage() {
               ))}
             </dl>
 
+            {/* Was a Sanctions / PEP / AML / EDD checklist derived from the
+                risk level — which is to say, from nothing. On a compliance
+                screen a green "Sanctions: Clear" that no screening produced is
+                not decoration, it is a false assurance. The provider's real
+                decline reasons take its place. */}
             <div className="flex flex-col gap-3">
-              <span className="text-xs font-medium uppercase tracking-wider text-muted">Screening</span>
-              <ol className="flex flex-col gap-3 border-l border-border pl-4">
-                {screening(selected).map((s) => {
-                  const tone = CHECK_TONE[s.state];
-                  return (
-                    <li key={s.label} className="relative text-sm">
-                      <span className={`absolute -left-[21px] top-1.5 size-2 rounded-full ${tone.dot}`} />
+              <span className="text-xs font-medium uppercase tracking-wider text-muted">
+                Why the provider decided this
+              </span>
+              {selected.declineReasons.length ? (
+                <ol className="flex flex-col gap-3 border-l border-border pl-4">
+                  {selected.declineReasons.map((reason) => (
+                    <li key={reason} className="relative text-sm">
+                      <span className="absolute -left-[21px] top-1.5 size-2 rounded-full bg-accent-red" />
                       <div className="flex items-center justify-between">
-                        <span>{s.label}</span>
-                        <span className={`flex items-center gap-1 text-xs ${tone.text}`}>
-                          {s.state === "hit" || s.state === "required" ? (
-                            <AlertTriangle className="size-3" />
-                          ) : (
-                            <Check className="size-3" />
-                          )}
-                          {tone.label}
-                        </span>
+                        <span>{reason.replace(/_/g, " ").toLowerCase()}</span>
+                        <AlertTriangle className="size-3 text-accent-red" />
                       </div>
                     </li>
-                  );
-                })}
-              </ol>
+                  ))}
+                </ol>
+              ) : (
+                <p className="flex items-center gap-1.5 text-sm text-muted">
+                  <Check className="size-3.5 text-accent-green" />
+                  No decline reason recorded.
+                </p>
+              )}
             </div>
           </div>
         ) : null}

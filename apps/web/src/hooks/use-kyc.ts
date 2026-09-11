@@ -107,6 +107,15 @@ export function useKycCoverage() {
   });
 }
 
+/**
+ * How long one sync request may spend walking days on the server.
+ *
+ * Comfortably under the browser's own ceiling for this call. The two used to
+ * be the same number, which meant the only way for the server to use its full
+ * budget was for the browser to give up on it.
+ */
+const SERVER_BUDGET_MS = 12_000;
+
 /** What the direct reader can do, and what is already loaded. */
 export type KycProviderStatus = {
   provider: string;
@@ -179,10 +188,23 @@ async function syncUntilDone(
   // cannot run for ever. The guard is against an API that stops advancing —
   // a bug there would otherwise be an infinite loop in somebody's browser.
   for (let call = 0; cursor && call < 500; call++) {
-    const r: KycSyncResult = await apiFetch<KycSyncResult>("/kyc/sync", {
-      method: "POST",
-      body: JSON.stringify({ from: cursor, to }),
-    });
+    /**
+     * The server's budget and the browser's patience, kept apart.
+     *
+     * Both were twenty seconds, so the function was still writing rows when
+     * the browser gave up — and a run that had actually stored a day and a
+     * half of verifications reported "the API did not answer within 20s". The
+     * server now stops at twelve and the browser waits forty, which leaves
+     * room for the reply itself, a cold start, and the database.
+     */
+    const r: KycSyncResult = await apiFetch<KycSyncResult>(
+      "/kyc/sync",
+      {
+        method: "POST",
+        body: JSON.stringify({ from: cursor, to, budgetMs: SERVER_BUDGET_MS }),
+      },
+      { timeoutMs: 40_000 },
+    );
     total.read += r.read;
     total.created += r.created;
     total.updated += r.updated;

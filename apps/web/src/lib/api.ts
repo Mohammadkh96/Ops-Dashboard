@@ -82,7 +82,11 @@ const TIMEOUT_MS = 20_000;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function attempt<T>(path: string, init?: RequestInit): Promise<T> {
+async function attempt<T>(
+  path: string,
+  init?: RequestInit,
+  timeoutMs = TIMEOUT_MS,
+): Promise<T> {
   const token = getToken();
   let res: Response;
   try {
@@ -90,7 +94,7 @@ async function attempt<T>(path: string, init?: RequestInit): Promise<T> {
       ...init,
       // Without this a hung function leaves the request open indefinitely, and
       // the page sits on a spinner with nothing to retry and nothing to say.
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
       headers: {
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -105,7 +109,7 @@ async function attempt<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(
       0,
       timedOut
-        ? `The API did not answer within ${TIMEOUT_MS / 1000}s.`
+        ? `The API did not answer within ${timeoutMs / 1000}s.`
         : e instanceof Error
           ? e.message
           : String(e),
@@ -150,7 +154,15 @@ async function attempt<T>(path: string, init?: RequestInit): Promise<T> {
 export async function apiFetch<T>(
   path: string,
   init?: RequestInit,
-  opts: { retries?: number } = {},
+  /**
+   * `timeoutMs` is an override for the handful of endpoints that are SLOW BY
+   * DESIGN rather than slow because something is wrong. The provider sync
+   * spends a server-side budget walking days and then returns a cursor; with
+   * the default ceiling the browser gave up at twenty seconds while the
+   * function was still writing rows, which reported a timeout for work that
+   * actually succeeded.
+   */
+  opts: { retries?: number; timeoutMs?: number } = {},
 ): Promise<T> {
   if (isDemoMode) {
     throw new ApiError(0, "Demo mode: no API configured");
@@ -162,7 +174,7 @@ export async function apiFetch<T>(
   let last: unknown;
   for (let i = 0; i <= retries; i++) {
     try {
-      return await attempt<T>(path, init);
+      return await attempt<T>(path, init, opts.timeoutMs);
     } catch (e) {
       last = e;
       const transient = e instanceof ApiError && e.transient;

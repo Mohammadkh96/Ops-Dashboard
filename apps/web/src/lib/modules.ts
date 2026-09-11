@@ -65,6 +65,15 @@ export type KycCase = {
   declineReasons: string[];
   submittedAt: string;
   assignee: string;
+  /** Which entity's KYCAID account this came from — "MU", "SL". */
+  account?: string | null;
+  /** Which form ran it. Two entities, two forms, and not the same checks. */
+  form?: string | null;
+  /** Manual or automation — the split that explains the cost and the delay. */
+  method?: string | null;
+  /** What this attempt was billed. Four attempts were billed four times. */
+  priceEur?: number | null;
+  processingMin?: number | null;
 };
 
 export type IncidentSeverity = "low" | "medium" | "high" | "critical";

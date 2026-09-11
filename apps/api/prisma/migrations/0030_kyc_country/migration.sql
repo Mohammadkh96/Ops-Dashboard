@@ -1,0 +1,16 @@
+-- The residence country the verification was assessed against.
+--
+-- The Country column has been on the compliance screen since the day it was
+-- built and empty for every row, because nothing ever filled it: clients are
+-- created from an account reference alone, and the reader was dropping
+-- `country_code` along with the name, date of birth and passport number.
+--
+-- Two letters with no person attached is a different kind of field from those.
+-- Jurisdiction is what a PROHIBITED_JURISDICTION decline is about and what
+-- risk is assessed against, so a compliance table without it cannot answer the
+-- question it exists for.
+--
+-- Stored per VERIFICATION rather than per client on purpose: it is what was
+-- true when the check ran. A client who moves does not retroactively change
+-- the country their last check was assessed against.
+ALTER TABLE "KycCase" ADD COLUMN "country" TEXT;

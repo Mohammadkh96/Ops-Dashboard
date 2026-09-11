@@ -169,7 +169,7 @@ export function SyncProvider() {
             )
             .join(", ")}
           {provider.data.unattributed
-            ? `, plus ${provider.data.unattributed.toLocaleString()} from a file import, which does not say which entity it came from`
+            ? `, plus ${provider.data.unattributed.toLocaleString()} loaded before the entity was recorded — fetching those dates again assigns them`
             : ""}
           .
         </p>

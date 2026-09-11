@@ -13,10 +13,9 @@ import type { VerificationRow } from './kyc.service';
  * columns the console export produces. Four 404s are not a proof, and a
  * negative from a provider's API only ever means "not that path".
  *
- * The file import stays. It is the only way to load history from before this
- * was wired up in one go, it needs no credential at all, and it is what runs
- * when the provider is down. This is the path that keeps the dashboard current
- * without anybody exporting anything.
+ * The file import that preceded it has been deleted. Once the provider reads
+ * back directly, a second way in is a second way to be wrong about where the
+ * numbers came from.
  *
  * READ-ONLY, STRUCTURALLY. There is one request function here, its method is
  * the literal string 'GET', and no caller can express another. That is what
@@ -24,7 +23,10 @@ import type { VerificationRow } from './kyc.service';
  * can create, edit or delete a verification, whatever it is called with.
  *
  * WHAT IS DELIBERATELY NOT READ. The report carries `name`, `dob`, `email`,
- * `phone` and `tax_id_number`. None of them are mapped. The dashboard's job is
+ * `phone`, `tax_id_number`, `wallet_address` and `telegram_username`. None of
+ * them are mapped. `country_code` is the one exception and a deliberate one:
+ * two letters of jurisdiction, no person attached, and the thing a
+ * prohibited-jurisdiction decline is actually about. The dashboard's job is
  * to know who is verified, not to hold a second copy of everybody's identity
  * documents, and the browser-side import drops exactly the same columns — so
  * the two paths store the same narrow thing.
@@ -54,6 +56,7 @@ export type ReportRow = {
   service?: string | null;
   method?: string | null;
   verification_types?: string[] | null;
+  country_code?: string | null;
   decline_reasons?: unknown;
   /** Seconds. The console export writes the same measurement in minutes. */
   processing_time?: number | string | null;
