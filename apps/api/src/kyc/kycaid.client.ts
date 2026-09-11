@@ -64,9 +64,55 @@ export type ReportRow = {
 
 export type KycaidForm = { form_id?: string | null; name?: string | null };
 
+/** One KYCAID account: one entity, one token, one set of verifications. */
+export type KycaidAccount = {
+  /** MU, SL… taken from the variable name. Empty for an unsuffixed token. */
+  label: string;
+  token: string;
+  /** Which variable it came from, so a screen can name it. */
+  variable: string;
+};
+
+const TOKEN_VARIABLE = /^KYCAID_API_TOKEN(.*)$/;
+
+/**
+ * Every KYCAID account this deployment can read.
+ *
+ * TWO ENTITIES MEANS TWO ACCOUNTS, and that is not a detail. Tradin Mauritius
+ * and Tradin Saint Lucia hold separate KYCAID accounts with separate tokens,
+ * separate forms and separate verifications: a token reads ONE of them and
+ * cannot see the other. Built for a single token, this integration would have
+ * fetched one brand in full, reported "done", and left the other invisible —
+ * which looks exactly like a brand that simply verifies fewer people.
+ *
+ * Discovered from the environment rather than configured in a list, because
+ * adding an entity should be adding a variable. Anything named
+ * `KYCAID_API_TOKEN…` is an account and the rest of the name is its label:
+ * `KYCAID_API_TOKENMU` is MU, `KYCAID_API_TOKEN_SL` is SL, and a bare
+ * `KYCAID_API_TOKEN` is the one unlabelled account a single-entity setup has.
+ */
+export function kycaidAccounts(
+  env: NodeJS.ProcessEnv = process.env,
+): KycaidAccount[] {
+  const accounts: KycaidAccount[] = [];
+  for (const [variable, value] of Object.entries(env)) {
+    const m = TOKEN_VARIABLE.exec(variable);
+    const token = (value ?? '').trim();
+    if (!m || !token) continue;
+    accounts.push({
+      label: m[1].replace(/^_+/, '').trim().toUpperCase(),
+      token,
+      variable,
+    });
+  }
+  // Stable order, so two runs read the accounts in the same sequence and a
+  // budget that runs out stops in a repeatable place.
+  return accounts.sort((a, b) => a.label.localeCompare(b.label));
+}
+
 /** Whether a direct read is possible at all. */
-export function kycaidConfigured(): boolean {
-  return Boolean(process.env.KYCAID_API_TOKEN?.trim());
+export function kycaidConfigured(env?: NodeJS.ProcessEnv): boolean {
+  return kycaidAccounts(env).length > 0;
 }
 
 function num(v: unknown): number | null {

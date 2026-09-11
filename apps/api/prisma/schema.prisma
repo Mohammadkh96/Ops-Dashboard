@@ -373,6 +373,14 @@ model KycCase {
   /// "Manual check" or "Automation check" — the split that explains the cost
   /// and the delay.
   method         String?
+  /// Which KYCAID account this came from — "MU", "SL".
+  ///
+  /// The two entities hold SEPARATE accounts with separate tokens, so a
+  /// verification belongs to exactly one of them and no token can see both.
+  /// This is the entity, recorded at the point it is known; the form is a
+  /// weaker proxy for the same thing, since a form can be renamed and an
+  /// export may not carry it at all.
+  account        String?
   /// KYC, KYB or SERVICE.
   ///
   /// SERVICE is the reason this column exists. It is a paid lookup — a
@@ -394,6 +402,7 @@ model KycCase {
   raw Json?
 
   @@unique([provider, verificationId])
+  @@index([account])
   @@index([status])
   @@index([clientId])
   @@index([applicantId])

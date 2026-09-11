@@ -68,7 +68,7 @@ async function run() {
   const { PrismaService } = require_('../dist/src/prisma/prisma.service');
   const { KycService, defaultStatus, readDay, nextDay } =
     require_('../dist/src/kyc/kyc.service');
-  const { toVerificationRow, readDeclineReasons, readRows } =
+  const { toVerificationRow, readDeclineReasons, readRows, kycaidAccounts } =
     require_('../dist/src/kyc/kycaid.client');
   const { ModulesService } = require_('../dist/src/modules/modules.service');
 
@@ -387,11 +387,11 @@ async function run() {
 
       const r = await kyc.syncFromProvider({
         from: '2026-10-01', to: '2026-10-03',
-        client: fake({
+        clients: [{ label: '', client: fake({
           '2026-10-01': [rep('s-1', 'CU6001', '2026-10-01')],
           '2026-10-02': [],
           '2026-10-03': [rep('s-2', 'CU6002', '2026-10-03'), rep('s-3', 'CU6003', '2026-10-03')],
-        }),
+        }) }],
       });
       ok('every day in the range was asked for',
          asked.join(',') === '2026-10-01@0,2026-10-02@0,2026-10-03@0', asked);
@@ -408,14 +408,14 @@ async function run() {
       // What makes resuming from a half-done date safe.
       const again = await kyc.syncFromProvider({
         from: '2026-10-03', to: '2026-10-03',
-        client: {
+        clients: [{ label: '', client: {
           forms: async () => new Map(),
           report: async () => [
             { created_at: '2026-10-03T10:00:00Z', verification_id: 's-2',
               external_applicant_id: 'CU6002', status: 'completed',
               decline_reasons: [], price: 100, processing_time: 60 },
           ],
-        },
+        } }],
       });
       ok('the same verification updates rather than duplicating',
          again.updated === 1 && again.created === 0, again);
@@ -435,13 +435,13 @@ async function run() {
       const offsets = [];
       const r = await kyc.syncFromProvider({
         from: day, to: day,
-        client: {
+        clients: [{ label: '', client: {
           forms: async () => new Map(),
           report: async (_d, offset, count) => {
             offsets.push(offset);
             return many.slice(offset, offset + count);
           },
-        },
+        } }],
       });
       // 1000 is the provider's maximum AND its default, so a short page is the
       // only signal that a day is finished.
@@ -460,7 +460,7 @@ async function run() {
       const r = await kyc.syncFromProvider({
         from: '2026-08-01', to: '2026-08-31',
         budgetMs: 100,
-        client: {
+        clients: [{ label: '', client: {
           forms: async () => new Map(),
           // A day that takes longer than the whole budget, so where it stops
           // is arithmetic rather than a race.
@@ -469,7 +469,7 @@ async function run() {
             await new Promise((r) => setTimeout(r, 250));
             return [];
           },
-        },
+        } }],
       });
       ok('it stopped after the first day', seen.length === 1, seen);
       ok('and says so', r.done === false, r);
@@ -520,7 +520,7 @@ async function run() {
       const day = '2026-06-01';
       const r = await kyc.syncFromProvider({
         from: day, to: day,
-        client: {
+        clients: [{ label: '', client: {
           forms: async () => new Map(),
           report: async () => [
             { created_at: `${day}T10:00:00Z`, verification_id: 'live-1',
@@ -530,7 +530,7 @@ async function run() {
               external_applicant_id: 'CU4102', status: 'completed',
               decline_reasons: [], price: 200, processing_time: 60, mode: 'TEST' },
           ],
-        },
+        } }],
       });
       ok('both were fetched', r.fetched === 2, r.fetched);
       ok('only the live one was stored', r.created === 1, r.created);
@@ -552,14 +552,14 @@ async function run() {
       const day = '2026-06-02';
       await kyc.syncFromProvider({
         from: day, to: day,
-        client: {
+        clients: [{ label: '', client: {
           forms: async () => new Map(),
           report: async () => [
             { created_at: `${day}T10:00:00Z`, verification_id: 'svc-1',
               status: 'completed', service: 'SERVICE', method: 'BR_CPF',
               decline_reasons: [], price: 30, processing_time: 2, mode: 'LIVE' },
           ],
-        },
+        } }],
       });
       const svc = await prisma.kycCase.findFirst({ where: { verificationId: 'svc-1' } });
       ok('it is stored', Boolean(svc));
@@ -567,6 +567,102 @@ async function run() {
          svc.service === 'SERVICE', svc.service);
       ok('the file import leaves the label unknown rather than guessing',
          (await prisma.kycCase.findFirst({ where: { verificationId: 'min-2' } })).service === null);
+    }
+
+    section('two entities, two accounts, two tokens');
+    {
+      // Mauritius and Saint Lucia hold SEPARATE KYCAID accounts. A token reads
+      // one of them and cannot see the other, so a sync that walks a single
+      // client fetches one brand in full, reports "done", and leaves the other
+      // invisible — which on screen is indistinguishable from a brand that
+      // verifies fewer people.
+      const asked = [];
+      const acct = (label, rows) => ({
+        label,
+        client: {
+          forms: async () => new Map([[`form-${label}`, `${label} form`]]),
+          report: async (date, offset) => {
+            asked.push(`${label}:${date}@${offset}`);
+            return rows;
+          },
+        },
+      });
+      const day = '2026-05-04';
+      const row = (id, ref, label) => ({
+        created_at: `${day}T10:00:00Z`, verification_id: id,
+        external_applicant_id: ref, form_id: `form-${label}`,
+        status: 'completed', decline_reasons: [], price: 100,
+        processing_time: 60, mode: 'LIVE',
+      });
+
+      const r = await kyc.syncFromProvider({
+        from: day, to: day,
+        clients: [
+          acct('MU', [row('mu-1', 'CU9101', 'MU'), row('mu-2', 'CU9102', 'MU')]),
+          acct('SL', [row('sl-1', 'CU9201', 'SL')]),
+        ],
+      });
+
+      ok('both accounts were asked for the same day',
+         asked.join(',') === `MU:${day}@0,SL:${day}@0`, asked);
+      ok('and everything landed', r.created === 3, r.created);
+      ok('the reply says what each entity returned',
+         JSON.stringify(r.accounts) ===
+           JSON.stringify([{ account: 'MU', rows: 2 }, { account: 'SL', rows: 1 }]),
+         r.accounts);
+
+      const mu = await prisma.kycCase.findFirst({ where: { verificationId: 'mu-1' } });
+      const sl = await prisma.kycCase.findFirst({ where: { verificationId: 'sl-1' } });
+      ok('each row carries the entity that paid for it',
+         mu.account === 'MU' && sl.account === 'SL', { mu: mu.account, sl: sl.account });
+      // Each account has its OWN forms. One shared map would name the other
+      // entity's forms wrongly, which is worse than leaving them as ids.
+      ok('and its own form names, resolved per account',
+         mu.form === 'MU form' && sl.form === 'SL form', { mu: mu.form, sl: sl.form });
+
+      // The finding a combined total hides: one entity came back empty.
+      const quiet = await kyc.syncFromProvider({
+        from: '2026-05-05', to: '2026-05-05',
+        clients: [
+          acct('MU', [row('mu-3', 'CU9103', 'MU')]),
+          acct('SL', []),
+        ],
+      });
+      ok('an account that returned nothing says so rather than averaging away',
+         quiet.accounts.find((a) => a.account === 'SL').rows === 0, quiet.accounts);
+    }
+
+    section('which accounts are configured, and what each holds');
+    {
+      const before = { ...process.env };
+      delete process.env.KYCAID_API_TOKEN;
+      process.env.KYCAID_API_TOKENMU = 'mu-token';
+      process.env.KYCAID_API_TOKENSL = 'sl-token';
+
+      const status = await kyc.providerStatus();
+      ok('a token per entity is two accounts, not one',
+         status.accounts.length === 2, status.accounts);
+      ok('labelled from the variable name',
+         status.accounts.map((a) => a.account).join(',') === 'MU,SL',
+         status.accounts);
+      ok('and each one names the variable it came from',
+         status.accounts[0].variable === 'KYCAID_API_TOKENMU', status.accounts);
+      ok('holdings are counted per entity, not just in total',
+         status.accounts.find((a) => a.account === 'MU').verifications >= 2,
+         status.accounts);
+      // Everything loaded from a console export predates the account column.
+      ok('rows from a file are named unattributed, not assigned to a brand',
+         status.unattributed > 0, status.unattributed);
+
+      for (const k of Object.keys(process.env))
+        if (/^KYCAID_API_TOKEN/.test(k)) delete process.env[k];
+      Object.assign(process.env, before);
+      ok('an underscore in the variable name is not part of the label',
+         kycaidAccounts({ KYCAID_API_TOKEN_SL: 'x' })[0].label === 'SL');
+      ok('a bare token is the one unlabelled account',
+         kycaidAccounts({ KYCAID_API_TOKEN: 'x' })[0].label === '');
+      ok('an empty variable is not an account',
+         kycaidAccounts({ KYCAID_API_TOKENMU: '  ' }).length === 0);
     }
 
     section('the two brands, split by their form');
@@ -701,7 +797,7 @@ async function run() {
       let msg = '';
       try {
         await kyc.syncFromProvider({ from: '2026-10-05', to: '2026-10-01',
-                                     client: { forms: async () => new Map(), report: async () => [] } });
+                                     clients: [{ label: '', client: { forms: async () => new Map(), report: async () => [] } }] });
       } catch (e) { msg = e.message; }
       ok('a range that runs backwards', /runs backwards/i.test(msg), msg);
 

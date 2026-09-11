@@ -5,6 +5,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import {
   KycaidClient,
   REPORT_PAGE_SIZE,
+  kycaidAccounts,
   kycaidConfigured,
   toVerificationRow,
 } from './kycaid.client';
@@ -117,6 +118,14 @@ export type VerificationRow = {
   service?: string | null;
   /** TEST or LIVE. The direct reader drops TEST before it gets this far. */
   mode?: string | null;
+  /**
+   * Which KYCAID account it came from — "MU", "SL".
+   *
+   * Set by the direct reader from the credential that fetched the row, so it
+   * cannot be wrong about which entity paid for it. The file import leaves it
+   * unset: a console export does not say which account produced it.
+   */
+  account?: string | null;
 };
 
 export type ImportResult = {
@@ -159,8 +168,12 @@ export type SyncOptions = {
   /** How long this call may spend before handing back a cursor. */
   budgetMs?: number;
   provider?: string;
-  /** Injected by the checks, so they never touch the live provider. */
-  client?: KycaidClient;
+  /**
+   * The accounts to read, injected by the checks so they never touch a live
+   * one. Left unset, they are discovered from the environment — one per
+   * `KYCAID_API_TOKEN…` variable.
+   */
+  clients?: { label: string; client: KycaidClient }[];
 };
 
 export type SyncResult = ImportResult & {
@@ -177,6 +190,8 @@ export type SyncResult = ImportResult & {
   truncated: string[];
   /** Rows the provider returned in TEST mode, dropped rather than counted. */
   testSkipped: number;
+  /** What each entity's account returned. A zero here is the finding. */
+  accounts: { account: string; rows: number }[];
 };
 
 const DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -447,6 +462,7 @@ export class KycService {
         form: row.form?.trim() || null,
         method: row.method?.trim() || null,
         service: row.service?.trim().toUpperCase() || null,
+        account: row.account?.trim().toUpperCase() || null,
         declineReasons: row.declineReasons.filter(Boolean),
         priceEur: row.priceEur,
         /**
@@ -531,7 +547,7 @@ export class KycService {
   async syncFromProvider(opts: SyncOptions = {}): Promise<SyncResult> {
     if (!kycaidConfigured()) {
       throw new BadRequestException(
-        'No KYCAID token is configured, so there is nothing to read from. Set KYCAID_API_TOKEN on the API and redeploy — the file import needs no credential and still works meanwhile.',
+        'No KYCAID token is configured, so there is nothing to read from. Set KYCAID_API_TOKEN on the API and redeploy — or one per entity, KYCAID_API_TOKENMU and KYCAID_API_TOKENSL. The file import needs no credential and still works meanwhile.',
       );
     }
 
@@ -561,15 +577,31 @@ export class KycService {
     );
     const started = Date.now();
 
-    const client = opts.client ?? new KycaidClient();
-    // Once per sync, not once per day. Only worth the round trip if there is
-    // more than a page of work ahead of it, but it is one call either way.
-    const formNames = await client.forms();
+    /**
+     * Every account, not one.
+     *
+     * The two entities hold separate KYCAID accounts, and a token reads one of
+     * them. Walking a single client would fetch one brand in full, report
+     * "done", and leave the other invisible — which on screen is
+     * indistinguishable from a brand that verifies fewer people.
+     */
+    const accounts =
+      opts.clients ??
+      kycaidAccounts().map((a) => ({
+        label: a.label,
+        client: new KycaidClient({ token: a.token }),
+      }));
+
+    // Once per sync per account, not once per day. Each account has its own
+    // forms, so one shared map would name the other entity's forms wrongly.
+    const formNames = new Map<string, Map<string, string>>();
+    for (const a of accounts) formNames.set(a.label, await a.client.forms());
 
     const total = emptyResult();
     const statuses = new Map<string, number>();
     const forms = new Map<string, number>();
     const truncated: string[] = [];
+    const perAccount = new Map<string, number>();
     let testSkipped = 0;
     let fetched = 0;
     let days = 0;
@@ -583,37 +615,57 @@ export class KycService {
         break;
       }
 
-      let offset = 0;
-      for (let page = 0; page < MAX_PAGES_PER_DAY; page++) {
-        const raw = await client.report(day, offset, REPORT_PAGE_SIZE);
-        fetched += raw.length;
-        const mapped = raw
-          .map((r) => toVerificationRow(r, formNames))
-          .filter((r): r is VerificationRow => r !== null);
+      // The whole day for every account before moving on, so a budget that
+      // runs out leaves both entities read up to the same date rather than one
+      // of them a week ahead of the other.
+      for (const account of accounts) {
+        let offset = 0;
+        for (let page = 0; page < MAX_PAGES_PER_DAY; page++) {
+          const raw = await account.client.report(
+            day,
+            offset,
+            REPORT_PAGE_SIZE,
+          );
+          fetched += raw.length;
+          const mapped = raw
+            .map((r) => toVerificationRow(r, formNames.get(account.label)))
+            .filter((r): r is VerificationRow => r !== null)
+            // Which entity paid for it, taken from the credential that fetched
+            // it rather than inferred from the form. A form can be renamed; a
+            // token can only ever see its own account.
+            .map((r) => ({ ...r, account: account.label }));
 
-        /**
-         * TEST rows never reach the compliance table.
-         *
-         * KYCAID's own documentation says test mode "is no different from the
-         * live mode except the priority", and the report returns both mixed
-         * together. That is exactly what makes them dangerous: same columns,
-         * same prices, same statuses, and nothing on the screen would ever
-         * look wrong. Dropped here — and counted, because quietly discarding
-         * rows is the other way to get this wrong.
-         */
-        const rows = mapped.filter((r) => r.mode !== 'TEST');
-        testSkipped += mapped.length - rows.length;
+          /**
+           * TEST rows never reach the compliance table.
+           *
+           * KYCAID's own documentation says test mode "is no different from
+           * the live mode except the priority", and the report returns both
+           * mixed together. That is exactly what makes them dangerous: same
+           * columns, same prices, same statuses, and nothing on the screen
+           * would ever look wrong. Dropped here — and counted, because quietly
+           * discarding rows is the other way to get this wrong.
+           */
+          const rows = mapped.filter((r) => r.mode !== 'TEST');
+          testSkipped += mapped.length - rows.length;
 
-        if (rows.length) {
-          const r = await this.importVerifications(rows, {
-            provider: opts.provider,
-          });
-          mergeInto(total, r, statuses, forms);
+          if (rows.length) {
+            const r = await this.importVerifications(rows, {
+              provider: opts.provider,
+            });
+            mergeInto(total, r, statuses, forms);
+            perAccount.set(
+              account.label,
+              (perAccount.get(account.label) ?? 0) + rows.length,
+            );
+          }
+
+          if (raw.length < REPORT_PAGE_SIZE) break;
+          offset += REPORT_PAGE_SIZE;
+          if (page === MAX_PAGES_PER_DAY - 1)
+            truncated.push(
+              `${day}${account.label ? ` (${account.label})` : ''}`,
+            );
         }
-
-        if (raw.length < REPORT_PAGE_SIZE) break;
-        offset += REPORT_PAGE_SIZE;
-        if (page === MAX_PAGES_PER_DAY - 1) truncated.push(day);
       }
       days++;
     }
@@ -635,6 +687,12 @@ export class KycService {
       done: nextDate === null,
       truncated,
       testSkipped,
+      // Per entity, so "nothing came back for SL" is visible rather than
+      // hidden inside a healthy-looking total.
+      accounts: accounts.map((a) => ({
+        account: a.label,
+        rows: perAccount.get(a.label) ?? 0,
+      })),
     };
   }
 
@@ -699,11 +757,38 @@ export class KycService {
       }),
       this.prisma.kycCase.count(),
     ]);
+    const accounts = kycaidAccounts();
+    /**
+     * Held per account as well as in total.
+     *
+     * Two entities, two KYCAID accounts. A combined total looks healthy while
+     * one of them is empty, so the only number that answers "is SL loaded" is
+     * SL's own.
+     */
+    const held = await this.prisma.kycCase.groupBy({
+      by: ['account'],
+      _count: { _all: true },
+    });
+    const byAccount = new Map(
+      held.map((h) => [h.account ?? '', h._count._all] as const),
+    );
+
     return {
       provider: 'kycaid',
-      configured: kycaidConfigured(),
+      configured: accounts.length > 0,
       /** Named so the screen can say which variable is missing. */
       variable: 'KYCAID_API_TOKEN',
+      accounts: accounts.map((a) => ({
+        account: a.label,
+        variable: a.variable,
+        verifications: byAccount.get(a.label) ?? 0,
+      })),
+      /**
+       * Rows loaded before any of this existed, from a console export that
+       * does not say which account produced it. Named rather than folded into
+       * either entity — re-fetching those days from the provider fills it in.
+       */
+      unattributed: byAccount.get('') ?? 0,
       verifications,
       oldest: oldest?.submittedAt ?? null,
       newest: newest?.submittedAt ?? null,

@@ -179,6 +179,13 @@ export type KycProviderStatus = {
   configured: boolean;
   /** The environment variable to set, so the screen can name it. */
   variable: string;
+  /**
+   * One per KYCAID account. The two entities hold separate accounts with
+   * separate tokens, so this is the list of entities the API can read.
+   */
+  accounts: { account: string; variable: string; verifications: number }[];
+  /** Rows from a console export, which does not say which account made them. */
+  unattributed: number;
   verifications: number;
   oldest: string | null;
   newest: string | null;
@@ -196,6 +203,8 @@ export type KycSyncResult = KycImportResult & {
   truncated: string[];
   /** Rows the provider returned in TEST mode, dropped rather than counted. */
   testSkipped: number;
+  /** What each entity's account returned. A zero here is the finding. */
+  accounts: { account: string; rows: number }[];
 };
 
 export function useKycProvider() {
@@ -226,7 +235,7 @@ async function syncUntilDone(
     read: 0, created: 0, updated: 0, unusable: 0, unlinked: 0,
     clientsCreated: 0, clientsUpdated: 0, statuses: [], forms: [],
     from, to, days: 0, fetched: 0, nextDate: null, done: false, truncated: [],
-    testSkipped: 0,
+    testSkipped: 0, accounts: [],
   };
   const statuses = new Map<string, number>();
   const forms = new Map<string, number>();
@@ -250,6 +259,11 @@ async function syncUntilDone(
     total.days += r.days;
     total.fetched += r.fetched;
     total.testSkipped += r.testSkipped ?? 0;
+    for (const a of r.accounts ?? []) {
+      const seen = total.accounts.find((x) => x.account === a.account);
+      if (seen) seen.rows += a.rows;
+      else total.accounts.push({ ...a });
+    }
     total.truncated.push(...r.truncated);
     for (const s of r.statuses)
       statuses.set(s.status, (statuses.get(s.status) ?? 0) + s.rows);

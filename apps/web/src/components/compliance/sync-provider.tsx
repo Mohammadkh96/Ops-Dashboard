@@ -88,8 +88,12 @@ export function SyncProvider() {
           <code className="text-muted-foreground">
             {provider.data.variable}
           </code>{" "}
-          on the API and redeploy. Until then the file import below does the
-          same job and needs no credential.
+          on the API and redeploy — or one per entity, suffixed:{" "}
+          <code className="text-muted-foreground">KYCAID_API_TOKENMU</code> and{" "}
+          <code className="text-muted-foreground">KYCAID_API_TOKENSL</code>.
+          Each entity holds its own KYCAID account, and a token can only read
+          its own. Until then the file import below does the same job and needs
+          no credential.
         </span>
       </div>
     );
@@ -155,6 +159,25 @@ export function SyncProvider() {
       </div>
 
       {/* What is already here, so "from" is a decision and not a guess. */}
+      {/* Per entity as well as in total: a combined number looks healthy while
+          one of the two accounts is empty, and "is Saint Lucia loaded" is only
+          answered by Saint Lucia's own count. */}
+      {provider.data && provider.data.accounts.length > 1 ? (
+        <p className="text-[11px] text-muted">
+          Connected:{" "}
+          {provider.data.accounts
+            .map(
+              (a) =>
+                `${a.account || "unlabelled"} (${a.verifications.toLocaleString()})`,
+            )
+            .join(", ")}
+          {provider.data.unattributed
+            ? `, plus ${provider.data.unattributed.toLocaleString()} from a file import, which does not say which entity it came from`
+            : ""}
+          .
+        </p>
+      ) : null}
+
       {provider.data ? (
         <p className="text-[11px] text-muted">
           {provider.data.verifications.toLocaleString()} verification
@@ -213,6 +236,27 @@ function Result({ result: r }: { result: KycSyncResult }) {
           own documentation says test mode differs from live only in priority —
           same columns, same prices, same statuses — so a test verification
           counted into a compliance total would never look wrong on screen. */}
+      {/* An entity that returned nothing is the finding a combined total
+          hides. Named, even when the run looks entirely successful. */}
+      {r.accounts.length > 1 ? (
+        <p className="text-[11px] text-muted">
+          {r.accounts
+            .map((a) => `${a.account || "unlabelled"}: ${a.rows.toLocaleString()}`)
+            .join(" · ")}
+        </p>
+      ) : null}
+      {r.accounts.some((a) => a.rows === 0) && r.days > 0 ? (
+        <p className="flex items-start gap-1.5 text-[11px] text-accent-orange">
+          <Info className="mt-px size-3.5 shrink-0" />
+          {r.accounts
+            .filter((a) => a.rows === 0)
+            .map((a) => a.account || "the unlabelled account")
+            .join(" and ")}{" "}
+          returned nothing for this range. That is either a quiet period or a
+          token pointed at the wrong account — worth checking before you treat
+          the range as loaded.
+        </p>
+      ) : null}
       {r.testSkipped ? (
         <p className="text-[11px] text-muted">
           {r.testSkipped.toLocaleString()} test-mode verification
