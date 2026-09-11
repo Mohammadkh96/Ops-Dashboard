@@ -6,6 +6,7 @@ import type { KycaidAccount } from './kycaid.client';
 import {
   KycaidClient,
   REPORT_PAGE_SIZE,
+  countryNames,
   kycaidAccounts,
   kycaidConfigured,
   toVerificationRow,
@@ -1332,26 +1333,122 @@ export class KycService {
 
   /** Verifications, newest first, for the compliance screen. */
   async cases(limit = 200) {
-    const rows = await this.prisma.kycCase.findMany({
-      orderBy: { submittedAt: 'desc' },
-      take: Math.min(Math.max(limit, 1), 1000),
-      include: { client: { select: { externalId: true, country: true } } },
+    const [rows, countries] = await Promise.all([
+      this.prisma.kycCase.findMany({
+        orderBy: { submittedAt: 'desc' },
+        take: Math.min(Math.max(limit, 1), 1000),
+        include: { client: { select: { externalId: true, country: true } } },
+      }),
+      countryNames(),
+    ]);
+    return rows.map((c) => {
+      /**
+       * THE VERIFICATION'S OWN COUNTRY FIRST, the client's only as a fallback.
+       *
+       * This read the client's column alone, which is the country the CRM holds
+       * — so a verification KYCAID settled against a Philippine passport showed
+       * blank for every client the payments side had never seen. The row itself
+       * carries `country_code` from the report, assessed at the time of the
+       * check, and that is the one a decline for a prohibited jurisdiction is
+       * actually about.
+       */
+      const code = c.country ?? c.client?.country ?? null;
+      return {
+        id: c.id,
+        verificationId: c.verificationId,
+        applicantId: c.applicantId,
+        reference: c.client?.externalId ?? null,
+        country: code,
+        /** Resolved live from `GET /countries`; null when it could not be. */
+        countryName: code ? (countries.names.get(code) ?? null) : null,
+        status: c.status,
+        providerStatus: c.providerStatus,
+        form: c.form,
+        method: c.method,
+        declineReasons: c.declineReasons,
+        priceEur: c.priceEur === null ? null : Number(c.priceEur),
+        processingMin: c.processingMin,
+        submittedAt: c.submittedAt.toISOString(),
+      };
     });
-    return rows.map((c) => ({
-      id: c.id,
-      verificationId: c.verificationId,
-      applicantId: c.applicantId,
-      reference: c.client?.externalId ?? null,
-      country: c.client?.country ?? null,
-      status: c.status,
-      providerStatus: c.providerStatus,
-      form: c.form,
-      method: c.method,
-      declineReasons: c.declineReasons,
-      priceEur: c.priceEur === null ? null : Number(c.priceEur),
-      processingMin: c.processingMin,
-      submittedAt: c.submittedAt.toISOString(),
-    }));
+  }
+
+  /**
+   * Verifications by country — what each jurisdiction costs, and how it fares.
+   *
+   * The one breakdown the compliance desk did not have. Pass rate by entity
+   * says Mauritius approves 44% against Saint Lucia's 89%; pass rate by country
+   * says whether that is the form or the applicants, because a brand that draws
+   * from different jurisdictions is being held to the same checks with
+   * different inputs.
+   *
+   * `allowed` is the other half, and it comes from the provider rather than
+   * from us: `GET /countries` is the list this account is configured to accept.
+   * A country with rows here and `allowed: false` is either a jurisdiction that
+   * was turned off after the fact or a code the provider does not use — both
+   * worth somebody's attention, and neither visible from our own table.
+   */
+  async byCountry(window: KycWindow = {}) {
+    const scope = windowWhere(window);
+    const [grouped, countries] = await Promise.all([
+      this.prisma.kycCase.groupBy({
+        by: ['country', 'status'],
+        where: scope,
+        _count: { _all: true },
+        _sum: { priceEur: true },
+      }),
+      countryNames(),
+    ]);
+
+    const rows = new Map<
+      string,
+      {
+        country: string | null;
+        name: string | null;
+        allowed: boolean | null;
+        verifications: number;
+        byStatus: Record<string, number>;
+        spentEur: number;
+      }
+    >();
+    for (const g of grouped) {
+      const code = g.country;
+      // The same sentinel as `breakdown` above, and written as an ESCAPE for
+      // the same reason: a literal NUL makes the whole file read as binary to
+      // grep, which is how it hid the first time.
+      const key = code ?? '\u0000none';
+      const row = rows.get(key) ?? {
+        country: code,
+        name: code ? (countries.names.get(code) ?? null) : null,
+        /**
+         * Null, not false, when the list could not be read. "We do not know
+         * whether this jurisdiction is accepted" and "the provider does not
+         * accept it" are different answers and only one of them is alarming.
+         */
+        allowed: !countries.names.size
+          ? null
+          : code
+            ? countries.names.has(code)
+            : null,
+        verifications: 0,
+        byStatus: {},
+        spentEur: 0,
+      };
+      row.verifications += g._count._all;
+      row.byStatus[g.status] = (row.byStatus[g.status] ?? 0) + g._count._all;
+      row.spentEur += g._sum.priceEur === null ? 0 : Number(g._sum.priceEur);
+      rows.set(key, row);
+    }
+
+    return {
+      countries: [...rows.values()].sort(
+        (a, b) => b.verifications - a.verifications,
+      ),
+      /** How many countries the provider says this account may verify. */
+      accepted: countries.names.size,
+      /** Why the names and the accepted list are missing, if they are. */
+      namesUnavailable: countries.why,
+    };
   }
 
   /**

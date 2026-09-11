@@ -128,6 +128,25 @@ export class KycController {
   }
 
   /**
+   * Verifications by jurisdiction, with the provider's own accepted list.
+   *
+   * Separate from `summary` on purpose. The names come from `GET /countries`,
+   * which is the one call on this screen that reaches the provider, and the
+   * headline cards should not wait on a third party to render a number we hold
+   * ourselves. Asked on its own, a slow provider delays one panel.
+   */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Get('countries')
+  countries(
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('account') account?: string,
+  ) {
+    return this.kyc.byCountry({ from, to, account });
+  }
+
+  /**
    * Which trading clients have no verification on record.
    *
    * The join this integration was built for, and the one question no screen

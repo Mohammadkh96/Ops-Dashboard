@@ -11,7 +11,15 @@ export type KycCase = {
   applicantId: string | null;
   /** The CRM's own account reference — the join to every payment. */
   reference: string | null;
+  /** Two letters, as the provider assessed it — the jurisdiction, not the person. */
   country: string | null;
+  /**
+   * The same country written out, resolved live from `GET /countries`.
+   *
+   * Null where the provider's list could not be read, which is why the code is
+   * still sent beside it: the column falls back to "PH" rather than to blank.
+   */
+  countryName: string | null;
   status: string;
   /** Their word, untranslated. "VALID" in the export, "completed" in callbacks. */
   providerStatus: string | null;
@@ -255,6 +263,46 @@ export function useKycSummary(window: KycWindow = {}) {
   return useQuery<KycSummary>({
     queryKey: ["kyc-summary", query],
     queryFn: () => apiFetch<KycSummary>(`/kyc/summary${query}`),
+  });
+}
+
+/**
+ * Verifications by jurisdiction, and the jurisdictions KYCAID accepts.
+ *
+ * `allowed` is the provider's answer, not ours: `GET /countries` returns the
+ * countries this account may verify at all. A country we hold rows for that is
+ * not on that list is worth a look — a jurisdiction turned off after the fact,
+ * or a code the provider does not use.
+ */
+export type KycCountries = {
+  countries: {
+    /** Two letters, or null for rows that carry no country at all. */
+    country: string | null;
+    name: string | null;
+    /** Null means the provider's list could not be read, not "not accepted". */
+    allowed: boolean | null;
+    verifications: number;
+    byStatus: Record<string, number>;
+    spentEur: number;
+  }[];
+  /** How many countries the provider says this account may verify. */
+  accepted: number;
+  namesUnavailable: string | null;
+};
+
+/**
+ * Asked separately from the summary, and on purpose.
+ *
+ * This is the one figure on the screen that reaches KYCAID, so it is not
+ * allowed to hold up the cards beside it: a provider that has stopped
+ * answering delays this panel and nothing else.
+ */
+export function useKycCountries(window: KycWindow = {}) {
+  const query = windowQuery(window);
+  return useQuery<KycCountries>({
+    queryKey: ["kyc-countries", query],
+    queryFn: () => apiFetch<KycCountries>(`/kyc/countries${query}`),
+    staleTime: 5 * 60_000,
   });
 }
 

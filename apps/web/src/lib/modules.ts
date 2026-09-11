@@ -53,7 +53,16 @@ export type KycStatus = "pending" | "in_review" | "approved_kyc" | "rejected" | 
 export type KycCase = {
   id: string;
   client: string;
+  /** Two letters, as the provider assessed the jurisdiction. */
   country: string;
+  /**
+   * The same jurisdiction written out — "Philippines" for "PH".
+   *
+   * From KYCAID's own `GET /countries`, resolved on the way out and stored
+   * nowhere. Absent or null when that list could not be read, which is why the
+   * code is still sent beside it: the column degrades to "PH", never to blank.
+   */
+  countryName?: string | null;
   status: KycStatus;
   risk: Risk;
   riskScore: number;

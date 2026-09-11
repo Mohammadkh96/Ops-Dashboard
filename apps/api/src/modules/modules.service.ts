@@ -13,6 +13,7 @@ import {
   providerLabel,
 } from '../paymaxis/normalize';
 import { parseInstant, type TimeRange } from '../common/range';
+import { countryNames } from '../kyc/kycaid.client';
 import {
   GROUP_LABELS,
   PAYMENT_FIELDS,
@@ -1200,7 +1201,12 @@ export class ModulesService {
   async kycCaseCount(opts: KycCaseQuery = {}): Promise<{ total: number }> {
     return this.safe(
       async () => ({
-        total: await this.prisma.kycCase.count({ where: kycWhere(opts) }),
+        total: await this.prisma.kycCase.count({
+          // The same codes the page resolves, or the count under the table
+          // disagrees with the rows in it the moment somebody searches by
+          // country name.
+          where: kycWhere(opts, await codesNamed(opts.q)),
+        }),
       }),
       { total: 0 },
     );
@@ -1221,12 +1227,20 @@ export class ModulesService {
     const take = Math.min(Math.max(opts.limit ?? 500, 1), 1000);
     const skip = Math.max(opts.offset ?? 0, 0);
 
-    const where = kycWhere(opts);
     const filtered = Boolean(
       opts.status || opts.q || opts.account || opts.from || opts.to,
     );
 
     return this.safe(async () => {
+      /**
+       * The names first, because the filter needs them.
+       *
+       * They are cached for the process and only reach the provider twice a
+       * day, so this is a map lookup on nearly every request — and when it is
+       * not, it is capped at five seconds and degrades to the codes.
+       */
+      const countries = await countryNames();
+      const where = kycWhere(opts, codesFor(opts.q, countries.names));
       const rows = await this.prisma.kycCase.findMany({
         where,
         include: { client: true, assignedTo: true },
@@ -1277,6 +1291,16 @@ export class ModulesService {
          * retroactively change that.
          */
         country: c.country ?? c.client?.country ?? '—',
+        /**
+         * The same jurisdiction written out — "Philippines", not "PH".
+         *
+         * Resolved live from `GET /countries` and cached for the process, not
+         * stored: the code is the stable thing and the name is a label on it.
+         * Null where the provider's list could not be read, so the column falls
+         * back to the code rather than to nothing.
+         */
+        countryName:
+          countries.names.get(c.country ?? c.client?.country ?? '') ?? null,
         /** MU, SL — which entity's KYCAID account this was fetched from. */
         account: c.account ?? null,
         form: c.form ?? null,
@@ -2698,7 +2722,43 @@ export type KycCaseQuery = {
  * nobody had ever verified. That is the worst answer a compliance screen can
  * give.
  */
-function kycWhere(opts: KycCaseQuery): Prisma.KycCaseWhereInput {
+/**
+ * The country codes whose NAME contains the search text.
+ *
+ * "Philip" finds PH; "united" finds GB, US, AE and a few more, which is the
+ * behaviour of every other field in this box. Two letters typed into the search
+ * still match the code directly, so "PH" does not have to travel through here.
+ *
+ * Capped, because a one-letter search would otherwise put two hundred codes
+ * into an `IN` clause to no one's benefit — and because at that length the
+ * plain `contains` match on the code column is already doing the work.
+ */
+export function codesFor(
+  q: string | undefined,
+  names: Map<string, string>,
+): string[] {
+  const needle = (q ?? '').trim().toLowerCase();
+  if (needle.length < 3 || !names.size) return [];
+  const codes: string[] = [];
+  for (const [code, name] of names) {
+    if (name.toLowerCase().includes(needle)) codes.push(code);
+    if (codes.length >= 40) break;
+  }
+  return codes;
+}
+
+/** The same, for the callers that do not already hold the list. */
+async function codesNamed(q: string | undefined): Promise<string[]> {
+  if (!(q ?? '').trim()) return [];
+  const { names } = await countryNames();
+  return codesFor(q, names);
+}
+
+function kycWhere(
+  opts: KycCaseQuery,
+  /** Country codes whose NAME matches the search — see the note on `q`. */
+  codes: string[] = [],
+): Prisma.KycCaseWhereInput {
   const where: Prisma.KycCaseWhereInput = {};
 
   const status = (opts.status ?? '').trim().toUpperCase();
@@ -2755,6 +2815,16 @@ function kycWhere(opts: KycCaseQuery): Prisma.KycCaseWhereInput {
       { verificationId: like },
       { client: { externalId: like } },
       { client: { country: like } },
+      /**
+       * The country BY NAME, now that the column shows one.
+       *
+       * The table reads "Philippines" and the database holds "PH", so without
+       * this the search box disagrees with the column beside it: type what is
+       * on the screen and the table empties. The codes are resolved by the
+       * caller — the stored column stays two letters, and a provider that
+       * cannot be asked for names simply contributes none.
+       */
+      ...(codes.length ? [{ country: { in: codes } }] : []),
     ];
   }
   return where;

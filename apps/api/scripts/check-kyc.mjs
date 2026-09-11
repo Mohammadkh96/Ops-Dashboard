@@ -68,9 +68,16 @@ async function run() {
   const { PrismaService } = require_('../dist/src/prisma/prisma.service');
   const { KycService, defaultStatus, readDay, nextDay, readChecks } =
     require_('../dist/src/kyc/kyc.service');
-  const { toVerificationRow, readDeclineReasons, readRows, kycaidAccounts } =
-    require_('../dist/src/kyc/kycaid.client');
-  const { ModulesService } = require_('../dist/src/modules/modules.service');
+  const {
+    toVerificationRow,
+    readDeclineReasons,
+    readRows,
+    readCountryNames,
+    kycaidAccounts,
+  } = require_('../dist/src/kyc/kycaid.client');
+  const { ModulesService, codesFor } = require_(
+    '../dist/src/modules/modules.service',
+  );
 
   const app = await createApp();
   await app.init();
@@ -417,6 +424,63 @@ async function run() {
       // "no verifications that day" for a day that had four hundred.
       ok('an object with no array is empty, not a crash', readRows({ ok: true }).length === 0);
       ok('and so is nothing at all', readRows(null).length === 0);
+      ok('wrapped in countries', readRows({ countries: [{ a: 1 }] }).length === 1);
+    }
+
+    section('a country is a name, not two letters');
+    {
+      // The provider's documented shape: the names are a LIST of
+      // {language_code, label}, not a field. A reader that expects `name`
+      // finds nothing and reports an empty list — which is indistinguishable
+      // from an account configured to verify nowhere.
+      const body = [
+        {
+          country_code: 'PH',
+          labels: [
+            { language_code: 'EN', label: 'Philippines' },
+            { language_code: 'RU', label: 'Филиппины' },
+          ],
+        },
+        {
+          country_code: 'al',
+          labels: [{ language_code: 'EN', label: 'Albania' }],
+        },
+        // No English label at all. A country named in Russian is more use
+        // than a country not named.
+        { country_code: 'ZW', labels: [{ language_code: 'RU', label: 'Зимбабве' }] },
+        // No code: nothing to key on, so nothing kept.
+        { labels: [{ language_code: 'EN', label: 'Nowhere' }] },
+      ];
+      const names = readCountryNames(body);
+      ok('the English label is the one taken', names.get('PH') === 'Philippines', names.get('PH'));
+      ok('the code is upper-cased, as the stored column is', names.get('AL') === 'Albania', [...names.keys()]);
+      ok('another language beats no name at all', names.get('ZW') === 'Зимбабве', names.get('ZW'));
+      ok('a row with no code is dropped rather than keyed on ""', names.size === 3, names.size);
+      ok('a language can be asked for', readCountryNames(body, 'RU').get('PH') === 'Филиппины');
+      ok('an empty reply is an empty map, not a throw', readCountryNames(null).size === 0);
+      ok('and so is a reply of the wrong shape', readCountryNames({ ok: true }).size === 0);
+    }
+
+    section('searching by the name the column shows');
+    {
+      const names = new Map([
+        ['PH', 'Philippines'],
+        ['GB', 'United Kingdom'],
+        ['AE', 'United Arab Emirates'],
+        ['AL', 'Albania'],
+      ]);
+      // The table reads "Philippines" and the database holds "PH". Without
+      // this, typing what is on the screen empties the table.
+      ok('a country name resolves to its code', codesFor('philip', names).join() === 'PH');
+      ok('case does not matter', codesFor('PHILIPPINES', names).join() === 'PH');
+      ok('a partial match can name several', codesFor('united', names).join() === 'GB,AE');
+      ok('a name nobody uses matches nothing', codesFor('atlantis', names).length === 0);
+      // Under three letters the plain `contains` match on the code column is
+      // already doing the work, and every two-letter search would otherwise
+      // drag forty codes into an IN clause.
+      ok('two letters are left to the code match', codesFor('ph', names).length === 0);
+      ok('no search text, no codes', codesFor('', names).length === 0);
+      ok('no country list, no codes', codesFor('philippines', new Map()).length === 0);
     }
 
     section('a day is a day');

@@ -82,6 +82,27 @@ export type KycaidForm = {
   title?: string | null;
 };
 
+/**
+ * One row of `GET /countries` — a code and its name in several languages.
+ *
+ * The report sends `country_code` and nothing else, so "PH" is as much as the
+ * table can say without this. The labels arrive as a list rather than a field
+ * per language:
+ *
+ *   { country_code: "AD", labels: [ { language_code: "EN", label: "Andorra" } ] }
+ *
+ * Read leniently — `labels` is the documented spelling, but a provider that
+ * has twice been described wrongly by its own reference is worth reading in
+ * both the shape it documents and the flat one it might send instead.
+ */
+export type KycaidCountry = {
+  country_code?: string | null;
+  code?: string | null;
+  labels?: { language_code?: string | null; label?: string | null }[] | null;
+  name?: string | null;
+  label?: string | null;
+};
+
 /** One KYCAID account: one entity, one token, one set of verifications. */
 export type KycaidAccount = {
   /** MU, SL… taken from the variable name. Empty for an unsuffixed token. */
@@ -131,6 +152,84 @@ export function kycaidAccounts(
 /** Whether a direct read is possible at all. */
 export function kycaidConfigured(env?: NodeJS.ProcessEnv): boolean {
   return kycaidAccounts(env).length > 0;
+}
+
+/**
+ * The country names, fetched once and kept.
+ *
+ * `GET /countries` is the answer to "PH" — a reference list of every country
+ * the account may verify, each with its name in several languages. It is the
+ * one KYCAID endpoint whose answer does not change between requests, so
+ * fetching it per page load would be a round trip spent on a constant.
+ *
+ * CACHED IN THE PROCESS, NOT IN THE DATABASE, and on purpose. Stored, it would
+ * be a second copy of an ISO table that has to be kept current; resolved on the
+ * way out, a failed lookup costs an hour of two-letter codes and nothing more.
+ * That is the mistake the Form column is still showing: a name resolved once at
+ * import time and written into the row, so one failed request left `12666`
+ * sitting in the column permanently.
+ *
+ * TRIES EACH ACCOUNT. The list is per account — it is what that account is
+ * configured to accept — but a token that answers is better than a column of
+ * codes, so the first account to reply wins and the rest are not asked.
+ *
+ * Lives here rather than in either service because both read it, and because
+ * the account discovery it depends on is in this file.
+ */
+const COUNTRY_TTL_MS = 12 * 60 * 60 * 1000;
+let countryCache: {
+  at: number;
+  names: Map<string, string>;
+  why: string | null;
+} | null = null;
+
+/** Forget the cached list. For the checks, which must not share state. */
+export function forgetCountries() {
+  countryCache = null;
+}
+
+export async function countryNames(): Promise<{
+  names: Map<string, string>;
+  /** Why the names are missing, if they are. Null when they resolved. */
+  why: string | null;
+}> {
+  if (countryCache && Date.now() - countryCache.at < COUNTRY_TTL_MS) {
+    return { names: countryCache.names, why: countryCache.why };
+  }
+  const accounts = kycaidAccounts();
+  if (!accounts.length) {
+    countryCache = {
+      at: Date.now(),
+      names: new Map(),
+      why: 'No KYCAID token is configured, so the country list cannot be read.',
+    };
+    return { names: countryCache.names, why: countryCache.why };
+  }
+
+  let why: string | null = null;
+  for (const account of accounts) {
+    /**
+     * A SHORT LEASH, because a table waits on this.
+     *
+     * The default twenty seconds is right for a report page worth fetching and
+     * wrong for a decoration: a provider that has stopped answering would hold
+     * the compliance table for twenty seconds per account before rendering the
+     * codes it already had. Five is long enough for a reference list and short
+     * enough that the failure is a pause rather than an outage — and it is
+     * paid twice a day, not once per request.
+     */
+    const client = new KycaidClient({ token: account.token, timeoutMs: 5_000 });
+    const names = await client.countries();
+    if (names.size) {
+      countryCache = { at: Date.now(), names, why: null };
+      return { names, why: null };
+    }
+    why ??= `${account.label || 'the account'}: ${client.countriesFailed ?? 'no countries returned'}`;
+  }
+  // Cached even in failure, so a provider that is refusing this endpoint is
+  // asked twice a day rather than on every request that renders a table.
+  countryCache = { at: Date.now(), names: new Map(), why };
+  return { names: countryCache.names, why };
 }
 
 function num(v: unknown): number | null {
@@ -530,6 +629,37 @@ export class KycaidClient {
   }
 
   /**
+   * The countries this account may verify, code to English name.
+   *
+   * NOT THE LIST OF COUNTRIES — the list of countries KYCAID will accept an
+   * applicant from on THIS account. That makes it two answers at once: the
+   * names behind the report's `country_code`, and the jurisdictions the
+   * provider is configured to take. A code in our rows that is absent here is
+   * worth looking at.
+   *
+   * Reference data, so it is cached by the caller rather than fetched per
+   * request, and — unlike the form names — it is never written into a row.
+   * The stored column keeps the ISO code, which does not change; the name is
+   * resolved on the way out, so a failing lookup shows "PH" for an hour
+   * instead of baking an unresolved value into the table the way `12666` was.
+   */
+  async countries(language = 'EN'): Promise<Map<string, string>> {
+    let names = new Map<string, string>();
+    try {
+      names = readCountryNames(await this.get<unknown>('/countries'), language);
+      this.countriesFailed = names.size ? null : 'the list came back empty';
+    } catch (e) {
+      // Same judgement as the form names: a country name is a decoration on a
+      // code that is already correct, and no read should fail for want of one.
+      this.countriesFailed = e instanceof Error ? e.message : String(e);
+    }
+    return names;
+  }
+
+  /** Why the country names are missing, if they are. Null once they resolve. */
+  countriesFailed: string | null = null;
+
+  /**
    * Why the form names are missing, if they are. Null once they resolve.
    *
    * Read after `forms()`, so a sync can report "form names unavailable: 404"
@@ -545,10 +675,57 @@ export class KycaidClient {
  * `{verifications: []}` — and a client that insists on one of them reports "no
  * verifications" for a day that had four hundred.
  */
+/**
+ * `GET /countries` as a code-to-name map, in one language.
+ *
+ * Separate from the request so the shape can be checked without a network
+ * call, and because the shape is the part that goes wrong: the names arrive as
+ * a LIST of `{language_code, label}` rather than as a field, so a reader that
+ * expects `name` finds nothing and reports an empty list — indistinguishable
+ * from an account with no countries.
+ *
+ * Falls back through the language: the one asked for, then a flat `name` or
+ * `label` if the provider ever sends one, then the first label there is. A
+ * country named in Russian is more use than a country not named at all.
+ */
+export function readCountryNames(
+  body: unknown,
+  language = 'EN',
+): Map<string, string> {
+  const names = new Map<string, string>();
+  const want = language.trim().toUpperCase();
+  for (const c of readRows(body) as KycaidCountry[]) {
+    const code = String(c.country_code ?? c.code ?? '')
+      .trim()
+      .toUpperCase();
+    if (!code) continue;
+    const labels = Array.isArray(c.labels) ? c.labels : [];
+    const wanted = labels.find(
+      (l) =>
+        String(l?.language_code ?? '')
+          .trim()
+          .toUpperCase() === want,
+    );
+    const name = String(
+      wanted?.label ?? c.name ?? c.label ?? labels[0]?.label ?? '',
+    ).trim();
+    if (name) names.set(code, name);
+  }
+  return names;
+}
+
 export function readRows(body: unknown): Record<string, unknown>[] {
   if (Array.isArray(body)) return body as Record<string, unknown>[];
   if (body && typeof body === 'object') {
-    for (const key of ['data', 'verifications', 'items', 'results', 'report']) {
+    for (const key of [
+      'data',
+      'verifications',
+      'items',
+      'results',
+      'report',
+      'countries',
+      'forms',
+    ]) {
       const v = (body as Record<string, unknown>)[key];
       if (Array.isArray(v)) return v as Record<string, unknown>[];
     }

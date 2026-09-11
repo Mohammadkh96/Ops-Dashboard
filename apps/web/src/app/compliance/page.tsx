@@ -7,6 +7,7 @@ import { ArrowLeft, Check, AlertTriangle, UserSearch } from "lucide-react";
 import { PageHeader } from "@/components/ui/page-header";
 import { SyncProvider } from "@/components/compliance/sync-provider";
 import { ByBrand, entityName } from "@/components/compliance/by-brand";
+import { ByCountry } from "@/components/compliance/by-country";
 import { StatTileRow, type Stat } from "@/components/ui/stat-tile";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { FilterBar } from "@/components/ui/filter-bar";
@@ -264,7 +265,20 @@ function Kyc() {
             ),
           } as Column<KycCase>,
         ]),
-    { key: "country", header: "Country", render: (c) => <span className="text-muted-foreground">{c.country}</span> },
+    /* The name where the provider gives one, the code where it does not.
+       "PH" is precise and unreadable at a glance, and the one question this
+       column is opened for — which jurisdictions are being declined — is asked
+       in country names. The code stays in the tooltip, and stays the thing the
+       search matches. */
+    {
+      key: "country",
+      header: "Country",
+      render: (c) => (
+        <span className="text-muted-foreground" title={c.country}>
+          {c.countryName ?? c.country}
+        </span>
+      ),
+    },
     { key: "status", header: "Status", render: (c) => <StatusBadge status={c.status} /> },
     /* Their word beside ours, so a mapping that reads oddly can be checked
        against the console without opening a row. */
@@ -337,13 +351,18 @@ function Kyc() {
           whether each brand is loaded, not how to load it. Clicking one opens
           that entity's desk — the table below it narrows to that account. */}
       <ByBrand from={start} to={end} selected={entity} onSelect={openEntity} />
+      {/* Under the entity cards and above the fetch control: it reads the same
+          period and the same entity, and it is the answer to the question the
+          cards raise — 44% against 89% is either the form or the applicants,
+          and the applicants differ by jurisdiction. */}
+      <ByCountry from={start} to={end} account={entity} />
       <SyncProvider from={start} to={end} />
 
       <div className="flex flex-col gap-4">
         <FilterBar
           search={search}
           onSearch={refilter(setSearch)}
-          searchPlaceholder="Search account reference, country, verification id…"
+          searchPlaceholder="Search account reference, country or code, verification id…"
           filters={[
             { label: "Status", value: status, onChange: refilter(setStatus), options: STATUS_OPTIONS },
             ...(entityOptions.length > 1
@@ -423,7 +442,11 @@ function Kyc() {
           }
         }}
         title={selected?.client ?? ""}
-        subtitle={selected ? `${selected.country} · ${selected.attempts} attempt${selected.attempts === 1 ? "" : "s"}` : ""}
+        subtitle={
+          selected
+            ? `${selected.countryName ?? selected.country} · ${selected.attempts} attempt${selected.attempts === 1 ? "" : "s"}`
+            : ""
+        }
         footer={
           selected ? (
             <div className="flex gap-2">
@@ -467,7 +490,15 @@ function Kyc() {
             <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
               {[
                 ["Client", selected.client],
-                ["Country", selected.country],
+                [
+                  "Country",
+                  /* Both, here. The drawer is where somebody writes the
+                     jurisdiction into a report, and the code is what they
+                     search the provider's console with. */
+                  selected.countryName
+                    ? `${selected.countryName} (${selected.country})`
+                    : selected.country,
+                ],
                 ["Attempts", String(selected.attempts)],
                 ["Provider said", selected.providerStatus ?? "—"],
                 ["Type", selected.service ?? "—"],
