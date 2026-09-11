@@ -10,7 +10,11 @@ import {
   type DetectedColumns,
   type VerificationRow,
 } from "@/lib/kyc/read-export";
-import { useImportVerifications, type KycImportResult } from "@/hooks/use-kyc";
+import {
+  useImportVerifications,
+  useKycProvider,
+  type KycImportResult,
+} from "@/hooks/use-kyc";
 
 /**
  * A KYC export, read here and reduced before it goes anywhere.
@@ -41,6 +45,21 @@ const STATUSES = [
 ] as const;
 
 export function ImportVerifications() {
+  /**
+   * Out of the way once the provider is connected.
+   *
+   * With a token set, nobody should ever have to export a file again — the
+   * panel above reads the same verifications directly. Leaving an upload box
+   * sitting open beside it reads as though the file were still the way in.
+   *
+   * Folded, not deleted. It is the fallback for a day the provider is down and
+   * the way a year of history is loaded in one go, and a compliance tool
+   * should not lose its second route because the first one works today.
+   */
+  const provider = useKycProvider();
+  const [open, setOpen] = useState(false);
+  const secondary = provider.data?.configured === true;
+
   const input = useRef<HTMLInputElement>(null);
   const [reading, setReading] = useState(false);
   const [fileName, setFileName] = useState<string | null>(null);
@@ -94,17 +113,33 @@ export function ImportVerifications() {
     ? [...new Set(staged.rows.map((r) => r.status || "(blank)"))].sort()
     : [];
 
+  // One line while the provider is connected and nothing is in progress.
+  if (secondary && !open && !staged && !result) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="self-start text-[11px] text-muted underline-offset-2 hover:underline"
+      >
+        Import a console export instead
+      </button>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-3 rounded-xl border border-border bg-card/60 px-4 py-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-col">
           <span className="text-[10px] font-medium tracking-wider text-muted uppercase">
-            Verifications
+            Verifications from a file
           </span>
           <span className="text-[11px] text-muted">
-            Export from the provider&rsquo;s console and drop it here. The file
-            is read in this browser and only ids, references and verdicts are
-            sent — names, documents and addresses are dropped first.
+            {secondary
+              ? "Only needed to load history in one go, or on a day the provider is down — the panel above reads the same verifications directly."
+              : "Export from the provider’s console and drop it here."}{" "}
+            The file is read in this browser and only ids, references and
+            verdicts are sent — names, documents and addresses are dropped
+            first.
           </span>
         </div>
         <input
