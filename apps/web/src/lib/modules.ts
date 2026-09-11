@@ -74,6 +74,17 @@ export type KycCase = {
   /** What this attempt was billed. Four attempts were billed four times. */
   priceEur?: number | null;
   processingMin?: number | null;
+  /**
+   * KYC, KYB or SERVICE. SERVICE is a paid database lookup rather than a
+   * person being checked — it has a price and no applicant, so unlabelled it
+   * reads as a verification that failed to link to an account.
+   */
+  service?: string | null;
+  /** The provider's id, which is how a row here is found in their console. */
+  verificationId?: string | null;
+  /** The submission instant. `submittedAt` is "3 months ago" and cannot be
+   *  read against a date filter. */
+  submittedOn?: string | null;
 };
 
 export type IncidentSeverity = "low" | "medium" | "high" | "critical";

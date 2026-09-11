@@ -1,11 +1,11 @@
 "use client";
 
-import { Info } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 
 import { useKycSummary, type KycFormBreakdown } from "@/hooks/use-kyc";
 
 /**
- * One card per entity.
+ * One card per entity, and clicking one opens that entity's desk.
  *
  * THE ENTITY IS THE KYCAID ACCOUNT. Tradin Mauritius and Tradin Saint Lucia
  * hold separate accounts with separate tokens, and a verification is fetched
@@ -18,6 +18,15 @@ import { useKycSummary, type KycFormBreakdown } from "@/hooks/use-kyc";
  * verifications are there" — it is whether THIS entity is verifying the people
  * it takes money from, and at what cost. A combined figure answers neither,
  * and looks perfectly healthy while one of the two is empty.
+ *
+ * THE THIRD CARD IS GONE. "Unattributed" sat beside the two entities holding
+ * every row loaded before the account column existed, which made it read as a
+ * third brand. It answered no question anybody has — those rows are in the
+ * table either way, and re-fetching their dates attributes them — and the
+ * count is still reported by the fetch panel, where it belongs.
+ *
+ * The figures follow the page's date range, so these cards and the table below
+ * them are always describing the same period.
  */
 
 const LABELS: Record<string, string> = {
@@ -25,32 +34,54 @@ const LABELS: Record<string, string> = {
   SL: "Saint Lucia",
 };
 
-function name(account: string | null): string {
-  if (!account) return "Unattributed";
+export function entityName(account: string | null | undefined): string {
+  if (!account) return "All entities";
   return LABELS[account] ?? account;
 }
 
-export function ByBrand() {
-  const { data } = useKycSummary();
-  const accounts = data?.byAccount ?? [];
+export function ByBrand({
+  from,
+  to,
+  selected,
+  onSelect,
+}: {
+  from: string;
+  to: string;
+  /** The entity being shown, or "" for both. */
+  selected: string;
+  onSelect: (account: string) => void;
+}) {
+  const { data } = useKycSummary({ from, to });
+  const accounts = (data?.byAccount ?? []).filter((a) => a.form);
   if (!accounts.length) return null;
 
-  // Named entities first, then anything the provider read did not attribute.
-  const sorted = [...accounts].sort((a, b) => {
-    if (!a.form !== !b.form) return a.form ? -1 : 1;
-    return (a.form ?? "").localeCompare(b.form ?? "");
-  });
+  const shown = selected
+    ? accounts.filter((a) => a.form === selected)
+    : [...accounts].sort((a, b) => (a.form ?? "").localeCompare(b.form ?? ""));
 
   return (
-    <div className="grid gap-3 sm:grid-cols-2">
-      {sorted.map((a) => (
-        <Card key={a.form ?? "(none)"} entity={a} />
+    <div className={`grid gap-3 ${shown.length > 1 ? "sm:grid-cols-2" : ""}`}>
+      {shown.map((a) => (
+        <Card
+          key={a.form ?? "(none)"}
+          entity={a}
+          open={Boolean(selected)}
+          onOpen={() => onSelect(a.form ?? "")}
+        />
       ))}
     </div>
   );
 }
 
-function Card({ entity: e }: { entity: KycFormBreakdown }) {
+function Card({
+  entity: e,
+  open,
+  onOpen,
+}: {
+  entity: KycFormBreakdown;
+  open: boolean;
+  onOpen: () => void;
+}) {
   const approved = e.byStatus.APPROVED ?? 0;
   const rejected = e.byStatus.REJECTED ?? 0;
   const awaiting =
@@ -68,15 +99,29 @@ function Card({ entity: e }: { entity: KycFormBreakdown }) {
    */
   const decided = approved + rejected;
   const pass = decided ? Math.round((approved / decided) * 100) : null;
-  const unattributed = !e.form;
 
+  /**
+   * A button, not a div with a click handler: this navigates, so it has to be
+   * reachable from the keyboard and announce itself as something that acts.
+   * With an entity already open it is inert — a heading, not a link to here.
+   */
   return (
-    <div className="flex flex-col gap-3 rounded-xl border border-border bg-card/60 px-4 py-3">
+    <button
+      type="button"
+      disabled={open}
+      onClick={onOpen}
+      className={`group flex flex-col gap-3 rounded-xl border border-border bg-card/60 px-4 py-3 text-left ${
+        open
+          ? ""
+          : "cursor-pointer transition-colors hover:border-border-strong hover:bg-card"
+      }`}
+    >
       <div className="flex items-baseline justify-between gap-2">
-        <span
-          className={`text-[13px] font-medium ${unattributed ? "text-accent-orange" : ""}`}
-        >
-          {name(e.form)}
+        <span className="flex items-center gap-1.5 text-[13px] font-medium">
+          {entityName(e.form)}
+          {open ? null : (
+            <ArrowRight className="size-3 text-muted opacity-0 transition-opacity group-hover:opacity-100" />
+          )}
         </span>
         <span className="tnum text-[11px] text-muted">
           {e.verifications.toLocaleString()} verification
@@ -121,16 +166,7 @@ function Card({ entity: e }: { entity: KycFormBreakdown }) {
           </span>
         ) : null}
       </div>
-
-      {unattributed ? (
-        <p className="flex items-start gap-1.5 text-[11px] text-accent-orange">
-          <Info className="mt-px size-3.5 shrink-0" />
-          These were loaded before the entity was recorded against each row, so
-          they cannot be attributed to either account. Fetching those dates from
-          the provider again assigns them.
-        </p>
-      ) : null}
-    </div>
+    </button>
   );
 }
 

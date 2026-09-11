@@ -41,9 +41,21 @@ export class KycController {
 
   @ApiBearerAuth()
   @UseGuards(JwtAuthGuard)
+  /**
+   * The headline figures, over the period and entity the screen is showing.
+   *
+   * All three are optional and unset means everything held — but the screen
+   * always sends them. The cards used to be totals over all of history sitting
+   * above a table that answered to a date range, so the two disagreed by a year
+   * and nothing on the page said which was which.
+   */
   @Get('summary')
-  summary() {
-    return this.kyc.summary();
+  summary(
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('account') account?: string,
+  ) {
+    return this.kyc.summary({ from, to, account });
   }
 
   /**

@@ -58,9 +58,9 @@ export type ReportRow = {
   verification_types?: string[] | null;
   country_code?: string | null;
   decline_reasons?: unknown;
-  /** Seconds. The console export writes the same measurement in minutes. */
+  /** MINUTES, whatever the reference says — see the note on the mapping. */
   processing_time?: number | string | null;
-  /** EURO CENTS. The console export writes the same money in euros. */
+  /** EUROS, whatever the reference says — see the note on the mapping. */
   price?: number | string | null;
   mode?: string | null;
 };
@@ -161,12 +161,25 @@ export function readDeclineReasons(value: unknown): string[] {
 /**
  * A report row, in the shape the importer already takes.
  *
- * THE TWO UNIT CONVERSIONS ARE THE WHOLE RISK HERE. `price` is euro CENTS and
- * `processing_time` is SECONDS, while the console export writes euros and
- * minutes into the same two columns. Import both paths without converting and
- * the compliance spend reads a hundred times too high for whichever half came
- * from the API — a number nobody would question, because it is only wrong by a
- * factor that looks like a busy month.
+ * THE UNITS ARE THE PROVIDER'S OWN, AND THE DOCUMENTATION IS WRONG ABOUT THEM.
+ *
+ * The reference says `price` is in euro CENTS and `processing_time` in
+ * SECONDS, so this converted both. The live data says otherwise, and says it
+ * unambiguously — the same account holds verifications from both routes:
+ *
+ *   30,444 rows read from this API averaged  €0.0074 each
+ *    7,983 rows from the vendor's own export averaged €0.8625 each
+ *
+ * A hundred-and-sixteen-fold gap between two populations of the same
+ * verifications from the same vendor is not a difference in pricing, it is a
+ * division that should not have happened. `processing_time` failed the same
+ * way and more visibly: every Mins column on the screen read 0, because a
+ * four-minute manual check divided by sixty rounds to nothing.
+ *
+ * So both are taken as the export writes them — euros and minutes — and the
+ * documentation is treated as the less reliable witness. Measured, not
+ * assumed: the arithmetic above is the reason, and a day fetched twice will
+ * keep the same figures if this is right.
  *
  * THE VERDICT IS NOT THE STATUS. `status` here is a processing state —
  * `unused`, `pending`, `completed` — and `completed` says the check finished,
@@ -189,8 +202,8 @@ export function toVerificationRow(
   const at = row.created_at ? new Date(row.created_at) : null;
   const formId = String(row.form_id ?? '').trim();
 
-  const priceCents = num(row.price);
-  const seconds = num(row.processing_time);
+  const price = num(row.price);
+  const minutes = num(row.processing_time);
 
   return {
     verificationId,
@@ -208,8 +221,8 @@ export function toVerificationRow(
     form: (formId && formNames?.get(formId)) || formId || null,
     method: String(row.method ?? row.service ?? '').trim() || null,
     declineReasons,
-    priceEur: priceCents === null ? null : priceCents / 100,
-    processingMin: seconds === null ? null : seconds / 60,
+    priceEur: price,
+    processingMin: minutes,
     /**
      * KYC, KYB or SERVICE — and the third is not a person being checked.
      *

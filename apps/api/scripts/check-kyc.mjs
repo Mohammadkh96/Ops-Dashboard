@@ -247,10 +247,16 @@ async function run() {
     //
     // The import screen was built on a finding that turned out to be false:
     // that KYCAID will not enumerate. It does — GET /verifications/report,
-    // one day at a time. These fixtures are that endpoint's documented shape,
-    // and the two that matter most are units: it reports money in euro CENTS
-    // and duration in SECONDS, where the console export writes euros and
-    // minutes into the same two columns.
+    // one day at a time. These fixtures are that endpoint's documented shape.
+    //
+    // UNITS, AND A CORRECTION. The reference says `price` is euro CENTS and
+    // `processing_time` SECONDS, and these checks asserted both conversions.
+    // The live data refutes them: 30,444 rows read from this API averaged
+    // €0.0074 against 7,983 export rows at €0.8625 — a 116-fold gap between
+    // two populations of the same verifications — and every Mins column on
+    // screen read 0, because a four-minute check divided by sixty rounds to
+    // nothing. Both figures are taken as they come now, and these checks pin
+    // that down so nobody reinstates the division from the documentation.
 
     section('a report row, in their units');
     {
@@ -263,12 +269,13 @@ async function run() {
         status: 'completed',
         method: 'Manual check',
         decline_reasons: [],
-        processing_time: 240,
-        price: 150,
+        processing_time: 4,
+        price: 1.5,
       }, new Map([['form-mau', MAU]]));
 
-      ok('price is euro cents, not euros', row.priceEur === 1.5, row.priceEur);
-      ok('processing time is seconds, not minutes',
+      ok('price is already euros — the documented /100 is wrong',
+         row.priceEur === 1.5, row.priceEur);
+      ok('processing time is already minutes — the documented /60 is wrong',
          row.processingMin === 4, row.processingMin);
       ok('the form id is resolved to its name', row.form === MAU, row.form);
       ok('the account reference survives', row.externalApplicantId === 'CU5001');
@@ -487,16 +494,16 @@ async function run() {
 
     section('minutes are whole, because the column is');
     {
-      // The bug this replaces would have killed the backfill on the first
-      // verification that did not take a whole number of minutes: the API
-      // reports SECONDS, 137 of them is 2.28 minutes, and Prisma refuses a
-      // fraction for an Int column.
+      // Prisma refuses a fraction for an Int column, and the provider has no
+      // obligation to send whole minutes. The reader passes the figure through
+      // untouched — it is the provider's own number and nothing here is
+      // entitled to round it — and the store rounds once, on the way in.
       const odd = toVerificationRow({
         verification_id: 'min-1', external_applicant_id: 'CU4001',
-        status: 'completed', decline_reasons: [], processing_time: 137,
+        status: 'completed', decline_reasons: [], processing_time: 2.28,
       });
-      ok('the reader keeps the exact conversion',
-         Math.abs(odd.processingMin - 137 / 60) < 1e-9, odd.processingMin);
+      ok('the reader passes the provider figure through as it came',
+         Math.abs(odd.processingMin - 2.28) < 1e-9, odd.processingMin);
 
       await kyc.importVerifications([odd]);
       const stored = await prisma.kycCase.findFirst({ where: { verificationId: 'min-1' } });
@@ -790,6 +797,92 @@ async function run() {
       const none = await modules.kycCases({ q: 'CU-nobody-has-this', limit: 500 });
       ok('and a search that matches nothing is empty, not demo data',
          none.length === 0, none.length);
+    }
+
+    section('one period and one entity, for every figure on the screen');
+    {
+      const modules = app.get(ModulesService);
+      // The screen used to hold three answers to "which period is this": cards
+      // totalling everything ever loaded, a fetch panel with its own pair of
+      // dates, and a table with none. These are the rows that prove they now
+      // agree — and that the last day of a range is included in it.
+      const at = (d) => ({ at: d });
+      await kyc.importVerifications([
+        { ...v({ id: 'win-1', ref: 'CU7701', status: 'VALID', price: 5,
+                 ...at('2026-03-10T09:00:00Z') }), account: 'MU', country: 'MU' },
+        // 23:30 ON THE LAST DAY of the range. Written `lte: to` this row
+        // disappears, which is the off-by-one that cost a month of payment
+        // reconciliation on the other side of this dashboard.
+        { ...v({ id: 'win-2', ref: 'CU7702', status: 'VALID', price: 7,
+                 ...at('2026-03-31T23:30:00Z') }), account: 'SL', country: 'LC' },
+        { ...v({ id: 'win-3', ref: 'CU7703', status: 'INVALID', price: 9,
+                 reasons: ['Other'], ...at('2026-04-02T09:00:00Z') }),
+          account: 'SL', country: 'LC' },
+        // No account reference at all — the abandoned applications and the
+        // paid lookups. Searchable by its own country, which it could not be
+        // while the search reached only through the client relation.
+        { ...v({ id: 'win-4', ref: null, status: 'VALID', price: 2,
+                 ...at('2026-03-12T09:00:00Z') }), account: 'MU', country: 'ZW' },
+      ]);
+
+      const range = { from: '2026-03-01', to: '2026-03-31' };
+      const march = await modules.kycCases({ ...range, limit: 500 });
+      const ids = march.map((r) => r.verificationId);
+      ok('a date range holds the days it names',
+         ids.includes('win-1') && ids.includes('win-4'), ids.slice(0, 8));
+      ok('including the whole of the last day, not just its midnight',
+         ids.includes('win-2'), ids.slice(0, 8));
+      ok('and nothing from the day after it',
+         !ids.includes('win-3'), ids.slice(0, 8));
+
+      const marchCount = await modules.kycCaseCount(range);
+      ok('the count is of the same period as the page',
+         marchCount.total === march.length,
+         { counted: marchCount.total, page: march.length });
+
+      const sl = await modules.kycCases({ ...range, account: 'SL', limit: 500 });
+      ok('an entity filter returns only that entity',
+         sl.length === 1 && sl[0].verificationId === 'win-2',
+         sl.map((r) => r.verificationId));
+
+      const byId = await modules.kycCases({ q: 'win-3', limit: 10 });
+      ok('a verification id is searchable — it is how a row is found in their console',
+         byId.length === 1 && byId[0].verificationId === 'win-3', byId.length);
+
+      const byCountry = await modules.kycCases({ q: 'ZW', limit: 500 });
+      ok('and a verification with no account is findable by its own country',
+         byCountry.some((r) => r.verificationId === 'win-4'),
+         byCountry.map((r) => r.verificationId));
+
+      // The cards and the tiles read this, so it has to answer to the same
+      // window the table does.
+      const summary = await kyc.summary(range);
+      ok('the summary counts the period, not the whole table',
+         summary.verifications === march.length,
+         { summary: summary.verifications, table: march.length });
+      // Against the rows themselves rather than a hard-coded 14: earlier
+      // sections put their own verifications in this month, and a number
+      // written here would be asserting what those sections do.
+      const spent = march.reduce((n, r) => n + (r.priceEur ?? 0), 0);
+      ok('and its spend is that period’s spend',
+         Math.abs(Number(summary.spentEur) - spent) < 1e-9,
+         { summary: summary.spentEur, rows: spent });
+
+      const slSummary = await kyc.summary({
+        from: '2026-03-01', to: '2026-04-30', account: 'SL',
+      });
+      ok('one entity’s summary is that entity’s alone',
+         slSummary.verifications === 2, slSummary.verifications);
+
+      // THE THIRD CARD. Rows loaded before the account column existed have no
+      // entity, and a card headed "Unattributed" beside Mauritius and Saint
+      // Lucia read as a third brand. The count still exists — providerStatus
+      // reports it — but it is not an entity.
+      const accounts = await kyc.byAccount();
+      ok('the entity cards are entities only, with no unattributed third',
+         accounts.length > 0 && accounts.every((a) => a.form), accounts.map((a) => a.form));
+      ok('while the fetch panel still reports what is unattributed',
+         (await kyc.providerStatus()).unattributed > 0);
     }
 
     section('what the direct reader refuses');

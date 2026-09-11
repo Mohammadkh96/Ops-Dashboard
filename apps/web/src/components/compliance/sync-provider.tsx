@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { CloudDownload, Info, Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -28,11 +28,13 @@ import {
  * requests. The API reads as many days as it can inside its budget and hands
  * back where it stopped; this asks again from there until the range is done,
  * and says which day it is on meanwhile.
+ *
+ * THE RANGE BELONGS TO THE PAGE, not to this panel. It had its own pair of date
+ * inputs, so the period being fetched and the period being displayed were two
+ * different things on one screen with no way to tell them apart — fetch a week,
+ * read a year, and conclude the fetch did nothing. One control at the top now
+ * drives the cards, the table and this.
  */
-
-function iso(d: Date): string {
-  return d.toISOString().slice(0, 10);
-}
 
 function daysBetween(from: string, to: string): number {
   const a = Date.parse(from + "T00:00:00Z");
@@ -41,34 +43,15 @@ function daysBetween(from: string, to: string): number {
   return Math.floor((b - a) / 86_400_000) + 1;
 }
 
-export function SyncProvider() {
+export function SyncProvider({ from, to }: { from: string; to: string }) {
   const provider = useKycProvider();
   const [progress, setProgress] = useState<{ day: string; days: number } | null>(
     null,
   );
   const sync = useSyncProvider((day, days) => setProgress({ day, days }));
 
-  const today = provider.data?.today ?? iso(new Date());
-  /**
-   * Where an update should start: the day of the newest verification held, not
-   * the day after it.
-   *
-   * A verification that arrived at 23:50 while a sync was reading that same day
-   * is otherwise never fetched at all. Re-reading one day is free — the
-   * verification id is the key, so what is already there updates.
-   */
-  const suggestedFrom = useMemo(() => {
-    const newest = provider.data?.newest;
-    if (newest) return newest.slice(0, 10);
-    const back = new Date(today + "T00:00:00Z");
-    back.setUTCDate(back.getUTCDate() - 30);
-    return iso(back);
-  }, [provider.data?.newest, today]);
-
-  const [from, setFrom] = useState<string | null>(null);
-  const [to, setTo] = useState<string | null>(null);
-  const start = from ?? suggestedFrom;
-  const end = to ?? today;
+  const start = from;
+  const end = to;
   const span = daysBetween(start, end);
 
   const result = sync.data;
@@ -104,35 +87,13 @@ export function SyncProvider() {
             Fetch from KYCAID
           </span>
           <span className="text-[11px] text-muted">
-            Read the provider directly, a day at a time. Nothing is exported and
-            nothing is uploaded — and re-reading a day updates what is already
-            here rather than duplicating it.
+            Reads {start} to {end} — the period selected above — a day at a time.
+            Nothing is exported and nothing is uploaded, and re-reading a day
+            updates what is already here rather than duplicating it.
           </span>
         </div>
 
         <div className="flex flex-wrap items-end gap-2">
-          <label className="flex flex-col gap-1">
-            <span className="text-[10px] text-muted">From</span>
-            <input
-              type="date"
-              value={start}
-              max={end}
-              disabled={busy}
-              onChange={(e) => setFrom(e.target.value)}
-              className="tnum h-7 rounded-md border border-border bg-card px-2 text-[11px]"
-            />
-          </label>
-          <label className="flex flex-col gap-1">
-            <span className="text-[10px] text-muted">To</span>
-            <input
-              type="date"
-              value={end}
-              max={today}
-              disabled={busy}
-              onChange={(e) => setTo(e.target.value)}
-              className="tnum h-7 rounded-md border border-border bg-card px-2 text-[11px]"
-            />
-          </label>
           <Button
             size="sm"
             disabled={busy || span < 1}

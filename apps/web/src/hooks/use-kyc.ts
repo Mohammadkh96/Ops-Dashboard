@@ -93,10 +93,30 @@ export function useKycCases(limit = 200) {
   });
 }
 
-export function useKycSummary() {
+/** The period and entity a screen is asking about. Unset is everything held. */
+export type KycWindow = { from?: string; to?: string; account?: string };
+
+function windowQuery(w: KycWindow): string {
+  const p = new URLSearchParams();
+  if (w.from) p.set("from", w.from);
+  if (w.to) p.set("to", w.to);
+  if (w.account) p.set("account", w.account);
+  const s = p.toString();
+  return s ? `?${s}` : "";
+}
+
+/**
+ * The headline figures, over the period the screen is showing.
+ *
+ * The cards above the table used to be totals over everything ever loaded
+ * while the table answered to a date range, so the two could disagree by a
+ * year and nothing on the page said which was which.
+ */
+export function useKycSummary(window: KycWindow = {}) {
+  const query = windowQuery(window);
   return useQuery<KycSummary>({
-    queryKey: ["kyc-summary"],
-    queryFn: () => apiFetch<KycSummary>("/kyc/summary"),
+    queryKey: ["kyc-summary", query],
+    queryFn: () => apiFetch<KycSummary>(`/kyc/summary${query}`),
   });
 }
 

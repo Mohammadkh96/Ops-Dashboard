@@ -77,8 +77,12 @@ export type KycCaseQuery = {
   limit?: number;
   offset?: number;
   status?: string;
-  risk?: string;
   q?: string;
+  /** A KYCAID account label — "MU", "SL". Blank is both entities. */
+  account?: string;
+  /** `YYYY-MM-DD`, inclusive at both ends. */
+  from?: string;
+  to?: string;
 };
 
 function kycQuery(o: KycCaseQuery): string {
@@ -86,8 +90,10 @@ function kycQuery(o: KycCaseQuery): string {
   if (o.limit) p.set("limit", String(o.limit));
   if (o.offset) p.set("offset", String(o.offset));
   if (o.status) p.set("status", o.status);
-  if (o.risk) p.set("risk", o.risk);
   if (o.q) p.set("q", o.q);
+  if (o.account) p.set("account", o.account);
+  if (o.from) p.set("from", o.from);
+  if (o.to) p.set("to", o.to);
   const s = p.toString();
   return s ? `?${s}` : "";
 }

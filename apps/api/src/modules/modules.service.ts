@@ -1222,7 +1222,9 @@ export class ModulesService {
     const skip = Math.max(opts.offset ?? 0, 0);
 
     const where = kycWhere(opts);
-    const filtered = Boolean(opts.status || opts.risk || opts.q);
+    const filtered = Boolean(
+      opts.status || opts.q || opts.account || opts.from || opts.to,
+    );
 
     return this.safe(async () => {
       const rows = await this.prisma.kycCase.findMany({
@@ -1288,8 +1290,26 @@ export class ModulesService {
         attempts: c.clientId ? (attempts.get(c.clientId) ?? 1) : 1,
         /** Their word, so a mapping that reads oddly can be checked. */
         providerStatus: c.providerStatus ?? null,
+        /**
+         * The provider's own id for the verification.
+         *
+         * The one thing that makes a row on this screen findable in KYCAID's
+         * console — which is where somebody goes when they disagree with what
+         * this screen says.
+         */
+        verificationId: c.verificationId ?? null,
+        /**
+         * KYC, KYB or SERVICE.
+         *
+         * SERVICE is a paid database lookup rather than a person being checked.
+         * It has a price and no applicant, so without this column it reads on
+         * screen as a verification that failed to link to an account.
+         */
+        service: c.service ?? null,
         declineReasons: c.declineReasons,
         submittedAt: this.ago(c.submittedAt),
+        /** The date itself. "3 months ago" cannot be read against a filter. */
+        submittedOn: c.submittedAt.toISOString(),
         assignee: c.assignedTo
           ? `${c.assignedTo.firstName} ${c.assignedTo.lastName}`
           : 'Unassigned',
@@ -2647,9 +2667,13 @@ export type KycCaseQuery = {
   offset?: number;
   /** A dashboard status word — `approved_kyc`, `rejected`, `in_review`… */
   status?: string;
-  risk?: string;
-  /** Account reference or country, matched loosely. */
+  /** Account reference, country or verification id, matched loosely. */
   q?: string;
+  /** Which entity's KYCAID account — "MU", "SL". */
+  account?: string;
+  /** Submitted on or after / before, `YYYY-MM-DD`, inclusive of both days. */
+  from?: string;
+  to?: string;
 };
 
 /**
@@ -2677,22 +2701,52 @@ function kycWhere(opts: KycCaseQuery): Prisma.KycCaseWhereInput {
     ) as Prisma.KycCaseWhereInput['status'];
   }
 
-  const risk = (opts.risk ?? '').trim().toUpperCase();
-  const q = (opts.q ?? '').trim();
-  if (risk || q) {
-    where.client = {
-      ...(risk
-        ? { riskLevel: risk as Prisma.ClientWhereInput['riskLevel'] }
-        : {}),
-      ...(q
-        ? {
-            OR: [
-              { externalId: { contains: q, mode: 'insensitive' as const } },
-              { country: { contains: q, mode: 'insensitive' as const } },
-            ],
-          }
-        : {}),
+  const account = (opts.account ?? '').trim().toUpperCase();
+  if (account) where.account = account;
+
+  /**
+   * A date range over the whole day, both ends included.
+   *
+   * `to` is exclusive of the NEXT midnight rather than inclusive of its own,
+   * which is the difference between a filter that includes the last day and
+   * one that silently drops everything after 00:00:00 on it. That exact
+   * off-by-one already cost a month's reconciliation on the payments side.
+   */
+  const from = (opts.from ?? '').trim();
+  const to = (opts.to ?? '').trim();
+  if (from || to) {
+    const end = to ? new Date(to + 'T00:00:00.000Z') : null;
+    if (end) end.setUTCDate(end.getUTCDate() + 1);
+    where.submittedAt = {
+      ...(from ? { gte: new Date(from + 'T00:00:00.000Z') } : {}),
+      ...(end ? { lt: end } : {}),
     };
+  }
+
+  /**
+   * Free text, against the verification AS WELL AS the client.
+   *
+   * It used to reach only through the client relation, which meant a
+   * verification settled against no account of ours — the abandoned ones, and
+   * every SERVICE lookup — could not be found by country at all, and a search
+   * for a verification id found nothing anywhere. Those rows carry their own
+   * country now, so the search reads both.
+   *
+   * A RISK FILTER USED TO SIT HERE and it is gone. It matched
+   * `client.riskLevel`, which no code in this repository ever sets; the screen
+   * beside it was already showing `risk: null` on every row for the same
+   * reason. A filter that silently narrows a compliance table by a column
+   * nobody populates is worse than no filter.
+   */
+  const q = (opts.q ?? '').trim();
+  if (q) {
+    const like = { contains: q, mode: 'insensitive' as const };
+    where.OR = [
+      { country: like },
+      { verificationId: like },
+      { client: { externalId: like } },
+      { client: { country: like } },
+    ];
   }
   return where;
 }

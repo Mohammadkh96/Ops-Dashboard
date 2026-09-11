@@ -25,12 +25,12 @@ import {
  * day at a time, and it returns very nearly the columns the console export
  * produces. Four 404s never proved absence; they proved four wrong paths.
  *
- * So there are two ways in and both are kept. `syncFromProvider` reads the
- * provider directly and is what keeps this current. `importVerifications` takes
- * a console export parsed in the browser — it needs no credential, it is how
- * history from before this was wired up gets loaded, and it still works on a
- * day the provider does not. They write the same rows, keyed the same way, so
- * running both is safe: the second one updates what the first created.
+ * So there is ONE way in: `syncFromProvider` reads the provider directly, and
+ * nothing else writes this table. The file import that was built on the wrong
+ * finding is gone, endpoint and screen both — a second way in that nobody
+ * should use is a second way to be wrong about where the numbers came from.
+ * `importVerifications` survives it as the shared write path underneath, which
+ * is why it is still named for a file it no longer reads.
  *
  * THE JOIN. `external_applicant_id` is the CRM's own account reference —
  * `CU65081`, `CU447` — the same identifier carried by every payment in the
@@ -161,6 +161,47 @@ export type ImportResult = {
  * rather than passed over in silence.
  */
 const MAX_PAGES_PER_DAY = 20;
+
+/**
+ * The period and the entity a screen is asking about.
+ *
+ * The cards used to be totals over everything held while the table beneath them
+ * answered to a date range, so the two disagreed by a year and neither said so.
+ * Every figure a screen shows now comes through this.
+ */
+export type KycWindow = {
+  /** `YYYY-MM-DD`, inclusive. */
+  from?: string;
+  /** `YYYY-MM-DD`, inclusive — the whole of that day, not midnight. */
+  to?: string;
+  /** A KYCAID account label: `MU`, `SL`. Blank means both. */
+  account?: string;
+};
+
+/**
+ * The window as a Prisma filter.
+ *
+ * `to` is read as "up to the end of that day" and applied as `< to + 1 day`.
+ * Written as `lte: to` it would cover exactly the midnight instant and drop the
+ * rest — the same off-by-one that once cost a month of payment reconciliation.
+ */
+function windowWhere(w: KycWindow = {}): Prisma.KycCaseWhereInput {
+  const where: Prisma.KycCaseWhereInput = {};
+  const account = (w.account ?? '').trim().toUpperCase();
+  if (account) where.account = account;
+
+  const from = (w.from ?? '').trim();
+  const to = (w.to ?? '').trim();
+  if (from || to) {
+    const end = to ? new Date(to + 'T00:00:00.000Z') : null;
+    if (end) end.setUTCDate(end.getUTCDate() + 1);
+    where.submittedAt = {
+      ...(from ? { gte: new Date(from + 'T00:00:00.000Z') } : {}),
+      ...(end ? { lt: end } : {}),
+    };
+  }
+  return where;
+}
 
 export type SyncOptions = {
   /** First day to read, `YYYY-MM-DD`. Defaults to `to`. */
@@ -928,8 +969,8 @@ export class KycService {
    * verification whose form did not come through is a gap in the import, and a
    * gap silently added to one brand's count is worse than a gap that says so.
    */
-  async byForm() {
-    return this.breakdown('form');
+  async byForm(window: KycWindow = {}) {
+    return this.breakdown('form', window);
   }
 
   /**
@@ -939,20 +980,33 @@ export class KycService {
    * console export need not carry one, but a verification is fetched with the
    * credential of exactly one account and cannot be attributed to the other.
    */
-  async byAccount() {
-    return this.breakdown('account');
+  async byAccount(window: KycWindow = {}) {
+    /**
+     * Entities only, and never a row for the ones with no account.
+     *
+     * The screen puts one card per entity side by side, and a third card headed
+     * "Unattributed" was sitting beside them holding every row loaded before the
+     * account column existed. It answered no question anybody has — the rows are
+     * in the table either way, and re-fetching those dates attributes them — and
+     * it read as a third brand. The count is still reported by
+     * `providerStatus()`, where it belongs: a note on what is loaded.
+     */
+    const rows = await this.breakdown('account', window);
+    return rows.filter((r) => (r.form ?? '') !== '');
   }
 
-  private async breakdown(key: 'form' | 'account') {
+  private async breakdown(key: 'form' | 'account', window: KycWindow = {}) {
+    const scope = windowWhere(window);
     const [grouped, unlinked] = await Promise.all([
       this.prisma.kycCase.groupBy({
         by: [key, 'status'],
+        where: scope,
         _count: { _all: true },
         _sum: { priceEur: true },
       }),
       this.prisma.kycCase.groupBy({
         by: [key],
-        where: { clientId: null },
+        where: { ...scope, clientId: null },
         _count: { _all: true },
       }),
     ]);
@@ -1001,21 +1055,32 @@ export class KycService {
     );
   }
 
-  async summary() {
+  /**
+   * The figures a screen shows, over the period and entity it is showing.
+   *
+   * Unfiltered by default, which is what the older callers pass.
+   */
+  async summary(window: KycWindow = {}) {
+    const scope = windowWhere(window);
     const [total, byStatus, byReason, cost, repeats] = await Promise.all([
-      this.prisma.kycCase.count(),
-      this.prisma.kycCase.groupBy({ by: ['status'], _count: { _all: true } }),
+      this.prisma.kycCase.count({ where: scope }),
+      this.prisma.kycCase.groupBy({
+        by: ['status'],
+        where: scope,
+        _count: { _all: true },
+      }),
       this.prisma.kycCase.findMany({
-        where: { NOT: { declineReasons: { isEmpty: true } } },
+        where: { ...scope, NOT: { declineReasons: { isEmpty: true } } },
         select: { declineReasons: true },
       }),
       this.prisma.kycCase.aggregate({
+        where: scope,
         _sum: { priceEur: true },
         _avg: { processingMin: true },
       }),
       this.prisma.kycCase.groupBy({
         by: ['clientId'],
-        where: { clientId: { not: null } },
+        where: { ...scope, clientId: { not: null } },
         _count: { _all: true },
       }),
     ]);
@@ -1028,8 +1093,8 @@ export class KycService {
     const retried = repeats.filter((r) => r._count._all > 1);
     return {
       verifications: total,
-      byForm: await this.byForm(),
-      byAccount: await this.byAccount(),
+      byForm: await this.byForm(window),
+      byAccount: await this.byAccount(window),
       byStatus: byStatus.map((s) => ({
         status: s.status,
         count: s._count._all,

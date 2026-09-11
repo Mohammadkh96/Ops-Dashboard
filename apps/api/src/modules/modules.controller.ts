@@ -176,15 +176,19 @@ export class ModulesController {
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
     @Query('status') status?: string,
-    @Query('risk') risk?: string,
     @Query('q') q?: string,
+    @Query('account') account?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
     return this.modules.kycCases({
       limit: limit ? Number(limit) : undefined,
       offset: offset ? Number(offset) : undefined,
       status,
-      risk,
       q,
+      account,
+      from,
+      to,
     });
   }
 
@@ -192,10 +196,12 @@ export class ModulesController {
   @Get('compliance/kyc/count')
   kycCount(
     @Query('status') status?: string,
-    @Query('risk') risk?: string,
     @Query('q') q?: string,
+    @Query('account') account?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
-    return this.modules.kycCaseCount({ status, risk, q });
+    return this.modules.kycCaseCount({ status, q, account, from, to });
   }
 
   /**
