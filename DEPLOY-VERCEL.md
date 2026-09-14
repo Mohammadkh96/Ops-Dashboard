@@ -71,7 +71,31 @@ build settings. The install step runs at the repo root because that is where the
 npm-workspaces lockfile lives.
 
 Everything else comes from `apps/api/vercel.json` — build command, the rewrite
-that sends every path into Nest, `maxDuration`, and the cron entry.
+that sends every path into Nest, `maxDuration`, and the cron entries.
+
+#### The crons must stay daily on Hobby, and the failure is silent
+
+This account is on the Hobby plan, where **a cron may run at most once a day**.
+A schedule finer than that — `0 * * * *`, say — is refused when the deployment
+is CREATED, before any build begins. There is no failed deployment in the list,
+no email, and no log: pushes simply stop producing deployments while the last
+good build carries on serving.
+
+That cost three days. The KYC sync was changed from `0 4 * * *` to hourly on
+11 September; every push for the next three days was rejected in silence, the
+production API stayed eight commits behind, and four features looked broken on
+screen — empty Country and Checks columns, form ids instead of names, a missing
+panel — all with correct code sitting unbuilt in the repository.
+
+So: keep every entry in `crons` at once per day, and if a deployment ever stops
+appearing after a push, read `apps/api/vercel.json` before anything else. The
+running build is `GET /api/health` → `build.commit`, which settles "is the fix
+deployed" in one request.
+
+Verifications are not left a day stale by this. The KYC screen re-checks the
+provider every five minutes while it is open and the Fetch button reads any
+range on demand; the cron is only the unattended floor. Hourly unattended needs
+the Pro plan.
 
 ### Environment variables
 
