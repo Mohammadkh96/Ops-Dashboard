@@ -1416,6 +1416,52 @@ async function run() {
       ok('and the verified ones are not on that list',
          !e.clients.some((c) => c.reference === 'CU7001'), e.clients);
       ok('one currency, so the totals mean something', e.currencies.join() === 'EUR', e.currencies);
+
+      // A JOIN BETWEEN TWO SYSTEMS' SPELLINGS OF THE SAME FIELD. KYCAID writes
+      // `external_applicant_id`, the payment payload writes
+      // `customer.referenceId`, and an exact match between them fails silently
+      // — which HERE means reporting a verified client as one nobody checked,
+      // on a compliance screen, beside their deposits.
+      await prisma.paymentEvent.create({ data: {
+        ...pay({ key: 'px-7', ref: ' cu7001 ', amount: 30 }),
+      } });
+      const loose = await kyc.exposure({ from: day, to: day });
+      const approvedLine = loose.byStanding.find((r) => r.standing === 'approved');
+      ok('a reference that differs by case and spacing still matches',
+         approvedLine.amount === 130, approvedLine);
+
+      // AND WHAT MATCHED NOTHING IS REPORTED, not folded into "unverified".
+      // The payment reader falls through customer.referenceId to
+      // customer.email, so a payload with no reference leaves an EMAIL here —
+      // which can never match a client, and is a mapping gap rather than a
+      // person who was never checked.
+      await prisma.paymentEvent.create({ data: {
+        ...pay({ key: 'px-8', ref: 'someone@example.com', amount: 60 }),
+      } });
+      const withEmail = await kyc.exposure({ from: day, to: day });
+      ok('an unmatched reference is counted apart',
+         withEmail.unmatched.references >= 1, withEmail.unmatched);
+      ok('and one that is an email is named as one',
+         withEmail.unmatched.emails === 1, withEmail.unmatched);
+      ok('with the amount it carries, so the caveat has a size',
+         withEmail.unmatched.amount >= 60, withEmail.unmatched);
+    }
+
+    section('a day nobody fetched is not a quiet day');
+    {
+      // The sync walks a day at a time, and a day nobody walked is ABSENT —
+      // indistinguishable on every screen from a day the provider had nothing
+      // for. It matters most on the exposure panel: a client verified on a
+      // missing day is reported as somebody who was never checked.
+      const g = await kyc.gaps();
+      ok('the range is the one actually held', Boolean(g.from && g.to), g);
+      ok('and every day between with nothing in it is named',
+         Array.isArray(g.missing), g);
+      // The fixtures above are scattered across 2026 and 2027, so the range
+      // between them is mostly empty — which is exactly what this reports.
+      ok('a range with holes reports them', g.total > 0, g.total);
+      ok('the list is capped rather than printed in full',
+         g.missing.length <= 200, g.missing.length);
     }
 
     section('the conditions worth raising');

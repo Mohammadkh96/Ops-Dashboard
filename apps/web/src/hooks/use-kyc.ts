@@ -404,6 +404,25 @@ export type KycExposure = {
     deposits: number;
     amount: number;
   }[];
+  /**
+   * References that matched no client at all — reported, never folded in.
+   *
+   * A payment carrying an email instead of a CU reference is a mapping gap on
+   * the payment side; a reference with no verification held may simply predate
+   * what has been synced. Neither is "this person was never checked", and a
+   * compliance screen must not say so.
+   */
+  unmatched: {
+    references: number;
+    emails: number;
+    amount: number;
+    examples: {
+      reference: string;
+      email: boolean;
+      deposits: number;
+      amount: number;
+    }[];
+  };
   /** More than one means the totals are summing unlike things — say so. */
   currencies: string[];
 };
@@ -414,6 +433,31 @@ export function useKycExposure(window: KycWindow = {}) {
     queryKey: ["kyc-exposure", query],
     queryFn: () => apiFetch<KycExposure>(`/kyc/exposure${query}`),
     staleTime: 60_000,
+  });
+}
+
+/**
+ * Days inside the loaded range that hold no verifications at all.
+ *
+ * The sync walks a day at a time and a day nobody walked is absent rather than
+ * empty — which on the exposure panel turns a client verified that day into
+ * somebody who was never checked, beside their deposits.
+ */
+export type KycGaps = {
+  from: string | null;
+  to: string | null;
+  days: number;
+  held?: number;
+  missing: string[];
+  truncated?: number;
+  total?: number;
+};
+
+export function useKycGaps() {
+  return useQuery<KycGaps>({
+    queryKey: ["kyc-gaps"],
+    queryFn: () => apiFetch<KycGaps>("/kyc/gaps"),
+    staleTime: 5 * 60_000,
   });
 }
 

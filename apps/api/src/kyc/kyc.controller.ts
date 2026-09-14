@@ -191,6 +191,22 @@ export class KycController {
   }
 
   /**
+   * Days inside the loaded range that hold no verifications at all.
+   *
+   * The sync walks a day at a time, and a day nobody walked is absent rather
+   * than empty — indistinguishable on every screen from a day the provider had
+   * nothing for. It matters most on the exposure panel, where a client verified
+   * on a day that was never fetched is reported as somebody who was never
+   * checked, beside the money they deposited.
+   */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Get('gaps')
+  gaps() {
+    return this.kyc.gaps();
+  }
+
+  /**
    * Which trading clients have no verification on record.
    *
    * The join this integration was built for, and the one question no screen

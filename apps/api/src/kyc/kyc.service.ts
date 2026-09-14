@@ -1823,8 +1823,21 @@ export class KycService {
       if (!prev || at(e) > at(prev)) latest.set(key, e);
     }
 
+    /**
+     * THE JOIN IS NORMALISED, and it was not.
+     *
+     * Both sides store the CRM's reference as the system that sent it wrote it:
+     * KYCAID's `external_applicant_id` on one side, the payment payload's
+     * `customer.referenceId` on the other. An exact string match between two
+     * systems' spellings of the same field is a join that fails silently — and
+     * failing silently HERE means reporting a verified client as one who was
+     * never checked, on a compliance screen, with their deposits beside it.
+     * That is the worst direction for this particular mistake to run.
+     */
+    const key = (ref: string | null | undefined) =>
+      (ref ?? '').trim().toUpperCase();
     const standing = new Map(
-      clients.map((c) => [c.externalId as string, c.kycStatus as string]),
+      clients.map((c) => [key(c.externalId), c.kycStatus as string]),
     );
 
     /**
@@ -1858,6 +1871,10 @@ export class KycService {
       amount: number;
     };
     const buckets = new Map<string, Bucket>();
+    const unmatched = new Map<
+      string,
+      { reference: string; email: boolean; deposits: number; amount: number }
+    >();
     const worst = new Map<
       string,
       { reference: string; standing: string; deposits: number; amount: number }
@@ -1871,7 +1888,7 @@ export class KycService {
       if (/REFUND|WITHDRAW|PAYOUT/.test(kind)) continue;
 
       const ref = e.customer as string;
-      const held = standing.get(ref);
+      const held = standing.get(key(ref));
       const label = !held
         ? 'none'
         : held === 'APPROVED' && expired.has(ref)
@@ -1888,6 +1905,29 @@ export class KycService {
       bucket.deposits++;
       bucket.amount += Math.abs(e.amount);
       buckets.set(label, bucket);
+
+      /**
+       * WHAT DID NOT JOIN AT ALL, kept apart from what did not verify.
+       *
+       * The payment reader falls through `customer.referenceId` to
+       * `customer.email` and then to an account number, so a payload missing
+       * the reference leaves an EMAIL in this column — which can never match a
+       * client reference, and would otherwise be reported as a client who has
+       * no verification. It is the opposite: it is a payment this dashboard
+       * cannot attribute to anybody.
+       */
+      if (!held) {
+        const looksLikeEmail = ref.includes('@');
+        const seen = unmatched.get(ref) ?? {
+          reference: ref,
+          email: looksLikeEmail,
+          deposits: 0,
+          amount: 0,
+        };
+        seen.deposits++;
+        seen.amount += Math.abs(e.amount);
+        unmatched.set(ref, seen);
+      }
 
       if (label === 'approved' || label === 'pending') continue;
       // Named individually, because "€40,000 from unverified clients" is a
@@ -1933,6 +1973,35 @@ export class KycService {
         .sort((a, b) => b.amount - a.amount)
         .slice(0, 50),
       /**
+       * The references that matched no client at all.
+       *
+       * Reported rather than folded into "no verification on record", because
+       * the two mean different things and only one of them is a compliance
+       * finding. A payment carrying an email instead of a reference is a
+       * mapping gap on the payment side; a reference this dashboard has never
+       * seen a verification for may simply predate the history that has been
+       * synced. Both look identical in a total, and neither is "this person was
+       * never checked".
+       */
+      unmatched: {
+        references: unmatched.size,
+        /** How many of them are an email — the payment reader's fallback. */
+        emails: [...unmatched.values()].filter((u) => u.email).length,
+        amount:
+          Math.round(
+            [...unmatched.values()].reduce((n, u) => n + u.amount, 0) * 100,
+          ) / 100,
+        examples: [...unmatched.values()]
+          .sort((a, b) => b.amount - a.amount)
+          .slice(0, 10)
+          .map((u) => ({
+            reference: u.reference,
+            email: u.email,
+            deposits: u.deposits,
+            amount: Math.round(u.amount * 100) / 100,
+          })),
+      },
+      /**
        * Whether the currency column can be trusted to be one currency.
        *
        * Amounts are summed as they are stored. Where a ledger holds more than
@@ -1946,6 +2015,55 @@ export class KycService {
       ]
         .filter(Boolean)
         .sort(),
+    };
+  }
+
+  /**
+   * WHICH DAYS HOLD NOTHING, inside the range that is supposed to be loaded.
+   *
+   * The sync walks a day at a time and a day nobody walked is simply absent —
+   * indistinguishable, on every screen, from a day the provider had nothing
+   * for. That gap is not cosmetic: a client verified on a day that was never
+   * fetched has no verification in this database, so the exposure panel reports
+   * them as somebody who was never checked, beside the money they deposited.
+   * A compliance screen accusing a verified client is the worst way for a
+   * missing day to announce itself.
+   *
+   * Only the days BETWEEN the oldest and newest held are reported. Before the
+   * first verification there is nothing to be missing, and after the last one
+   * the answer is "not synced yet", which the fetch panel already says.
+   */
+  async gaps() {
+    const rows = await this.prisma.$queryRaw<{ day: Date; rows: bigint }[]>`
+      SELECT date_trunc('day', "submittedAt") AS day, count(*) AS rows
+      FROM "KycCase"
+      GROUP BY 1
+      ORDER BY 1
+    `;
+    if (rows.length < 2) return { from: null, to: null, days: 0, missing: [] };
+
+    const held = new Set(rows.map((r) => r.day.toISOString().slice(0, 10)));
+    const from = rows[0].day.toISOString().slice(0, 10);
+    const to = rows[rows.length - 1].day.toISOString().slice(0, 10);
+
+    const missing: string[] = [];
+    for (let day = from; day <= to; day = nextDay(day)) {
+      if (!held.has(day)) missing.push(day);
+    }
+
+    return {
+      from,
+      to,
+      /** Days in that range, so "19 of 364" reads as a proportion. */
+      days: missing.length + held.size,
+      held: held.size,
+      /**
+       * Capped, because the answer to four hundred missing days is "fetch the
+       * range again", not a list somebody reads.
+       */
+      missing: missing.slice(0, 200),
+      truncated: Math.max(0, missing.length - 200),
+      total: missing.length,
     };
   }
 

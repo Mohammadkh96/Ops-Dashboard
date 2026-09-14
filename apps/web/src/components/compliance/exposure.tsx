@@ -2,7 +2,7 @@
 
 import { AlertTriangle } from "lucide-react";
 
-import { useKycExposure } from "@/hooks/use-kyc";
+import { useKycExposure, useKycGaps } from "@/hooks/use-kyc";
 
 /**
  * Money, grouped by whether the person who moved it was ever checked.
@@ -53,6 +53,18 @@ export function Exposure({
   account: string;
 }) {
   const { data } = useKycExposure({ from, to, account });
+  /**
+   * WHY A VERIFIED CLIENT CAN APPEAR HERE, stated on the panel rather than
+   * discovered by somebody who trusted it.
+   *
+   * Two things put a client in "no verification on record" without them being
+   * unverified: a day that was never synced, so the verification is simply not
+   * in this database; and a payment whose payload carried an email instead of
+   * a CU reference, which can match nothing. Both are ours to fix, and a
+   * compliance screen that accuses a client without saying so is worse than
+   * one that shows a smaller number.
+   */
+  const gaps = useKycGaps();
   const rows = data?.byStanding ?? [];
   if (!rows.length) return null;
 
@@ -152,6 +164,41 @@ export function Exposure({
             ) : null}
           </div>
         </div>
+      ) : null}
+
+      {/* The caveats, above the currency note because they change what the
+          numbers MEAN rather than how to read them. */}
+      {gaps.data?.missing.length ? (
+        <p className="flex items-start gap-1.5 text-[11px] text-accent-orange">
+          <AlertTriangle className="mt-px size-3.5 shrink-0" />
+          <span>
+            {(gaps.data.total ?? gaps.data.missing.length).toLocaleString()} day
+            {(gaps.data.total ?? gaps.data.missing.length) === 1 ? "" : "s"}{" "}
+            between {gaps.data.from} and {gaps.data.to} hold no verifications at
+            all, which usually means they were never fetched — a client verified
+            on one of them reads here as a client with no verification. Fetch
+            those dates before acting on this list.
+            {gaps.data.missing.length <= 8
+              ? ` Missing: ${gaps.data.missing.join(", ")}.`
+              : ` Earliest missing: ${gaps.data.missing.slice(0, 5).join(", ")}…`}
+          </span>
+        </p>
+      ) : null}
+
+      {data?.unmatched.references ? (
+        <p className="flex items-start gap-1.5 text-[11px] text-muted">
+          <AlertTriangle className="mt-px size-3.5 shrink-0" />
+          <span>
+            {data.unmatched.references.toLocaleString()} reference
+            {data.unmatched.references === 1 ? "" : "s"} in the payment ledger
+            match no client here
+            {data.unmatched.emails
+              ? `, ${data.unmatched.emails.toLocaleString()} of them an email address rather than a CU reference — the payment reader falls back to the customer's email when the payload carries no reference`
+              : ""}
+            . Their deposits are counted above as unverified, and some of them
+            will not be.
+          </span>
+        </p>
       ) : null}
 
       {data && data.currencies.length > 1 ? (
