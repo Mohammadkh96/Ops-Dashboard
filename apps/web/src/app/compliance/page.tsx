@@ -8,6 +8,7 @@ import { PageHeader } from "@/components/ui/page-header";
 import { SyncProvider } from "@/components/compliance/sync-provider";
 import { ByBrand, entityName } from "@/components/compliance/by-brand";
 import { ByCountry } from "@/components/compliance/by-country";
+import { ByLookup } from "@/components/compliance/by-lookup";
 import { StatTileRow, type Stat } from "@/components/ui/stat-tile";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { FilterBar } from "@/components/ui/filter-bar";
@@ -485,6 +486,10 @@ function Kyc() {
           cards raise — 44% against 89% is either the form or the applicants,
           and the applicants differ by jurisdiction. */}
       <ByCountry from={start} to={end} account={entity} />
+      {/* Beside the jurisdictions rather than above the table: these rows are
+          not verifications, and putting them near the entity cards is what
+          stops somebody reading the two totals as one. */}
+      <ByLookup from={start} to={end} account={entity} />
       <SyncProvider from={start} to={end} account={entity} />
 
       <div className="flex flex-col gap-4">

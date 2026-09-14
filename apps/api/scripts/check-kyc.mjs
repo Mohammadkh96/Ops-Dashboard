@@ -899,8 +899,12 @@ async function run() {
          a.verifications === 2 && b.verifications === 2,
          { a: a.verifications, b: b.verifications });
       // Every row lands in exactly one line, so the split cannot lose any.
+      // VERIFICATIONS PLUS LOOKUPS, since the two are counted apart: a paid
+      // check with no applicant — an Aadhaar number being validated — is not a
+      // person who was verified, and the day they were added together is the
+      // day this sum stopped meaning anything.
       ok('so the lines still add up to the whole table',
-         byForm.reduce((n, f) => n + f.verifications, 0)
+         byForm.reduce((n, f) => n + f.verifications + f.lookups, 0)
            === (await prisma.kycCase.count()));
     }
 
@@ -1262,6 +1266,65 @@ async function run() {
       ok('so nothing is marked as asked', stillPending === pending, { stillPending, pending });
       ok('and the remaining count is honest', r.remaining === pending, r);
       Object.assign(process.env, before);
+    }
+
+    section('a number validated is not a person verified');
+    {
+      // MEASURED, AND IT OVERTURNS THE PROVIDER'S LABEL. Saint Lucia's report
+      // carries hundreds of rows filed under `service: KYB` that are not
+      // companies at all: no applicant, no form, UNKNOWN method, one check —
+      // IN_AADHAAR_CARD_NUMBER, NG_NIN_NUMBER, MX_CURP. They are national id
+      // services called directly during onboarding. Inside the pass rate they
+      // flattered it AND hid their own failures.
+      const day = '2027-02-02';
+      await kyc.importVerifications([
+        // Two people, one passing and one failing.
+        v({ id: 'p-ok', ref: 'CU5001', applicant: 'app-5001', status: 'VALID',
+            at: day + 'T09:00:00Z', price: 0.85 }),
+        v({ id: 'p-bad', ref: 'CU5002', applicant: 'app-5002', status: 'INVALID',
+            at: day + 'T09:05:00Z', price: 0.85, reasons: ['Wrong name'] }),
+        // Three lookups: no applicant at all, one check each, one failing.
+        { verificationId: 'l-1', applicantId: null, externalApplicantId: null,
+          status: 'VALID', at: new Date(day + 'T09:10:00Z'), form: null,
+          method: 'UNKNOWN', declineReasons: [], priceEur: 0.8,
+          processingMin: 0, service: 'KYB', checks: ['IN_AADHAAR_CARD_NUMBER'] },
+        { verificationId: 'l-2', applicantId: null, externalApplicantId: null,
+          status: 'INVALID', at: new Date(day + 'T09:11:00Z'), form: null,
+          method: 'UNKNOWN', declineReasons: [], priceEur: 0.8,
+          processingMin: 0, service: 'KYB', checks: ['IN_AADHAAR_CARD_NUMBER'] },
+        { verificationId: 'l-3', applicantId: null, externalApplicantId: null,
+          status: 'VALID', at: new Date(day + 'T09:12:00Z'), form: null,
+          method: 'UNKNOWN', declineReasons: [], priceEur: 0.5,
+          processingMin: 0, service: 'KYB', checks: ['NG_NIN_NUMBER'] },
+      ]);
+
+      const w = { from: day, to: day };
+      const sum = await kyc.summary(w);
+      ok('the headline counts people, not lookups', sum.verifications === 2, sum.verifications);
+      // 1 approved of 2 decided. With the lookups folded in it would read 3 of
+      // 4 — a pass rate lifted by rows that were never a person.
+      const by = Object.fromEntries(sum.byStatus.map((x) => [x.status, x.count]));
+      ok('and so does the status breakdown',
+         by.APPROVED === 1 && by.REJECTED === 1, by);
+      // Spend is the exception and on purpose: a lookup is still money out.
+      ok('while spend still counts every euro',
+         Math.abs(sum.spentEur - (0.85 + 0.85 + 0.8 + 0.8 + 0.5)) < 0.001, sum.spentEur);
+
+      const aadhaar = sum.lookups.find((l) => l.check === 'IN_AADHAAR_CARD_NUMBER');
+      const nin = sum.lookups.find((l) => l.check === 'NG_NIN_NUMBER');
+      ok('the lookups are reported on their own', sum.lookups.length === 2, sum.lookups);
+      ok('with what failed, which nothing showed before',
+         aadhaar.rows === 2 && aadhaar.invalid === 1, aadhaar);
+      ok('and what they cost', Math.abs(aadhaar.spentEur - 1.6) < 0.001, aadhaar);
+      ok('a service that passed reports no failures',
+         nin.rows === 1 && nin.invalid === 0, nin);
+
+      // The entity cards read from the same split.
+      const cards = await kyc.byForm(w);
+      const people = cards.reduce((n, c) => n + c.verifications, 0);
+      const looked = cards.reduce((n, c) => n + c.lookups, 0);
+      ok('the cards count verifications and lookups apart',
+         people === 2 && looked === 3, { people, looked });
     }
 
     section('what the direct reader refuses');

@@ -155,6 +155,23 @@ function Card({
             €{e.spentEur.toLocaleString(undefined, { maximumFractionDigits: 2 })}
           </span>
         </span>
+        {/* NOT VERIFICATIONS, and no longer counted as any. These are national
+            id numbers being validated — Aadhaar, NIN, CURP — with no applicant
+            and one check each. Inside the pass rate above they flattered it and
+            hid their own failures; beside it they are a cost line that says
+            what it is. */}
+        {e.lookups ? (
+          <span>
+            Lookups{" "}
+            <span className="tnum text-muted-foreground">
+              {e.lookups.toLocaleString()}
+            </span>
+            <span className="text-muted">
+              {" "}
+              · €{e.lookupEur.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+            </span>
+          </span>
+        ) : null}
         {/* Kept and counted, never dropped: an application abandoned before it
             reached an account still cost money and still carries a reason. */}
         {e.unlinked ? (

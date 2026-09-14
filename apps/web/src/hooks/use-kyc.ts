@@ -46,10 +46,20 @@ export type KycFormBreakdown = {
    * folded into an entity that may not have produced it.
    */
   form: string | null;
+  /** PEOPLE checked. National-id lookups are counted separately below. */
   verifications: number;
   byStatus: Record<string, number>;
   spentEur: number;
   unlinked: number;
+  /**
+   * Paid checks with no subject — an Aadhaar or NIN number being validated.
+   *
+   * Split out because they are not verifications: they have no applicant, no
+   * form and one check each, and inside the pass rate they both flattered it
+   * and hid their own failures.
+   */
+  lookups: number;
+  lookupEur: number;
 };
 
 export type KycSummary = {
@@ -67,6 +77,14 @@ export type KycSummary = {
    * reached, so it climbs as the backlog is walked.
    */
   failedChecks: { check: string; count: number }[];
+  /**
+   * The national-id services, with what failed.
+   *
+   * `IN_AADHAAR_CARD_NUMBER`, `NG_NIN_NUMBER`, `MX_CURP` — numbers validated
+   * during onboarding, not people verified. `invalid` is the number that did
+   * not validate, which nothing showed before.
+   */
+  lookups: { check: string; rows: number; invalid: number; spentEur: number }[];
   spentEur: number;
   averageMinutes: number | null;
   /** Clients who needed more than one attempt, and the worst case. */

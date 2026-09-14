@@ -392,6 +392,34 @@ function narrowApplicant(a: Record<string, unknown>) {
   };
 }
 
+/**
+ * A PERSON BEING VERIFIED, versus a number being validated.
+ *
+ * MEASURED, AND IT OVERTURNS THE PROVIDER'S OWN LABEL. Saint Lucia's report
+ * carries 453 rows in a fortnight that KYCAID files under `service: KYB` — and
+ * not one of them is a company. Every one has no applicant, no form, `UNKNOWN`
+ * method, and exactly one check: `IN_AADHAAR_CARD_NUMBER`,
+ * `IN_DIGILOCKER_EAADHAAR`, `IN_DRIVING_LICENSE`, `NG_NIN_NUMBER`, `MX_CURP`.
+ * They are the national-id services — `/services/in/aadhaar`,
+ * `/services/ng/nin`, `/services/mx/curp` — called directly during onboarding
+ * for Indian, Nigerian and Mexican clients. The provider's own console does not
+ * list them at all, because a verification list is organised by applicant and
+ * these have none.
+ *
+ * So the split is on THE APPLICANT, not on `service`. A row with an applicant
+ * is a person who was checked; a row without one is a paid lookup with no
+ * subject. That rule is evidence rather than vocabulary, and it survives the
+ * provider relabelling things — which it has already done once here.
+ *
+ * Why it matters beyond tidiness: those 453 rows sat inside Saint Lucia's pass
+ * rate, and 92 of them FAILED — 88 Aadhaar numbers and 4 Nigerian NINs that did
+ * not validate, a 44% failure rate on Aadhaar — with nothing on any screen
+ * saying so. Averaged into a verification pass rate they are invisible in both
+ * directions: they flatter the rate, and their own failures disappear.
+ */
+const VERIFICATIONS: Prisma.KycCaseWhereInput = { applicantId: { not: null } };
+const LOOKUPS: Prisma.KycCaseWhereInput = { applicantId: null };
+
 function windowWhere(w: KycWindow = {}): Prisma.KycCaseWhereInput {
   const where: Prisma.KycCaseWhereInput = {};
   const account = (w.account ?? '').trim().toUpperCase();
@@ -1735,17 +1763,24 @@ export class KycService {
 
   private async breakdown(key: 'form' | 'account', window: KycWindow = {}) {
     const scope = windowWhere(window);
-    const [grouped, unlinked] = await Promise.all([
+    const [grouped, unlinked, lookups] = await Promise.all([
       this.prisma.kycCase.groupBy({
         by: [key, 'status'],
-        where: scope,
+        // VERIFICATIONS ONLY — see `LOOKUPS` for what this excludes and why.
+        where: { ...scope, ...VERIFICATIONS },
         _count: { _all: true },
         _sum: { priceEur: true },
       }),
       this.prisma.kycCase.groupBy({
         by: [key],
-        where: { ...scope, clientId: null },
+        where: { ...scope, ...VERIFICATIONS, clientId: null },
         _count: { _all: true },
+      }),
+      this.prisma.kycCase.groupBy({
+        by: [key],
+        where: { ...scope, ...LOOKUPS },
+        _count: { _all: true },
+        _sum: { priceEur: true },
       }),
     ]);
 
@@ -1759,6 +1794,9 @@ export class KycService {
         spentEur: number;
         /** Settled against no account of ours — see ImportResult.unlinked. */
         unlinked: number;
+        /** Paid checks with no subject, counted apart. See `LOOKUPS`. */
+        lookups: number;
+        lookupEur: number;
       }
     >();
     // A sentinel that no form name can collide with, written as an ESCAPE.
@@ -1775,6 +1813,8 @@ export class KycService {
         byStatus: {},
         spentEur: 0,
         unlinked: 0,
+        lookups: 0,
+        lookupEur: 0,
       };
       row.verifications += g._count._all;
       row.byStatus[g.status] = (row.byStatus[g.status] ?? 0) + g._count._all;
@@ -1786,6 +1826,25 @@ export class KycService {
         keyOf((u as Record<string, unknown>)[key] as string | null),
       );
       if (row) row.unlinked = u._count._all;
+    }
+    // The lookups make their own rows where an entity ran nothing else, which
+    // is the honest shape: a card reading "0 verifications, 453 lookups" says
+    // something true that a missing card does not.
+    for (const l of lookups) {
+      const value = (l as Record<string, unknown>)[key] as string | null;
+      const mapKey = keyOf(value);
+      const row = forms.get(mapKey) ?? {
+        form: value,
+        verifications: 0,
+        byStatus: {},
+        spentEur: 0,
+        unlinked: 0,
+        lookups: 0,
+        lookupEur: 0,
+      };
+      row.lookups = l._count._all;
+      row.lookupEur = l._sum.priceEur === null ? 0 : Number(l._sum.priceEur);
+      forms.set(mapKey, row);
     }
 
     return [...forms.values()].sort(
@@ -1800,16 +1859,29 @@ export class KycService {
    */
   async summary(window: KycWindow = {}) {
     const scope = windowWhere(window);
-    const [total, byStatus, byReason, byFailed, cost, repeats] =
+    const [total, byStatus, byReason, byFailed, cost, repeats, lookupRows] =
       await Promise.all([
-        this.prisma.kycCase.count({ where: scope }),
+        /**
+         * VERIFICATIONS, not rows.
+         *
+         * The headline used to count everything the table held, which on Saint
+         * Lucia meant several hundred national-id lookups presented as people
+         * who had been verified. A tile labelled Verifications must count
+         * verifications; the lookups are reported below, with their own
+         * failures, where they can be read for what they are.
+         */
+        this.prisma.kycCase.count({ where: { ...scope, ...VERIFICATIONS } }),
         this.prisma.kycCase.groupBy({
           by: ['status'],
-          where: scope,
+          where: { ...scope, ...VERIFICATIONS },
           _count: { _all: true },
         }),
         this.prisma.kycCase.findMany({
-          where: { ...scope, NOT: { declineReasons: { isEmpty: true } } },
+          where: {
+            ...scope,
+            ...VERIFICATIONS,
+            NOT: { declineReasons: { isEmpty: true } },
+          },
           select: { declineReasons: true },
         }),
         /**
@@ -1822,9 +1894,21 @@ export class KycService {
          * enriched.
          */
         this.prisma.kycCase.findMany({
-          where: { ...scope, NOT: { failedChecks: { isEmpty: true } } },
+          where: {
+            ...scope,
+            ...VERIFICATIONS,
+            NOT: { failedChecks: { isEmpty: true } },
+          },
           select: { failedChecks: true },
         }),
+        /**
+         * SPEND IS EVERYTHING, deliberately — unlike the counts above.
+         *
+         * A lookup that validates an Aadhaar number is not a verification, but
+         * it is still money leaving the account, and a spend figure that
+         * quietly excluded four hundred euros a month would be the same mistake
+         * in the other direction.
+         */
         this.prisma.kycCase.aggregate({
           where: scope,
           _sum: { priceEur: true },
@@ -1832,8 +1916,19 @@ export class KycService {
         }),
         this.prisma.kycCase.groupBy({
           by: ['clientId'],
-          where: { ...scope, clientId: { not: null } },
+          where: { ...scope, ...VERIFICATIONS, clientId: { not: null } },
           _count: { _all: true },
+        }),
+        /**
+         * The paid checks with no subject, by what was actually checked.
+         *
+         * Read as rows rather than grouped in the database because the check
+         * type is an array column — one element on every one of these, but an
+         * array all the same, and `groupBy` cannot group by its contents.
+         */
+        this.prisma.kycCase.findMany({
+          where: { ...scope, ...LOOKUPS },
+          select: { checks: true, status: true, priceEur: true },
         }),
       ]);
 
@@ -1846,6 +1941,29 @@ export class KycService {
     for (const r of byFailed)
       for (const check of r.failedChecks)
         failed.set(check, (failed.get(check) ?? 0) + 1);
+
+    /**
+     * One line per national-id service, with its failures.
+     *
+     * THE FAILURES ARE THE POINT. 88 Aadhaar numbers and 4 Nigerian NINs came
+     * back INVALID in a fortnight — a 44% failure rate on Aadhaar — and until
+     * this existed they were averaged into a verification pass rate where
+     * nobody could see them. Either the CRM is sending malformed numbers or a
+     * lot of clients are submitting ones that do not validate, and both are
+     * somebody's job.
+     */
+    const lookups = new Map<
+      string,
+      { rows: number; invalid: number; spentEur: number }
+    >();
+    for (const r of lookupRows) {
+      const check = r.checks[0] ?? '(unspecified)';
+      const line = lookups.get(check) ?? { rows: 0, invalid: 0, spentEur: 0 };
+      line.rows++;
+      if (r.status === 'REJECTED') line.invalid++;
+      line.spentEur += r.priceEur === null ? 0 : Number(r.priceEur);
+      lookups.set(check, line);
+    }
 
     const retried = repeats.filter((r) => r._count._all > 1);
     return {
@@ -1878,6 +1996,21 @@ export class KycService {
         cost._avg.processingMin === null
           ? null
           : Math.round(cost._avg.processingMin * 10) / 10,
+      /**
+       * The national-id lookups, apart from the verifications.
+       *
+       * A number being validated is not a person being checked: these have no
+       * applicant, no form and one check each, and counting them as
+       * verifications both flattered the pass rate and hid their own failures.
+       */
+      lookups: [...lookups.entries()]
+        .map(([check, l]) => ({
+          check,
+          rows: l.rows,
+          invalid: l.invalid,
+          spentEur: Math.round(l.spentEur * 100) / 100,
+        }))
+        .sort((a, b) => b.rows - a.rows),
       /** Clients who needed more than one attempt, and the worst case. */
       clientsRetried: retried.length,
       mostAttempts: retried.reduce((m, r) => Math.max(m, r._count._all), 0),
