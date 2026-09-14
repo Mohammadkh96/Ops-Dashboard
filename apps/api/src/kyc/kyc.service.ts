@@ -2,6 +2,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 
 import { Prisma } from '../../generated/prisma/client';
 import { isSettledState } from '../paymaxis/normalize';
+import { detectKycIncidents } from './kyc-detect';
 import { PrismaService } from '../prisma/prisma.service';
 import type { KycaidAccount } from './kycaid.client';
 import {
@@ -1588,6 +1589,160 @@ export class KycService {
         .map(([status, clients]) => ({ status, clients }))
         .sort((a, b) => b.clients - a.clients),
     };
+  }
+
+  /**
+   * The KYC conditions worth raising, measured now.
+   *
+   * The queries; the rules are in `kyc-detect.ts` where they can be checked
+   * against fixtures without a database. They join the payment detections on
+   * the Incidents screen rather than getting one of their own — the desk works
+   * one list, and the quieter of two pages is the one nobody opens.
+   *
+   * NEVER THROWS. This is called from a screen that is mostly about payments,
+   * and a KYC query that fails must cost the payment detections nothing: the
+   * caller gets an empty list and the rest of the page is unaffected.
+   */
+  async detections() {
+    try {
+      const now = new Date();
+      const recentFrom = new Date(now.getTime() - 7 * 86_400_000);
+      const baseFrom = new Date(now.getTime() - 37 * 86_400_000);
+      const in30 = new Date(now.getTime() + 30 * 86_400_000);
+
+      const [newest, byAccount, lookupRows, expired, within30, money] =
+        await Promise.all([
+          this.prisma.kycCase.aggregate({ _max: { submittedAt: true } }),
+          // Recent and baseline in one pass: the detector compares an account
+          // against ITSELF, so both windows have to come back per account.
+          this.prisma.kycCase.groupBy({
+            by: ['account', 'status'],
+            where: {
+              ...VERIFICATIONS,
+              submittedAt: { gte: baseFrom },
+              status: { in: ['APPROVED', 'REJECTED'] },
+            },
+            _count: { _all: true },
+          }),
+          this.prisma.kycCase.findMany({
+            where: { ...LOOKUPS, submittedAt: { gte: recentFrom } },
+            select: { checks: true, status: true },
+          }),
+          this.prisma.client.count({
+            where: {
+              kycStatus: 'APPROVED',
+              kycCases: {
+                some: { status: 'APPROVED', documentExpiry: { lt: now } },
+              },
+            },
+          }),
+          this.prisma.client.count({
+            where: {
+              kycStatus: 'APPROVED',
+              kycCases: {
+                some: {
+                  status: 'APPROVED',
+                  documentExpiry: { gte: now, lt: in30 },
+                },
+              },
+            },
+          }),
+          this.exposure({
+            from: recentFrom.toISOString().slice(0, 10),
+            to: now.toISOString().slice(0, 10),
+          }),
+        ]);
+
+      /**
+       * Recent against baseline, per account.
+       *
+       * The grouped rows cover the whole 37 days, so the recent window has to
+       * be asked for separately — one more query rather than arithmetic on a
+       * window that does not decompose.
+       */
+      const recentRows = await this.prisma.kycCase.groupBy({
+        by: ['account', 'status'],
+        where: {
+          ...VERIFICATIONS,
+          submittedAt: { gte: recentFrom },
+          status: { in: ['APPROVED', 'REJECTED'] },
+        },
+        _count: { _all: true },
+      });
+
+      const accounts = new Map<
+        string,
+        {
+          account: string;
+          recentApproved: number;
+          recentRejected: number;
+          baseApproved: number;
+          baseRejected: number;
+        }
+      >();
+      const bucket = (label: string | null) => {
+        const key = label ?? '(unattributed)';
+        const row = accounts.get(key) ?? {
+          account: key,
+          recentApproved: 0,
+          recentRejected: 0,
+          baseApproved: 0,
+          baseRejected: 0,
+        };
+        accounts.set(key, row);
+        return row;
+      };
+      for (const g of byAccount) {
+        const row = bucket(g.account);
+        if (g.status === 'APPROVED') row.baseApproved += g._count._all;
+        else row.baseRejected += g._count._all;
+      }
+      for (const g of recentRows) {
+        const row = bucket(g.account);
+        if (g.status === 'APPROVED') row.recentApproved += g._count._all;
+        else row.recentRejected += g._count._all;
+        // The 37-day group INCLUDES the recent week, so the baseline is what
+        // is left after taking it out — otherwise a collapse is compared
+        // against a period containing the collapse.
+        if (g.status === 'APPROVED') row.baseApproved -= g._count._all;
+        else row.baseRejected -= g._count._all;
+      }
+
+      const lookups = new Map<
+        string,
+        { check: string; run: number; failed: number }
+      >();
+      for (const r of lookupRows) {
+        const check = r.checks[0] ?? '(unspecified)';
+        const line = lookups.get(check) ?? { check, run: 0, failed: 0 };
+        line.run++;
+        if (r.status === 'REJECTED') line.failed++;
+        lookups.set(check, line);
+      }
+
+      return detectKycIncidents({
+        now,
+        configured: kycaidConfigured(),
+        newestAt: newest._max.submittedAt,
+        accounts: [...accounts.values()],
+        lookups: [...lookups.values()],
+        expired: { clients: expired, within30 },
+        unverified: {
+          clients: money.clients.length,
+          amount: money.uncheckedEur,
+          /**
+           * What makes it an incident rather than a figure on a panel.
+           *
+           * Tunable, because the right number is a business decision and not a
+           * technical one: a thousand of anything is a lot at one broker and
+           * noise at another.
+           */
+          threshold: Number(process.env.KYC_UNVERIFIED_ALERT ?? 1000),
+        },
+      });
+    } catch {
+      return [];
+    }
   }
 
   /**

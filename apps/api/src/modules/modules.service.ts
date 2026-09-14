@@ -14,6 +14,7 @@ import {
 } from '../paymaxis/normalize';
 import { parseInstant, type TimeRange } from '../common/range';
 import { countryNames, formLabel } from '../kyc/kycaid.client';
+import { KycService } from '../kyc/kyc.service';
 import {
   GROUP_LABELS,
   PAYMENT_FIELDS,
@@ -51,7 +52,10 @@ import { buildSuccessRate, type SuccessRow } from './success-rate';
 export class ModulesService {
   private readonly log = new Logger(ModulesService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly kyc: KycService,
+  ) {}
 
   private readonly clients = [
     '#48213',
@@ -1807,15 +1811,26 @@ export class ModulesService {
         null as { _max: { occurredAt: Date | null } } | null,
       ),
     ]);
-    if (!rows.length && !last?._max.occurredAt) return [];
-    return detectIncidents({
-      rows,
-      now,
-      lastEventAt: last?._max.occurredAt ?? null,
-      pollConfigured: Boolean((process.env.PAYMAXIS_SHOPS ?? '').trim()),
-      settled: isSettledState,
-      failed: isFailedState,
-    });
+    /**
+     * BOTH SIDES, always — including when the payment ledger is empty.
+     *
+     * The early return that used to sit here left with no detections at all if
+     * no payments had arrived, which would have silenced every KYC condition
+     * on a quiet morning. A verification queue that has stopped moving is news
+     * whether or not anybody deposited.
+     */
+    const payments =
+      rows.length || last?._max.occurredAt
+        ? detectIncidents({
+            rows,
+            now,
+            lastEventAt: last?._max.occurredAt ?? null,
+            pollConfigured: Boolean((process.env.PAYMAXIS_SHOPS ?? '').trim()),
+            settled: isSettledState,
+            failed: isFailedState,
+          })
+        : [];
+    return [...payments, ...(await this.kyc.detections())];
   }
 
   private incidentView(n: {

@@ -32,7 +32,20 @@ export type DetectionKind =
   | 'decline-spike'
   | 'stuck-in-flight'
   | 'data-stopped'
-  | 'double-charge';
+  | 'double-charge'
+  /**
+   * The KYC side, raised by `kyc-detect.ts` and carried on the same screen.
+   *
+   * One list, because the desk works one list: a PSP failing and a
+   * verification queue that stopped moving are the same kind of event, and
+   * splitting them across two pages means the quieter one is the one nobody
+   * opens.
+   */
+  | 'kyc-stalled'
+  | 'kyc-pass-drop'
+  | 'kyc-lookup-failing'
+  | 'kyc-documents-expired'
+  | 'kyc-unverified-funding';
 
 /**
  * One of the payments the detection is about.

@@ -81,6 +81,7 @@ async function run() {
   const { ModulesService, codesFor } = require_(
     '../dist/src/modules/modules.service',
   );
+  const { detectKycIncidents } = require_('../dist/src/kyc/kyc-detect');
 
   const app = await createApp();
   await app.init();
@@ -1412,6 +1413,94 @@ async function run() {
       ok('and the verified ones are not on that list',
          !e.clients.some((c) => c.reference === 'CU7001'), e.clients);
       ok('one currency, so the totals mean something', e.currencies.join() === 'EUR', e.currencies);
+    }
+
+    section('the conditions worth raising');
+    {
+      const now = new Date('2027-05-10T12:00:00Z');
+      const hoursAgo = (h) => new Date(now.getTime() - h * 3600_000);
+      const base = {
+        now, configured: true, newestAt: hoursAgo(2), accounts: [], lookups: [],
+        expired: { clients: 0, within30: 0 },
+        unverified: { clients: 0, amount: 0, threshold: 1000 },
+      };
+      const find = (d, sig) => d.find((x) => x.signature === sig);
+
+      // A QUIET NIGHT IS NOT AN INCIDENT. The unattended floor is a DAILY cron
+      // — the plan refuses anything finer — so twelve hours of silence is
+      // normal and paging anybody about it would train the desk to ignore this
+      // whole screen.
+      ok('a quiet night raises nothing',
+         detectKycIncidents({ ...base, newestAt: hoursAgo(20) }).length === 0);
+      ok('a day and a half of silence does',
+         Boolean(find(detectKycIncidents({ ...base, newestAt: hoursAgo(40) }), 'kyc-stalled')));
+      ok('and so does never having read anything',
+         Boolean(find(detectKycIncidents({ ...base, newestAt: null }), 'kyc-stalled')));
+      // No token, nothing to be stalled about.
+      ok('with no token configured there is no stall to report',
+         detectKycIncidents({ ...base, configured: false, newestAt: null }).length === 0);
+      // Everything downstream reads the same rows, so a stall suppresses the
+      // rest: a pass rate that has not moved because nothing arrived is a
+      // reporting failure, not a change in outcomes.
+      ok('a stall suppresses the rules that read the same rows',
+         detectKycIncidents({
+           ...base, newestAt: null,
+           lookups: [{ check: 'IN_AADHAAR_CARD_NUMBER', run: 100, failed: 90 }],
+         }).length === 1);
+
+      // AGAINST ITSELF, never against the other entity. Mauritius runs six
+      // checks and Saint Lucia four, so MU sitting at 39% for ever is a policy
+      // difference — a fixed threshold would page the desk about it hourly.
+      const steady = { account: 'MU', recentApproved: 39, recentRejected: 61,
+                       baseApproved: 390, baseRejected: 610 };
+      ok('a low pass rate that has always been low is not an incident',
+         !find(detectKycIncidents({ ...base, accounts: [steady] }), 'kyc-pass-drop'));
+      const fell = { account: 'SL', recentApproved: 30, recentRejected: 70,
+                     baseApproved: 850, baseRejected: 150 };
+      const drop = find(detectKycIncidents({ ...base, accounts: [fell] }), 'kyc-pass-drop:SL');
+      ok('a rate that has fallen away from its own baseline is', Boolean(drop), drop?.title);
+      ok('and a 55-point fall is high, not medium', drop.severity === 'high', drop?.severity);
+      // Small numbers are noise. Four of six is 67% and means nothing.
+      ok('too few decided to be news raises nothing',
+         !find(detectKycIncidents({ ...base, accounts: [{ account: 'SL',
+            recentApproved: 2, recentRejected: 4, baseApproved: 850,
+            baseRejected: 150 }] }), 'kyc-pass-drop:SL'));
+
+      // The real one: 88 of 199 Aadhaar numbers failed to validate.
+      const aad = find(detectKycIncidents({ ...base,
+        lookups: [{ check: 'IN_AADHAAR_CARD_NUMBER', run: 199, failed: 88 }] }),
+        'kyc-lookup-failing:IN_AADHAAR_CARD_NUMBER');
+      ok('a national-id service failing 44% is raised', Boolean(aad), aad?.title);
+      ok('and it is high, because it is paid for per attempt',
+         aad.severity === 'high', aad?.severity);
+      ok('a service failing rarely is not raised',
+         !find(detectKycIncidents({ ...base,
+           lookups: [{ check: 'NG_NIN_NUMBER', run: 100, failed: 5 }] }),
+           'kyc-lookup-failing:NG_NIN_NUMBER'));
+
+      ok('a handful of expired documents is not an incident',
+         !find(detectKycIncidents({ ...base, expired: { clients: 3, within30: 9 } }),
+           'kyc-documents-expired'));
+      ok('a bookful of them is',
+         Boolean(find(detectKycIncidents({ ...base,
+           expired: { clients: 40, within30: 12 } }), 'kyc-documents-expired')));
+
+      // The join, as an incident: money from people nobody checked.
+      const funded = find(detectKycIncidents({ ...base,
+        unverified: { clients: 11, amount: 40_000, threshold: 1000 } }),
+        'kyc-unverified-funding');
+      ok('money from unverified clients is critical', funded.severity === 'critical', funded?.severity);
+      ok('and the figure is in the title', /40,000/.test(funded.title), funded?.title);
+      ok('under the threshold it stays a panel figure, not an incident',
+         !find(detectKycIncidents({ ...base,
+           unverified: { clients: 1, amount: 200, threshold: 1000 } }),
+           'kyc-unverified-funding'));
+      // Signatures are stable across runs, so declaring one twice reopens the
+      // same incident rather than making a second.
+      ok('signatures are stable for the same condition',
+         find(detectKycIncidents({ ...base, unverified: { clients: 11,
+           amount: 41_000, threshold: 1000 } }), 'kyc-unverified-funding').signature
+           === funded.signature);
     }
 
     section('what the direct reader refuses');
