@@ -171,6 +171,26 @@ export class KycController {
   }
 
   /**
+   * How much money was moved by people who were never checked.
+   *
+   * The join this integration exists for, asked as a figure rather than as a
+   * list of clients: settled deposits grouped by the payer's KYC standing, with
+   * the unverified, the rejected and the lapsed named individually. "Eleven
+   * clients have no verification" is a note; "eleven clients funded €40,000
+   * with no verification" is a decision somebody has to take today.
+   */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Get('exposure')
+  exposure(
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('account') account?: string,
+  ) {
+    return this.kyc.exposure({ from, to, account });
+  }
+
+  /**
    * Which trading clients have no verification on record.
    *
    * The join this integration was built for, and the one question no screen

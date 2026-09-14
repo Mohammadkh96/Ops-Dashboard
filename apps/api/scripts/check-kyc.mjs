@@ -1353,6 +1353,67 @@ async function run() {
          people === 2 && looked === 3, { people, looked });
     }
 
+    section('money, by whether the payer was ever checked');
+    {
+      // THE QUESTION THE JOIN WAS BUILT FOR. The CU reference is on every
+      // verification and on every payment, and until now it only produced a
+      // clickable number. Not "how many clients are unverified" — how much the
+      // unverified ones funded.
+      const day = '2027-03-03';
+      await kyc.importVerifications([
+        v({ id: 'ex-ok', ref: 'CU7001', applicant: 'app-7001', status: 'VALID',
+            at: day + 'T08:00:00Z' }),
+        v({ id: 'ex-bad', ref: 'CU7002', applicant: 'app-7002', status: 'INVALID',
+            at: day + 'T08:01:00Z', reasons: ['Wrong name'] }),
+      ]);
+
+      const pay = (n) => ({
+        provider: 'paymaxis', source: 'poll', dedupeKey: n.key,
+        state: n.state ?? 'COMPLETED', type: n.type ?? 'DEPOSIT',
+        amount: n.amount, currency: 'EUR', customer: n.ref,
+        paymentId: n.key, occurredAt: new Date(day + 'T09:00:00Z'),
+        headers: {}, payload: {},
+      });
+      await prisma.paymentEvent.createMany({ data: [
+        pay({ key: 'px-1', ref: 'CU7001', amount: 100 }),
+        pay({ key: 'px-2', ref: 'CU7002', amount: 250 }),
+        // Nobody has ever verified CU7003 — the row this exists to surface.
+        pay({ key: 'px-3', ref: 'CU7003', amount: 400 }),
+        // A declined attempt is not funding.
+        pay({ key: 'px-4', ref: 'CU7003', amount: 900, state: 'DECLINED' }),
+        // Neither is a withdrawal.
+        pay({ key: 'px-5', ref: 'CU7003', amount: 50, type: 'WITHDRAWAL' }),
+        // The same payment seen twice, at two states. Counted ONCE, at its
+        // latest — the rule every other figure on this dashboard follows.
+        pay({ key: 'px-6a', ref: 'CU7002', amount: 70, state: 'PENDING' }),
+      ] });
+      await prisma.paymentEvent.create({ data: {
+        ...pay({ key: 'px-6b', ref: 'CU7002', amount: 70 }),
+        paymentId: 'px-6a',
+        occurredAt: new Date(day + 'T09:30:00Z'),
+      } });
+
+      const e = await kyc.exposure({ from: day, to: day });
+      const by = Object.fromEntries(e.byStanding.map((r) => [r.standing, r]));
+      ok('a verified client funds the approved line', by.approved.amount === 100, by.approved);
+      ok('a rejected client is counted apart, not folded in',
+         by.rejected.amount === 320, by.rejected);
+      ok('and somebody with no verification at all has a line of their own',
+         by.none.amount === 400, by.none);
+      // 250 + 70 + 400 — the declined attempt and the withdrawal excluded.
+      ok('the headline is what the unchecked funded', e.uncheckedEur === 720, e.uncheckedEur);
+      ok('a declined deposit is an attempt, not funding',
+         e.byStanding.every((r) => r.amount !== 900), e.byStanding);
+      ok('a payment seen twice is counted once, at its latest state',
+         by.rejected.deposits === 2, by.rejected);
+      // A total nobody can act on is a total nobody acts on.
+      ok('the clients behind it are named, worst first',
+         e.clients[0].reference === 'CU7003' && e.clients[0].amount === 400, e.clients[0]);
+      ok('and the verified ones are not on that list',
+         !e.clients.some((c) => c.reference === 'CU7001'), e.clients);
+      ok('one currency, so the totals mean something', e.currencies.join() === 'EUR', e.currencies);
+    }
+
     section('what the direct reader refuses');
     {
       let msg = '';

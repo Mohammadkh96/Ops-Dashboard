@@ -378,6 +378,45 @@ export function useEnrich() {
   });
 }
 
+/**
+ * Money, grouped by whether the person who moved it was ever checked.
+ *
+ * The join this integration was built for. Five standings — approved, pending,
+ * rejected, expired, none — and the last three are the ones somebody has to act
+ * on. `expired` is an approval whose document has since lapsed, which no screen
+ * anywhere showed until the document dates were stored.
+ */
+export type KycExposure = {
+  from: string | null;
+  to: string | null;
+  byStanding: {
+    standing: string;
+    clients: number;
+    deposits: number;
+    amount: number;
+  }[];
+  /** Settled deposits from clients who are not currently verified. */
+  uncheckedEur: number;
+  /** Those clients by name, worst first — a work list, capped at fifty. */
+  clients: {
+    reference: string;
+    standing: string;
+    deposits: number;
+    amount: number;
+  }[];
+  /** More than one means the totals are summing unlike things — say so. */
+  currencies: string[];
+};
+
+export function useKycExposure(window: KycWindow = {}) {
+  const query = windowQuery(window);
+  return useQuery<KycExposure>({
+    queryKey: ["kyc-exposure", query],
+    queryFn: () => apiFetch<KycExposure>(`/kyc/exposure${query}`),
+    staleTime: 60_000,
+  });
+}
+
 export function useKycCoverage() {
   return useQuery<KycCoverage>({
     queryKey: ["kyc-coverage"],

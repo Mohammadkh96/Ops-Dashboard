@@ -9,6 +9,7 @@ import { SyncProvider } from "@/components/compliance/sync-provider";
 import { ByBrand, entityName } from "@/components/compliance/by-brand";
 import { ByCountry } from "@/components/compliance/by-country";
 import { ByLookup } from "@/components/compliance/by-lookup";
+import { Exposure } from "@/components/compliance/exposure";
 import { StatTileRow, type Stat } from "@/components/ui/stat-tile";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { FilterBar } from "@/components/ui/filter-bar";
@@ -503,6 +504,10 @@ function Kyc() {
           whether each brand is loaded, not how to load it. Clicking one opens
           that entity's desk — the table below it narrows to that account. */}
       <ByBrand from={start} to={end} selected={entity} onSelect={openEntity} />
+      {/* Directly under the entity cards, because it is the question those
+          cards raise and cannot answer: a pass rate says how many were
+          checked, this says what the unchecked ones funded. */}
+      <Exposure from={start} to={end} account={entity} />
       {/* Under the entity cards and above the fetch control: it reads the same
           period and the same entity, and it is the answer to the question the
           cards raise — 44% against 89% is either the form or the applicants,

@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 
 import { Prisma } from '../../generated/prisma/client';
+import { isSettledState } from '../paymaxis/normalize';
 import { PrismaService } from '../prisma/prisma.service';
 import type { KycaidAccount } from './kycaid.client';
 import {
@@ -1586,6 +1587,210 @@ export class KycService {
       byStatus: [...counts.entries()]
         .map(([status, clients]) => ({ status, clients }))
         .sort((a, b) => b.clients - a.clients),
+    };
+  }
+
+  /**
+   * MONEY, BY WHETHER THE PERSON WHO MOVED IT WAS EVER CHECKED.
+   *
+   * This is the question the whole integration was built to answer and the one
+   * nothing has asked yet. `external_applicant_id` is the CRM's account
+   * reference, it is on every verification and on every payment, and until now
+   * it has only been used to put a clickable CU number in a table. The join it
+   * makes possible is this: not how many clients are unverified, but how much
+   * money the unverified ones moved.
+   *
+   * FIVE STANDINGS, and the last two are the findings:
+   *
+   *   approved   — checked and passed
+   *   pending    — a check is running or waiting on the desk
+   *   rejected   — CHECKED AND REFUSED, and still funding an account
+   *   expired    — passed, but the document it relied on has since lapsed
+   *   none       — money moved by somebody with no verification on record
+   *
+   * `expired` is the one no compliance screen anywhere has shown: an approval
+   * from eighteen months ago against a passport that ran out in March is not a
+   * current verification, and nothing in this system was watching for it until
+   * the document dates were stored.
+   *
+   * SETTLED DEPOSITS ONLY, and one row per payment at its latest state. A
+   * declined deposit is an attempt, not funding; a payment counted twice
+   * because it arrived PENDING and again COMPLETED would overstate the very
+   * number this exists to raise.
+   */
+  async exposure(window: KycWindow = {}) {
+    const from = readDay(window.from);
+    const to = readDay(window.to);
+    const gte = from ? new Date(from + 'T00:00:00.000Z') : undefined;
+    const lt = to ? new Date(to + 'T00:00:00.000Z') : undefined;
+    if (lt) lt.setUTCDate(lt.getUTCDate() + 1);
+
+    const [events, clients] = await Promise.all([
+      this.prisma.paymentEvent.findMany({
+        where: {
+          customer: { not: null },
+          ...(gte || lt
+            ? { occurredAt: { ...(gte ? { gte } : {}), ...(lt ? { lt } : {}) } }
+            : {}),
+        },
+        select: {
+          id: true,
+          paymentId: true,
+          reference: true,
+          customer: true,
+          amount: true,
+          currency: true,
+          state: true,
+          type: true,
+          entity: true,
+          psp: true,
+          occurredAt: true,
+          receivedAt: true,
+        },
+        // The same ceiling the other payment reads use. A window is the
+        // ordinary way to ask this; the whole ledger is not.
+        take: 50_000,
+      }),
+      this.prisma.client.findMany({
+        where: { externalId: { not: null } },
+        select: { externalId: true, kycStatus: true },
+      }),
+    ]);
+
+    // One entry per payment at its latest state — the same rule every other
+    // figure on this dashboard uses, for the same reason.
+    const latest = new Map<string, (typeof events)[number]>();
+    for (const e of events) {
+      const key = e.paymentId || e.reference || e.id;
+      const prev = latest.get(key);
+      const at = (x: (typeof events)[number]) =>
+        (x.occurredAt ?? x.receivedAt).getTime();
+      if (!prev || at(e) > at(prev)) latest.set(key, e);
+    }
+
+    const standing = new Map(
+      clients.map((c) => [c.externalId as string, c.kycStatus as string]),
+    );
+
+    /**
+     * Whose document has lapsed, from the verification that approved them.
+     *
+     * Asked of the APPROVED rows only. A rejected client's expired passport
+     * changes nothing about their standing, and the query is a scan either way.
+     */
+    const expired = new Set<string>();
+    const today = new Date();
+    const approvedRefs = clients
+      .filter((c) => c.kycStatus === 'APPROVED')
+      .map((c) => c.externalId as string);
+    if (approvedRefs.length) {
+      const lapsed = await this.prisma.kycCase.findMany({
+        where: {
+          status: 'APPROVED',
+          documentExpiry: { not: null, lt: today },
+          client: { externalId: { in: approvedRefs } },
+        },
+        select: { client: { select: { externalId: true } } },
+      });
+      for (const l of lapsed)
+        if (l.client?.externalId) expired.add(l.client.externalId);
+    }
+
+    type Bucket = {
+      standing: string;
+      clients: Set<string>;
+      deposits: number;
+      amount: number;
+    };
+    const buckets = new Map<string, Bucket>();
+    const worst = new Map<
+      string,
+      { reference: string; standing: string; deposits: number; amount: number }
+    >();
+
+    for (const e of latest.values()) {
+      if (!isSettledState(e.state ?? '')) continue;
+      const kind = (e.type ?? '').toUpperCase();
+      // Deposits only: a withdrawal leaving an unverified account is a
+      // different question, and a refund is not funding at all.
+      if (/REFUND|WITHDRAW|PAYOUT/.test(kind)) continue;
+
+      const ref = e.customer as string;
+      const held = standing.get(ref);
+      const label = !held
+        ? 'none'
+        : held === 'APPROVED' && expired.has(ref)
+          ? 'expired'
+          : held.toLowerCase();
+
+      const bucket = buckets.get(label) ?? {
+        standing: label,
+        clients: new Set<string>(),
+        deposits: 0,
+        amount: 0,
+      };
+      bucket.clients.add(ref);
+      bucket.deposits++;
+      bucket.amount += Math.abs(e.amount);
+      buckets.set(label, bucket);
+
+      if (label === 'approved' || label === 'pending') continue;
+      // Named individually, because "€40,000 from unverified clients" is a
+      // number somebody has to act on one client at a time.
+      const w = worst.get(ref) ?? {
+        reference: ref,
+        standing: label,
+        deposits: 0,
+        amount: 0,
+      };
+      w.deposits++;
+      w.amount += Math.abs(e.amount);
+      worst.set(ref, w);
+    }
+
+    const rows = [...buckets.values()]
+      .map((b) => ({
+        standing: b.standing,
+        clients: b.clients.size,
+        deposits: b.deposits,
+        amount: Math.round(b.amount * 100) / 100,
+      }))
+      .sort((a, b) => b.amount - a.amount);
+
+    const unchecked = rows
+      .filter((r) => r.standing !== 'approved' && r.standing !== 'pending')
+      .reduce((n, r) => n + r.amount, 0);
+
+    return {
+      from: from ?? null,
+      to: to ?? null,
+      byStanding: rows,
+      /** Settled deposits from clients who are not currently verified. */
+      uncheckedEur: Math.round(unchecked * 100) / 100,
+      /**
+       * The clients behind that figure, worst first.
+       *
+       * Capped at fifty: this is a work list, and a list nobody can finish is
+       * one nobody starts.
+       */
+      clients: [...worst.values()]
+        .map((w) => ({ ...w, amount: Math.round(w.amount * 100) / 100 }))
+        .sort((a, b) => b.amount - a.amount)
+        .slice(0, 50),
+      /**
+       * Whether the currency column can be trusted to be one currency.
+       *
+       * Amounts are summed as they are stored. Where a ledger holds more than
+       * one currency that total is a nonsense, and saying so beats printing a
+       * euro sign over it.
+       */
+      currencies: [
+        ...new Set(
+          [...latest.values()].map((e) => (e.currency ?? '').toUpperCase()),
+        ),
+      ]
+        .filter(Boolean)
+        .sort(),
     };
   }
 
