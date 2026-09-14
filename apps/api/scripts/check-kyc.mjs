@@ -1503,6 +1503,78 @@ async function run() {
            === funded.signature);
     }
 
+    section('the analytics screen, measured rather than drawn');
+    {
+      // THREE OF ITS FOUR PANELS WERE INVENTED and the page said so: success
+      // history "needs more data than has been collected", country volume
+      // "needs a customer country the payment provider does not send". Both
+      // were true when written and neither is now.
+      const modules = app.get(ModulesService);
+      const day = '2027-04-04';
+      await kyc.importVerifications([
+        v({ id: 'an-1', ref: 'CU8001', applicant: 'app-8001', status: 'VALID',
+            at: day + 'T08:00:00Z', price: 0.85 }),
+        v({ id: 'an-2', ref: 'CU8002', applicant: 'app-8002', status: 'INVALID',
+            at: day + 'T08:30:00Z', price: 0.85, reasons: ['Wrong name'] }),
+      ]);
+      // The country comes from the verification, which is the whole point.
+      await prisma.kycCase.updateMany({
+        where: { verificationId: 'an-1' }, data: { country: 'PH' },
+      });
+      const pay = (n) => ({
+        provider: 'paymaxis', source: 'poll', dedupeKey: n.key,
+        state: n.state ?? 'COMPLETED', type: 'DEPOSIT', amount: n.amount,
+        currency: 'EUR', customer: n.ref, paymentId: n.key,
+        occurredAt: new Date(day + 'T10:00:00Z'), headers: {}, payload: {},
+      });
+      await prisma.paymentEvent.createMany({ data: [
+        pay({ key: 'an-p1', ref: 'CU8001', amount: 500 }),
+        pay({ key: 'an-p2', ref: 'CU8001', amount: 300 }),
+        pay({ key: 'an-p3', ref: 'CU8002', amount: 200, state: 'DECLINED' }),
+        // A client the KYC side has never seen: their money counts, their
+        // geography does not exist, and the coverage figure must say so.
+        pay({ key: 'an-p4', ref: 'CU8099', amount: 1000 }),
+      ] });
+
+      // A WEEK, so the buckets are days. A window of a day or two switches to
+      // hours — a month of hourly buckets is 720 points on a 600-pixel chart,
+      // where the shape drawn is the renderer's and not the data's.
+      const from = new Date('2027-04-01T00:00:00Z');
+      const to = new Date('2027-04-07T23:59:59Z');
+      const a = await modules.analytics({ from, to });
+      ok('a week is bucketed by day', a.bucket === 'day', a.bucket);
+      const hourly = await modules.analytics({
+        from: new Date(day + 'T00:00:00Z'),
+        to: new Date(day + 'T23:59:59Z'),
+      });
+      ok('and a single day by hour', hourly.bucket === 'hour', hourly.bucket);
+
+      ok('the success rate is of the decided ones', a.payments.successRate === 75,
+         a.payments.successRate);
+      ok('and the volume is settled deposits only', a.payments.volume === 1800,
+         a.payments.volume);
+      ok('the pass rate is measured on the same window', a.kyc.passRate === 50, a.kyc.passRate);
+      // Per APPROVED client, not per verification: a client verified four
+      // times costs four times, and per-verification hides exactly that.
+      ok('cost is per approved client, failures included',
+         a.kyc.costPerApproved === 1.7, a.kyc.costPerApproved);
+      ok('both sides share one set of buckets', a.series.length === 1, a.series.length);
+      const s0 = a.series[0];
+      ok('and the bucket is the day itself', s0.label === day, s0.label);
+      ok('so a day carries its payments and its verifications together',
+         s0.settled === 3 && s0.failed === 1 && s0.approved === 1 && s0.rejected === 1, s0);
+
+      // The geography the payment provider never sent.
+      const ph = a.byCountry.find((c) => c.country === 'PH');
+      ok('volume by country comes from the verification', ph.volume === 800, ph);
+      ok('a client with no verification has no country',
+         !a.byCountry.some((c) => c.volume === 1000), a.byCountry);
+      // A chart over 44% of the money that looks like all of it is the kind of
+      // picture decisions get made on.
+      ok('and the screen is told what share it covers', a.countryCoverage === 44,
+         a.countryCoverage);
+    }
+
     section('what the direct reader refuses');
     {
       let msg = '';

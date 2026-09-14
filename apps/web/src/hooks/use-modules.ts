@@ -154,6 +154,73 @@ export const useKycCaseCount = (opts: KycCaseQuery = {}) =>
     `/compliance/kyc/count${kycQuery({ ...opts, limit: undefined, offset: undefined })}`,
     { total: kycCases.length },
   );
+/**
+ * Every series the analytics screen draws, measured from real rows.
+ *
+ * One request for both sides: payments and verifications cut on the same
+ * buckets, so a dip in the pass rate can be read against the deposits of the
+ * same afternoon rather than against a chart with its own axis.
+ */
+export type Analytics = {
+  from: string;
+  to: string;
+  bucket: "hour" | "day";
+  payments: {
+    settled: number;
+    failed: number;
+    /** Of the DECIDED ones. A pending payment has neither succeeded nor failed. */
+    successRate: number | null;
+    volume: number;
+    /** More than one and the volume figures are adding unlike things. */
+    currencies: string[];
+  };
+  kyc: {
+    approved: number;
+    rejected: number;
+    passRate: number | null;
+    spentEur: number;
+    /** Including the failed attempts — four tries to verify one person cost four times. */
+    costPerApproved: number | null;
+  };
+  series: {
+    label: string;
+    settled: number;
+    failed: number;
+    successRate: number | null;
+    volume: number;
+    approved: number;
+    rejected: number;
+    passRate: number | null;
+    kycSpentEur: number;
+  }[];
+  /** Geography the payment provider never sent, from the one that verifies. */
+  byCountry: {
+    country: string;
+    name: string | null;
+    deposits: number;
+    volume: number;
+  }[];
+  /** What share of the volume could be placed in a country at all. */
+  countryCoverage: number;
+};
+
+export const useAnalytics = () =>
+  useApi<Analytics>(
+    "analytics",
+    "/analytics",
+    {
+      from: "",
+      to: "",
+      bucket: "day" as const,
+      payments: { settled: 0, failed: 0, successRate: null, volume: 0, currencies: [] },
+      kyc: { approved: 0, rejected: 0, passRate: null, spentEur: 0, costPerApproved: null },
+      series: [],
+      byCountry: [],
+      countryCoverage: 0,
+    },
+    { ranged: true },
+  );
+
 export const useIncidents = () => useApi<Incident[]>("incidents", "/incidents", incidents);
 
 type OperationsData = { tickets: Ticket[]; team: Operator[]; shiftChecklist: ChecklistItem[] };

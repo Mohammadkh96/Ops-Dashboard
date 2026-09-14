@@ -155,6 +155,24 @@ export class ModulesController {
     return this.modules.paymentStats(type, parseRange({ range, from, to }));
   }
 
+  /**
+   * Every series the analytics screen draws, measured.
+   *
+   * Three of its four panels used to be invented, and in live mode the page
+   * hid them behind a note: success history needed more data than had been
+   * collected, country volume needed a customer country the payment provider
+   * does not send. Both are now untrue — there are months of events, and the
+   * country arrives on every KYCAID verification.
+   */
+  @Get('analytics')
+  analytics(
+    @Query('range') range?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.modules.analytics(parseRange({ range, from, to }));
+  }
+
   @Get('gateways')
   gateways(
     @Query('range') range?: string,

@@ -7,7 +7,7 @@ import { StatTileRow, type Stat } from "@/components/ui/stat-tile";
 import { cn } from "@/lib/utils";
 import { isDemoMode } from "@/lib/api";
 import { useDashboardSummary } from "@/hooks/use-dashboard";
-import { useGateways } from "@/hooks/use-modules";
+import { useAnalytics, useGateways } from "@/hooks/use-modules";
 import {
   ApprovalsDeclinesChart,
   GatewayPerformanceChart,
@@ -137,6 +137,70 @@ export default function AnalyticsPage() {
     ? liveGateways.map((g) => ({ gateway: g.name, rate: g.successRate }))
     : [];
 
+  /**
+   * The series that used to be missing, and the note that used to explain why.
+   *
+   * Success history was said to need more data than had been collected, and
+   * country volume a customer country the payment provider does not send.
+   * There are months of events now, and the country arrives on every KYCAID
+   * verification — the same join that put a CU reference beside a payment also
+   * supplies the geography the payment side never had.
+   */
+  const { data: measured } = useAnalytics();
+  const hhmm = (label: string) =>
+    label.length > 10 ? label.slice(11, 16) : label.slice(5);
+
+  const liveSuccess: SuccessPoint[] = measured.series
+    .filter((p) => p.successRate !== null)
+    .map((p) => ({ label: hhmm(p.label), rate: p.successRate as number }));
+
+  const liveApprovals: ApprovalPoint[] = measured.series
+    .filter((p) => p.settled + p.failed > 0)
+    .map((p) => ({
+      label: hhmm(p.label),
+      approvals: p.settled,
+      declines: p.failed,
+    }));
+
+  /** Named where the provider's list could be read; the code otherwise. */
+  const liveCountries: CountryPoint[] = measured.byCountry.map((c) => ({
+    country: c.name ?? c.country,
+    volume: Math.round(c.volume),
+  }));
+
+  /**
+   * KYC beside the payments, because the two are the same business.
+   *
+   * Cost per APPROVED client rather than per verification: a client verified
+   * four times costs four times, and a per-verification figure is precisely
+   * the one that hides it.
+   */
+  const kycKpis: Stat[] = live
+    ? [
+        {
+          label: "KYC pass rate",
+          value: measured.kyc.passRate === null ? "—" : `${measured.kyc.passRate}%`,
+          tone: "green",
+          delta: {
+            text: `${measured.kyc.approved.toLocaleString()} approved, ${measured.kyc.rejected.toLocaleString()} rejected`,
+            positive: (measured.kyc.passRate ?? 0) >= 70,
+          },
+        },
+        {
+          label: "Cost per approved client",
+          value:
+            measured.kyc.costPerApproved === null
+              ? "—"
+              : `€${measured.kyc.costPerApproved.toFixed(2)}`,
+          tone: "orange",
+          delta: {
+            text: `€${measured.kyc.spentEur.toLocaleString(undefined, { maximumFractionDigits: 0 })} spent on checks`,
+            positive: true,
+          },
+        },
+      ]
+    : [];
+
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
@@ -162,20 +226,34 @@ export default function AnalyticsPage() {
         }
       />
 
-      <StatTileRow stats={live ? liveKpis : kpis} />
+      <StatTileRow stats={live ? [...liveKpis, ...kycKpis] : kpis} />
 
       <div className="grid gap-4 lg:grid-cols-2">
-        {live ? null : <SuccessRateChart data={successRate} />}
-        {live ? null : <ApprovalsDeclinesChart data={approvals} />}
+        <SuccessRateChart data={live ? liveSuccess : successRate} />
+        <ApprovalsDeclinesChart data={live ? liveApprovals : approvals} />
         <GatewayPerformanceChart data={live ? livePspRates : gateways} />
-        {live ? null : <VolumeByCountryChart data={countries} />}
+        <VolumeByCountryChart data={live ? liveCountries : countries} />
       </div>
 
-      {live ? (
+      {/* WHAT THE GEOGRAPHY IS DRAWN OVER. The country comes from the KYC side,
+          so a client nobody has verified has none — and a chart covering 60% of
+          the money while looking like all of it is the kind of picture
+          decisions get made on. */}
+      {live && measured.byCountry.length ? (
         <p className="text-xs text-muted">
-          Success-rate history and volume by country are not shown: the first
-          needs more history than has been collected, the second needs a
-          customer country the payment provider does not send.
+          Country is taken from the verification that assessed each client, so
+          the geography covers {measured.countryCoverage}% of settled deposit
+          volume — the rest belongs to clients with no verification on record.
+          {measured.payments.currencies.length > 1
+            ? ` The ledger holds ${measured.payments.currencies.join(", ")} in this period and these volumes add them together.`
+            : ""}
+        </p>
+      ) : null}
+      {live && !measured.byCountry.length ? (
+        <p className="text-xs text-muted">
+          Volume by country is empty: it is taken from the verification that
+          assessed each client, and none of the clients who deposited in this
+          period have a verification on record.
         </p>
       ) : null}
     </div>

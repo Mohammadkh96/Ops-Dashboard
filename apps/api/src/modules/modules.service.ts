@@ -922,6 +922,291 @@ export class ModulesService {
    * Latency and webhook failures are reported as zero because nothing measures
    * them yet; they are not guessed at.
    */
+  /**
+   * The analytics screen, measured — every series on it from real rows.
+   *
+   * THREE OF ITS FOUR PANELS WERE INVENTED, and the page knew it: in live mode
+   * it drew the gateway chart and hid the rest behind a note saying success
+   * history needed more data than had been collected and country volume needed
+   * a customer country the payment provider does not send. Both are now
+   * untrue. There are months of payment events, and the country arrives on
+   * every KYCAID verification — which is the join doing work a second time:
+   * the provider that verifies people also supplies the geography the payment
+   * provider never had.
+   *
+   * ONE ROW PER PAYMENT AT ITS LATEST STATE, as everywhere else. A payment seen
+   * PENDING and again COMPLETED is one payment, and a success rate computed
+   * over raw events counts the same deposit twice on the way to being right.
+   *
+   * KYC AND PAYMENTS SHARE THE BUCKETS. Both series are cut on the same days,
+   * so a dip in the pass rate can be read against the deposits of the same
+   * afternoon rather than against a chart with its own axis.
+   */
+  async analytics(range: TimeRange) {
+    const days = Math.max(
+      1,
+      Math.round((range.to.getTime() - range.from.getTime()) / 86_400_000),
+    );
+    /**
+     * Hours for a day or two, days beyond that.
+     *
+     * A month of hourly buckets is 720 points on a chart 600 pixels wide: the
+     * shape it draws is the renderer's, not the data's.
+     */
+    const hourly = days <= 2;
+    const key = (at: Date) =>
+      hourly
+        ? at.toISOString().slice(0, 13) + ':00'
+        : at.toISOString().slice(0, 10);
+
+    const [events, kycRows, countryRows] = await Promise.all([
+      this.safe(
+        () =>
+          this.prisma.paymentEvent.findMany({
+            where: this.inRange(range),
+            select: {
+              id: true,
+              paymentId: true,
+              reference: true,
+              customer: true,
+              state: true,
+              type: true,
+              amount: true,
+              currency: true,
+              psp: true,
+              occurredAt: true,
+              receivedAt: true,
+            },
+            take: 50_000,
+          }),
+        [] as {
+          id: string;
+          paymentId: string | null;
+          reference: string | null;
+          customer: string | null;
+          state: string | null;
+          type: string | null;
+          amount: number;
+          currency: string | null;
+          psp: string | null;
+          occurredAt: Date | null;
+          receivedAt: Date;
+        }[],
+      ),
+      this.safe(
+        () =>
+          this.prisma.kycCase.findMany({
+            where: {
+              submittedAt: { gte: range.from, lte: range.to },
+              applicantId: { not: null },
+              status: { in: ['APPROVED', 'REJECTED'] },
+            },
+            select: { status: true, priceEur: true, submittedAt: true },
+          }),
+        [] as { status: string; priceEur: unknown; submittedAt: Date }[],
+      ),
+      /**
+       * The country of each client, from the verification that assessed it.
+       *
+       * Newest first and first-wins, so a client who has been checked twice
+       * carries the jurisdiction of the most recent check rather than whichever
+       * row the database happened to return.
+       */
+      this.safe(
+        () =>
+          this.prisma.kycCase.findMany({
+            where: { clientId: { not: null }, country: { not: null } },
+            select: {
+              country: true,
+              client: { select: { externalId: true } },
+            },
+            orderBy: { submittedAt: 'desc' },
+            take: 50_000,
+          }),
+        [] as {
+          country: string | null;
+          client: { externalId: string | null } | null;
+        }[],
+      ),
+    ]);
+
+    const latest = new Map<string, (typeof events)[number]>();
+    for (const e of events) {
+      const k = e.paymentId || e.reference || e.id;
+      const prev = latest.get(k);
+      const at = (x: (typeof events)[number]) =>
+        (x.occurredAt ?? x.receivedAt).getTime();
+      if (!prev || at(e) > at(prev)) latest.set(k, e);
+    }
+
+    const byRef = new Map<string, string>();
+    for (const r of countryRows) {
+      const ref = r.client?.externalId;
+      if (ref && r.country && !byRef.has(ref)) byRef.set(ref, r.country);
+    }
+
+    const buckets = new Map<
+      string,
+      { label: string; settled: number; failed: number; volume: number }
+    >();
+    const countries = new Map<string, { deposits: number; volume: number }>();
+    const currencies = new Set<string>();
+    let settled = 0;
+    let failed = 0;
+    let volume = 0;
+
+    for (const e of latest.values()) {
+      const at = e.occurredAt ?? e.receivedAt;
+      const k = key(at);
+      const b = buckets.get(k) ?? {
+        label: k,
+        settled: 0,
+        failed: 0,
+        volume: 0,
+      };
+      const ok = isSettledState(e.state ?? '');
+      const bad = isFailedState(e.state ?? '');
+      if (ok) b.settled++;
+      if (bad) b.failed++;
+      if (ok) settled++;
+      if (bad) failed++;
+      if (e.currency) currencies.add(e.currency.toUpperCase());
+
+      const kind = (e.type ?? '').toUpperCase();
+      const isDeposit = !/REFUND|WITHDRAW|PAYOUT/.test(kind);
+      if (ok && isDeposit) {
+        const amount = Math.abs(e.amount);
+        b.volume += amount;
+        volume += amount;
+        // Geography the payment provider never sent, from the one that
+        // verifies the same people. Unknown stays unknown: a client the KYC
+        // side has never seen is not assigned to a country.
+        const country = e.customer ? byRef.get(e.customer) : undefined;
+        if (country) {
+          const c = countries.get(country) ?? { deposits: 0, volume: 0 };
+          c.deposits++;
+          c.volume += amount;
+          countries.set(country, c);
+        }
+      }
+      buckets.set(k, b);
+    }
+
+    const kycBuckets = new Map<
+      string,
+      { label: string; approved: number; rejected: number; spentEur: number }
+    >();
+    let approved = 0;
+    let rejected = 0;
+    let spent = 0;
+    for (const r of kycRows) {
+      const k = key(r.submittedAt);
+      const b = kycBuckets.get(k) ?? {
+        label: k,
+        approved: 0,
+        rejected: 0,
+        spentEur: 0,
+      };
+      if (r.status === 'APPROVED') {
+        b.approved++;
+        approved++;
+      } else {
+        b.rejected++;
+        rejected++;
+      }
+      const price = r.priceEur === null ? 0 : Number(r.priceEur);
+      b.spentEur += price;
+      spent += price;
+      kycBuckets.set(k, b);
+    }
+
+    const names = await countryNames();
+    const decided = settled + failed;
+    const kycDecided = approved + rejected;
+
+    return {
+      from: range.from.toISOString(),
+      to: range.to.toISOString(),
+      bucket: hourly ? ('hour' as const) : ('day' as const),
+      payments: {
+        settled,
+        failed,
+        /** Of the DECIDED ones — a pending payment has not succeeded or failed. */
+        successRate: decided
+          ? Math.round((settled / decided) * 1000) / 10
+          : null,
+        volume: Math.round(volume * 100) / 100,
+        /** More than one and the volume figures are adding unlike things. */
+        currencies: [...currencies].sort(),
+      },
+      kyc: {
+        approved,
+        rejected,
+        passRate: kycDecided
+          ? Math.round((approved / kycDecided) * 1000) / 10
+          : null,
+        spentEur: Math.round(spent * 100) / 100,
+        /**
+         * What an approved client costs, including the ones who failed on the
+         * way — four attempts to verify one person is four times the price,
+         * and a cost-per-verification would hide exactly that.
+         */
+        costPerApproved: approved
+          ? Math.round((spent / approved) * 100) / 100
+          : null,
+      },
+      series: [...buckets.keys()]
+        .concat([...kycBuckets.keys()])
+        .filter((k, i, all) => all.indexOf(k) === i)
+        .sort()
+        .map((k) => {
+          const p = buckets.get(k);
+          const y = kycBuckets.get(k);
+          const d = (p?.settled ?? 0) + (p?.failed ?? 0);
+          const kd = (y?.approved ?? 0) + (y?.rejected ?? 0);
+          return {
+            label: k,
+            settled: p?.settled ?? 0,
+            failed: p?.failed ?? 0,
+            successRate: d
+              ? Math.round(((p?.settled ?? 0) / d) * 1000) / 10
+              : null,
+            volume: Math.round((p?.volume ?? 0) * 100) / 100,
+            approved: y?.approved ?? 0,
+            rejected: y?.rejected ?? 0,
+            passRate: kd
+              ? Math.round(((y?.approved ?? 0) / kd) * 1000) / 10
+              : null,
+            kycSpentEur: Math.round((y?.spentEur ?? 0) * 100) / 100,
+          };
+        }),
+      byCountry: [...countries.entries()]
+        .map(([country, c]) => ({
+          country,
+          name: names.names.get(country) ?? null,
+          deposits: c.deposits,
+          volume: Math.round(c.volume * 100) / 100,
+        }))
+        .sort((a, b) => b.volume - a.volume)
+        .slice(0, 12),
+      /**
+       * How much of the volume could be placed at all.
+       *
+       * The country comes from the KYC side, so a client who has never been
+       * verified has no country — and a geography chart drawn over 60% of the
+       * money while looking like all of it is the kind of picture that gets
+       * decisions made on it.
+       */
+      countryCoverage: volume
+        ? Math.round(
+            ([...countries.values()].reduce((n, c) => n + c.volume, 0) /
+              volume) *
+              100,
+          )
+        : 0,
+    };
+  }
+
   async gatewaysLive(range?: TimeRange) {
     const rows = await this.safe(
       () =>
