@@ -412,6 +412,14 @@ export type KycExposure = {
    * what has been synced. Neither is "this person was never checked", and a
    * compliance screen must not say so.
    */
+  /**
+   * Verifications carrying no account reference at all.
+   *
+   * The largest of the three reasons a verified client reads as unverified:
+   * the check happened and was paid for, and nothing in either system says
+   * whose it was.
+   */
+  unlinkedVerifications: number;
   unmatched: {
     references: number;
     emails: number;
@@ -446,6 +454,8 @@ export function useKycExposure(window: KycWindow = {}) {
 export type KycGaps = {
   from: string | null;
   to: string | null;
+  /** Nothing before this was ever fetched — not a gap, an edge. */
+  before?: string | null;
   days: number;
   held?: number;
   missing: string[];

@@ -185,6 +185,35 @@ export function Exposure({
         </p>
       ) : null}
 
+      {/* THE THIRD REASON, and the largest. A verification with no account
+          reference cannot be tied to anybody — the check happened, it was paid
+          for, and nothing in either system says whose it was. */}
+      {data?.unlinkedVerifications ? (
+        <p className="flex items-start gap-1.5 text-[11px] text-accent-orange">
+          <AlertTriangle className="mt-px size-3.5 shrink-0" />
+          <span>
+            {data.unlinkedVerifications.toLocaleString()} verification
+            {data.unlinkedVerifications === 1 ? "" : "s"} in this period carry no
+            account reference, so they cannot be matched to any client. A client
+            whose verification is one of them reads here as never checked — the
+            reference is set by whatever opens the KYCAID form, and something is
+            not sending it.
+          </span>
+        </p>
+      ) : null}
+
+      {gaps.data?.before ? (
+        <p className="flex items-start gap-1.5 text-[11px] text-muted">
+          <AlertTriangle className="mt-px size-3.5 shrink-0" />
+          <span>
+            Verification history begins on {gaps.data.before}. Anything before
+            that has never been fetched, so a client verified earlier appears
+            here as one with no verification — that is an edge rather than a
+            gap, and no gap check can report it.
+          </span>
+        </p>
+      ) : null}
+
       {data?.unmatched.references ? (
         <p className="flex items-start gap-1.5 text-[11px] text-muted">
           <AlertTriangle className="mt-px size-3.5 shrink-0" />

@@ -1973,6 +1973,27 @@ export class KycService {
         .sort((a, b) => b.amount - a.amount)
         .slice(0, 50),
       /**
+       * VERIFICATIONS THAT CARRY NO ACCOUNT REFERENCE AT ALL.
+       *
+       * The third way a verified client reads as unverified, and the largest.
+       * A verification with no `external_applicant_id` cannot be tied to
+       * anybody: the check happened, it was paid for, and nothing in either
+       * system says whose it was. Over a recent month that is a quarter of
+       * them.
+       *
+       * Counted over the same window as the deposits, because it is the direct
+       * explanation for the line above it — not a curiosity about the import.
+       */
+      unlinkedVerifications: await this.prisma.kycCase.count({
+        where: {
+          clientId: null,
+          applicantId: { not: null },
+          ...(gte || lt
+            ? { submittedAt: { ...(gte ? { gte } : {}), ...(lt ? { lt } : {}) } }
+            : {}),
+        },
+      }),
+      /**
        * The references that matched no client at all.
        *
        * Reported rather than folded into "no verification on record", because
@@ -2054,6 +2075,16 @@ export class KycService {
     return {
       from,
       to,
+      /**
+       * WHERE THE HISTORY BEGINS, which is a different fact from a gap.
+       *
+       * Nothing before this date was ever fetched, and no gap check can report
+       * it: there is no hole in a range that starts here. A client verified
+       * before it therefore has no verification in this database at all, which
+       * on the exposure panel reads as a client who was never checked. The
+       * screen has to say so, because the figure looks identical either way.
+       */
+      before: from,
       /** Days in that range, so "19 of 364" reads as a proportion. */
       days: missing.length + held.size,
       held: held.size,
