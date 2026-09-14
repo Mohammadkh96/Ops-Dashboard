@@ -2780,6 +2780,20 @@ export type KycCaseQuery = {
   expiringDays?: number;
   /** Only rows nobody has asked the provider about yet. */
   missingDetails?: boolean;
+  /**
+   * Which kind of row — people, lookups, or both.
+   *
+   * VERIFICATIONS BY DEFAULT, which is the whole point. Several hundred rows a
+   * fortnight are national-id numbers being validated: no applicant, no form,
+   * one check, filed by the provider under `KYB`. They belong in the ledger and
+   * in the spend, and they do not belong in a list of people awaiting a
+   * decision — a compliance officer scrolling this table is looking for
+   * clients, and every one of those rows is a row that is not one.
+   *
+   * Still reachable rather than deleted: "lookups" lists exactly them, and the
+   * National id checks panel counts them whatever this is set to.
+   */
+  rows?: 'verifications' | 'lookups' | 'all';
 };
 
 /**
@@ -2848,6 +2862,18 @@ function kycWhere(
   codes: string[] = [],
 ): Prisma.KycCaseWhereInput {
   const where: Prisma.KycCaseWhereInput = {};
+
+  /**
+   * People unless asked otherwise.
+   *
+   * The same rule the counts use — an applicant means a person was checked —
+   * so the table, the number above it and the tiles beside it cannot disagree
+   * about what a verification is. That they DID disagree is how several
+   * hundred Aadhaar lookups came to sit in a compliance queue.
+   */
+  if (opts.rows !== 'all') {
+    where.applicantId = opts.rows === 'lookups' ? null : { not: null };
+  }
 
   const status = (opts.status ?? '').trim().toUpperCase();
   if (status) {

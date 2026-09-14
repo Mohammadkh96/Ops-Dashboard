@@ -100,6 +100,15 @@ export type KycCaseQuery = {
   expiringDays?: number;
   /** Only rows the provider has never been asked about. */
   missingDetails?: boolean;
+  /**
+   * People, lookups, or both. People by default.
+   *
+   * National-id lookups — an Aadhaar or NIN number being validated — have no
+   * applicant and are not rows a compliance officer is scrolling for. They stay
+   * in the ledger, the spend and their own panel; they are simply not listed
+   * here unless asked for.
+   */
+  rows?: "verifications" | "lookups" | "all";
 };
 
 function kycQuery(o: KycCaseQuery): string {
@@ -117,6 +126,7 @@ function kycQuery(o: KycCaseQuery): string {
   if (o.country) p.set("country", o.country);
   if (o.expiringDays) p.set("expiringDays", String(o.expiringDays));
   if (o.missingDetails) p.set("missingDetails", "1");
+  if (o.rows && o.rows !== "verifications") p.set("rows", o.rows);
   const s = p.toString();
   return s ? `?${s}` : "";
 }

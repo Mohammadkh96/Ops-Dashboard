@@ -60,6 +60,19 @@ const EXPIRY_OPTIONS = [
   { label: "Within a year", value: "365" },
 ];
 
+/**
+ * What the table lists, and what "all" means.
+ *
+ * Blank is the default and lists PEOPLE. The national-id lookups — no
+ * applicant, no form, one check, filed by the provider under KYB — are counted
+ * in the panel above and in the spend, and listing them here put several
+ * hundred rows into a compliance queue that were never a client.
+ */
+const ROW_OPTIONS = [
+  { label: "National id lookups", value: "lookups" },
+  { label: "Everything", value: "all" },
+];
+
 /** How many rows one page of the table holds. */
 const PAGE_SIZE = 200;
 
@@ -180,6 +193,14 @@ function Kyc() {
   const [failedCheck, setFailedCheck] = useState("");
   const [reason, setReason] = useState("");
   const [expiring, setExpiring] = useState("");
+  /**
+   * Which kind of row the table lists. People, unless somebody asks.
+   *
+   * The lookups are not deleted and not hidden — they have their own panel
+   * above, they are counted in the spend, and this control lists them on
+   * demand. They are simply not what a compliance queue is for.
+   */
+  const [rows, setRows] = useState("");
 
   const query = {
     status,
@@ -191,6 +212,7 @@ function Kyc() {
     failedCheck: failedCheck || undefined,
     reason: reason || undefined,
     expiringDays: expiring ? Number(expiring) : undefined,
+    rows: (rows || undefined) as "lookups" | "all" | undefined,
   };
   const { data: kycCases, isLoading } = useKycCases({
     ...query,
@@ -514,6 +536,7 @@ function Kyc() {
               ? [{ label: "Reason", value: reason, onChange: refilter(setReason), options: reasonOptions }]
               : []),
             { label: "Doc expiry", value: expiring, onChange: refilter(setExpiring), options: EXPIRY_OPTIONS },
+            { label: "Rows", value: rows, onChange: refilter(setRows), options: ROW_OPTIONS },
             ...(entityOptions.length > 1
               ? [
                   {

@@ -186,6 +186,7 @@ export class ModulesController {
     @Query('country') country?: string,
     @Query('expiringDays') expiringDays?: string,
     @Query('missingDetails') missingDetails?: string,
+    @Query('rows') rows?: string,
   ) {
     return this.modules.kycCases({
       limit: limit ? Number(limit) : undefined,
@@ -202,6 +203,7 @@ export class ModulesController {
         country,
         expiringDays,
         missingDetails,
+        rows,
       }),
     });
   }
@@ -227,6 +229,7 @@ export class ModulesController {
     @Query('country') country?: string,
     @Query('expiringDays') expiringDays?: string,
     @Query('missingDetails') missingDetails?: string,
+    @Query('rows') rows?: string,
   ) {
     return this.modules.kycCaseCount({
       status,
@@ -241,6 +244,7 @@ export class ModulesController {
         country,
         expiringDays,
         missingDetails,
+        rows,
       }),
     });
   }
@@ -413,6 +417,7 @@ function kycFilters(q: {
   country?: string;
   expiringDays?: string;
   missingDetails?: string;
+  rows?: string;
 }) {
   const days = Number(q.expiringDays);
   return {

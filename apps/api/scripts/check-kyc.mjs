@@ -1319,6 +1319,32 @@ async function run() {
       ok('a service that passed reports no failures',
          nin.rows === 1 && nin.invalid === 0, nin);
 
+      // AND THE TABLE LISTS THE SAME THING THE COUNTS COUNT. Listing the
+      // lookups put several hundred rows into a compliance queue that were
+      // never a client — and a table that disagrees with the number above it
+      // is how that went unnoticed.
+      const modules = app.get(ModulesService);
+      const listed = await modules.kycCases({ from: day, to: day, limit: 50 });
+      ok('the table lists people, not lookups', listed.length === 2, listed.length);
+      ok('and its count agrees with it',
+         (await modules.kycCaseCount({ from: day, to: day })).total === 2);
+      // Not deleted — reachable on demand, because they are the record of what
+      // was paid for and of what failed to validate.
+      const onlyLookups = await modules.kycCases({
+        from: day, to: day, limit: 50, rows: 'lookups',
+      });
+      ok('the lookups are still listable on request', onlyLookups.length === 3,
+         onlyLookups.length);
+      const both = await modules.kycCases({
+        from: day, to: day, limit: 50, rows: 'all',
+      });
+      ok('and everything together is still five rows', both.length === 5, both.length);
+      // A typo must not widen a compliance table back out.
+      const typo = await modules.kycCases({
+        from: day, to: day, limit: 50, rows: 'peple',
+      });
+      ok('an unrecognised value falls back to people', typo.length === 2, typo.length);
+
       // The entity cards read from the same split.
       const cards = await kyc.byForm(w);
       const people = cards.reduce((n, c) => n + c.verifications, 0);
