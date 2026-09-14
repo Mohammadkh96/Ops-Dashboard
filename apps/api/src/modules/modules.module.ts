@@ -15,5 +15,9 @@ import { ModulesService } from './modules.service';
   imports: [AuthModule, KycModule],
   controllers: [ModulesController],
   providers: [ModulesService],
+  // Exported so the notifications layer can ask for the same detections the
+  // incident screen shows, rather than running a second set of rules that
+  // could disagree with it.
+  exports: [ModulesService],
 })
 export class ModulesModule {}

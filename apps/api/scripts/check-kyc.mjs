@@ -82,6 +82,9 @@ async function run() {
     '../dist/src/modules/modules.service',
   );
   const { detectKycIncidents } = require_('../dist/src/kyc/kyc-detect');
+  const { NotificationsService } = require_(
+    '../dist/src/notifications/notifications.service',
+  );
 
   const app = await createApp();
   await app.init();
@@ -1573,6 +1576,84 @@ async function run() {
       // picture decisions get made on.
       ok('and the screen is told what share it covers', a.countryCoverage === 44,
          a.countryCoverage);
+    }
+
+    section('telling the desk once, not four hundred times');
+    {
+      // THE HARD PART IS NOT SENDING, IT IS NOT SENDING AGAIN. The detectors
+      // run on every cron and every five minutes while somebody has the page
+      // open. A PSP failing since Tuesday is one thing that happened — an
+      // alerting layer that mails on every pass is one the desk filters into a
+      // folder within a week, and then believes is working.
+      const notify = app.get(NotificationsService);
+      const d = (over) => ({
+        signature: 'psp-failing:TestPSP', kind: 'psp-failing', severity: 'high',
+        title: 'TestPSP is failing', impact: 'Deposits are not completing.',
+        evidence: ['40 of 50 failed in the last hour.'], samples: [],
+        sampleTotal: 50, since: null, psp: 'TestPSP', ...over,
+      });
+
+      // No recipients: the notification still stands. The email is a delivery
+      // mechanism, not the record.
+      const first = await notify.record([d()], []);
+      ok('a new condition is recorded', first.created === 1, first);
+      ok('and nothing is emailed with nobody to email', first.emailed === 0, first);
+
+      const again = await notify.record([d()], []);
+      ok('the same condition again creates nothing', again.created === 0, again);
+      ok('it refreshes what is already there', again.refreshed === 1, again);
+      const rows = await prisma.notification.findMany({
+        where: { signature: 'psp-failing:TestPSP' },
+      });
+      ok('so the feed holds one row, not two', rows.length === 1, rows.length);
+      // Still true later means the clock moved, which is what the screen reads
+      // to say "still true as of" rather than "first seen".
+      ok('and its lastSeenAt moved', rows[0].lastSeenAt > rows[0].createdAt, rows[0]);
+
+      // A DIFFERENT condition is a different notification, even from the same
+      // detector: one PSP failing is not the other.
+      await notify.record([d({ signature: 'psp-failing:OtherPSP' })], []);
+      ok('a different signature is its own notification',
+         (await prisma.notification.count()) === 2);
+
+      // Severity decides what leaves the building, not what is recorded.
+      const before = process.env.NOTIFY_EMAIL_SEVERITY;
+      process.env.NOTIFY_EMAIL_SEVERITY = 'critical';
+      const low = await notify.record(
+        [d({ signature: 'decline-spike:TestPSP', severity: 'medium' })],
+        ['someone@example.com'],
+      );
+      ok('a medium condition is recorded', low.created === 1, low);
+      ok('but not emailed under a critical-only floor', low.emailed === 0, low);
+      const medium = await prisma.notification.findFirst({
+        where: { signature: 'decline-spike:TestPSP' },
+      });
+      ok('and it is not marked as emailed either', medium.emailedAt === null, medium?.emailedAt);
+      if (before === undefined) delete process.env.NOTIFY_EMAIL_SEVERITY;
+      else process.env.NOTIFY_EMAIL_SEVERITY = before;
+
+      // Unread is what the bell counts; reading is per row and in bulk.
+      const feed = await notify.list({});
+      ok('the feed carries an unread count', feed.unread === 3, feed.unread);
+      await notify.markRead([rows[0].id], 'checker@example.com');
+      ok('one can be read', (await notify.list({})).unread === 2);
+      await notify.markAllRead('checker@example.com');
+      ok('and the rest together', (await notify.list({})).unread === 0);
+      ok('while the notifications themselves remain',
+         (await prisma.notification.count()) === 3);
+
+      // A mailer that is not configured must SAY so. An alert that quietly
+      // never leaves the building is the failure this layer exists to avoid.
+      const unconfigured = await notify.record(
+        [d({ signature: 'stuck-in-flight', severity: 'critical' })],
+        ['someone@example.com'],
+      );
+      const stuck = await prisma.notification.findFirst({
+        where: { signature: 'stuck-in-flight' },
+      });
+      ok('an email that could not be sent is recorded as not sent',
+         stuck.emailedAt === null && Boolean(stuck.emailError), stuck?.emailError);
+      ok('and the caller is told why', Boolean(unconfigured.emailError), unconfigured);
     }
 
     section('what the direct reader refuses');

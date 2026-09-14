@@ -282,6 +282,16 @@ export class KycController {
       .catch((e: unknown) => ({
         error: e instanceof Error ? e.message : String(e),
       }));
+    /**
+     * NO NOTIFICATION PASS HERE, and the reason is structural rather than a
+     * preference. `ModulesService` owns the detections and already depends on
+     * this module for the KYC half of them, so a controller here asking it for
+     * them closes a circle that Nest refuses to build at boot.
+     *
+     * The unattended pass runs on the PAYMENT cron instead, which is scheduled
+     * after this one for exactly that reason: alerting on a KYC stall an hour
+     * before the sync that would have cleared it is a false alarm by design.
+     */
     return { ranAt: new Date().toISOString(), result, enriched };
   }
 }

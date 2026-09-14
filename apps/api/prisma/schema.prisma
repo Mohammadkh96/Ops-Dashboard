@@ -497,6 +497,55 @@ model KycCase {
   @@index([applicantFetchedAt])
 }
 
+/**
+ * Something the desk should be told about, and what was done to tell them.
+ *
+ * A ROW PER CONDITION, NOT PER CHECK. The detectors run on every cron and every
+ * time somebody opens the dashboard; a PSP that has been failing since Tuesday
+ * is one thing that happened, not four hundred. So a condition that is still
+ * true updates `lastSeenAt` on the notification it already has, and only a
+ * condition nobody has been told about in the cool-off window creates a new one
+ * and sends an email. The alternative — a row per pass — is a feed nobody
+ * reads, which is the same as no alerting at all with extra cost.
+ *
+ * THE EMAIL IS A DELIVERY MECHANISM, NOT THE RECORD. `emailedAt` and
+ * `emailError` are kept because "was anybody actually told" is a question that
+ * gets asked after an incident, and a mailer that is not configured must say so
+ * rather than silently doing nothing. The notification stands whether or not
+ * the mail went out.
+ */
+model Notification {
+  id String @id @default(cuid())
+
+  /// The detector's signature — stable across runs for the same condition.
+  signature String
+  /// `psp-failing`, `kyc-stalled`… the detection kind it came from.
+  kind      String
+  severity  String
+  title     String
+  /// The evidence, as lines, in the order a person would check them.
+  body      String[]
+  /// Which half of the business raised it: "payments" or "kyc".
+  source    String
+
+  createdAt  DateTime @default(now())
+  /// Last time the condition was still true. A sustained outage moves this
+  /// rather than making a second notification.
+  lastSeenAt DateTime @default(now())
+
+  emailedAt  DateTime?
+  emailTo    String[]
+  /// Why it did not send, in words. Null when it did, or was never attempted.
+  emailError String?
+
+  readAt DateTime?
+  readBy String?
+
+  @@index([createdAt])
+  @@index([signature])
+  @@index([readAt])
+}
+
 // ---------- Payments ----------
 
 model PaymentGateway {

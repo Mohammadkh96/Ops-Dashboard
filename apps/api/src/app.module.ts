@@ -9,6 +9,7 @@ import { HealthModule } from './health/health.module';
 import { AdminModule } from './admin/admin.module';
 import { PspsModule } from './psps/psps.module';
 import { KycModule } from './kyc/kyc.module';
+import { NotificationsModule } from './notifications/notifications.module';
 import { ModulesModule } from './modules/modules.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ReconModule } from './recon/recon.module';
@@ -30,6 +31,7 @@ import { UsersModule } from './users/users.module';
     AdminModule,
     PspsModule,
     KycModule,
+    NotificationsModule,
     ReconModule,
     LiveModule,
     WebhooksModule,

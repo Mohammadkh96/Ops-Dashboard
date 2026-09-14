@@ -11,12 +11,49 @@ import { ApiBearerAuth, ApiExcludeEndpoint, ApiTags } from '@nestjs/swagger';
 
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { assertCronSecret } from '../common/cron-secret';
+import { ModulesService } from '../modules/modules.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { PaymaxisService } from './paymaxis.service';
 
 @ApiTags('paymaxis')
 @Controller('paymaxis')
 export class PaymaxisController {
-  constructor(private readonly paymaxis: PaymaxisService) {}
+  constructor(
+    private readonly paymaxis: PaymaxisService,
+    private readonly modules: ModulesService,
+    private readonly notifications: NotificationsService,
+  ) {}
+
+  /**
+   * The unattended notification pass, and why it hangs off THIS cron.
+   *
+   * An alerting schedule of its own would be a fourth cron entry on a plan
+   * that refuses extras when the deployment is created — silently, with no
+   * failed build to notice, which has already cost this project three days. So
+   * it rides along with a job that already runs.
+   *
+   * This one rather than the KYC cron for two reasons. Structurally,
+   * `ModulesService` owns the detections and already depends on the KYC module
+   * for half of them, so asking for them from there closes a circle Nest
+   * refuses to build. Practically, this cron is scheduled AFTER the KYC sync —
+   * so the pass reads a freshly synced day rather than raising a stall that
+   * the sync an hour earlier had already cleared.
+   *
+   * Never throws: the sync's useful work is done by the time this runs, and a
+   * mailer outage must not turn a successful sync into a failed invocation
+   * that the platform then retries.
+   */
+  private async notifyQuietly() {
+    try {
+      const [detections, recipients] = await Promise.all([
+        this.modules.incidentDetections(),
+        this.modules.notifyRecipients(),
+      ]);
+      return await this.notifications.record(detections, recipients);
+    } catch (e) {
+      return { error: e instanceof Error ? e.message : String(e) };
+    }
+  }
 
   /**
    * Config and watermark state. Never exposes API keys.
@@ -204,9 +241,11 @@ export class PaymaxisController {
     const shops = this.paymaxis.shops;
     if (!shops.length)
       return { skipped: true, reason: 'PAYMAXIS_SHOPS is not configured' };
+    const results = await this.paymaxis.syncAll();
     return {
       ranAt: new Date().toISOString(),
-      results: await this.paymaxis.syncAll(),
+      results,
+      notified: await this.notifyQuietly(),
     };
   }
 }

@@ -2086,6 +2086,34 @@ export class ModulesService {
   }
 
   /** Conditions the payment data is reporting right now. */
+  /**
+   * Who an alert goes to.
+   *
+   * THE ACTIVE DESK, not a list in an environment variable. A hard-coded
+   * address is one that keeps mailing somebody six months after they left, and
+   * one that nobody updates when a new analyst joins — so an alert goes to the
+   * accounts that can actually sign in and act on it, the same set the shift
+   * handover already uses.
+   *
+   * Empty is a legitimate answer and the caller has to handle it: a deployment
+   * with no active users is one where nothing should be emailed to anybody,
+   * and inventing a recipient would be worse than sending nothing.
+   */
+  async notifyRecipients(): Promise<string[]> {
+    return this.safe(
+      async () =>
+        (
+          await this.prisma.user.findMany({
+            where: { isActive: true },
+            select: { email: true },
+          })
+        )
+          .map((u) => u.email)
+          .filter(Boolean),
+      [] as string[],
+    );
+  }
+
   async incidentDetections(): Promise<Detection[]> {
     const now = new Date();
     const [rows, last] = await Promise.all([
