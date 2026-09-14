@@ -83,6 +83,23 @@ export type KycCaseQuery = {
   /** `YYYY-MM-DD`, inclusive at both ends. */
   from?: string;
   to?: string;
+  /**
+   * The form's stored id (`12666`), not its name.
+   *
+   * The name is configuration applied on the way out, so filtering by it would
+   * break the day somebody renames a form in the provider's console.
+   */
+  form?: string;
+  /** A check the provider refused — DOCUMENT, ADDRESS, FACIAL… */
+  failedCheck?: string;
+  /** A decline reason, in the provider's own vocabulary. */
+  reason?: string;
+  /** Two letters. The jurisdiction the check was assessed against. */
+  country?: string;
+  /** Documents expiring within this many days, expired ones included. */
+  expiringDays?: number;
+  /** Only rows the provider has never been asked about. */
+  missingDetails?: boolean;
 };
 
 function kycQuery(o: KycCaseQuery): string {
@@ -94,6 +111,12 @@ function kycQuery(o: KycCaseQuery): string {
   if (o.account) p.set("account", o.account);
   if (o.from) p.set("from", o.from);
   if (o.to) p.set("to", o.to);
+  if (o.form) p.set("form", o.form);
+  if (o.failedCheck) p.set("failedCheck", o.failedCheck);
+  if (o.reason) p.set("reason", o.reason);
+  if (o.country) p.set("country", o.country);
+  if (o.expiringDays) p.set("expiringDays", String(o.expiringDays));
+  if (o.missingDetails) p.set("missingDetails", "1");
   const s = p.toString();
   return s ? `?${s}` : "";
 }

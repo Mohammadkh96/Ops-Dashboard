@@ -59,6 +59,14 @@ export type KycSummary = {
   byAccount: KycFormBreakdown[];
   byStatus: { status: string; count: number }[];
   declineReasons: { reason: string; count: number }[];
+  /**
+   * WHICH check failed, against how many verifications.
+   *
+   * The decline reasons beside it say why in the provider's words; this says
+   * which of the checks the form ran. Counts only rows the enrichment has
+   * reached, so it climbs as the backlog is walked.
+   */
+  failedChecks: { check: string; count: number }[];
   spentEur: number;
   averageMinutes: number | null;
   /** Clients who needed more than one attempt, and the worst case. */
@@ -303,6 +311,52 @@ export function useKycCountries(window: KycWindow = {}) {
     queryKey: ["kyc-countries", query],
     queryFn: () => apiFetch<KycCountries>(`/kyc/countries${query}`),
     staleTime: 5 * 60_000,
+  });
+}
+
+/**
+ * What one enrichment batch did, and how much is left.
+ *
+ * `remaining` rather than a percentage: the sync keeps adding verifications, so
+ * a denominator computed once would make the bar travel backwards.
+ */
+export type KycEnrichResult = {
+  considered: number;
+  checksRead: number;
+  applicantsRead: number;
+  /** Lookups that failed. Their rows stay unstamped and are tried again. */
+  failed: number;
+  remaining: number;
+  remainingBefore: number;
+  done: boolean;
+};
+
+/**
+ * Fill in which check failed and what was presented, one batch at a time.
+ *
+ * TWO REQUESTS PER VERIFICATION. Neither lookup can be asked in bulk, so forty
+ * thousand rows is eighty thousand requests — far past what one serverless
+ * invocation may spend. The endpoint therefore walks: newest first, never-asked
+ * only, budget per call. The caller loops until `done`, which is what makes the
+ * progress on screen real rather than decorative.
+ */
+export function useEnrich() {
+  const qc = useQueryClient();
+  return useMutation<
+    KycEnrichResult,
+    Error,
+    { from?: string; to?: string; account?: string; limit?: number }
+  >({
+    mutationFn: (body) =>
+      apiFetch<KycEnrichResult>("/kyc/enrich", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => {
+      // The table, the cards and the failed-check breakdown all change.
+      void qc.invalidateQueries({ queryKey: ["kyc-summary"] });
+      void qc.invalidateQueries({ predicate: (q) => String(q.queryKey[0]).startsWith("kyc") });
+    },
   });
 }
 

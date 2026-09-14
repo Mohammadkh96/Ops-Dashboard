@@ -1348,7 +1348,47 @@ export class ModulesService {
          * of this table and this is the only column that says so.
          */
         checks: c.checks,
+        /**
+         * WHICH CHECKS FAILED — not the same column, and the more useful one.
+         *
+         * `checks` says Profile, Document, Liveness ran; this says Document was
+         * the one the provider refused. Null rather than empty where nobody has
+         * asked yet: "no failed checks" and "never looked" must not render the
+         * same, or an un-enriched rejection reads as a clean pass.
+         */
+        failedChecks: c.checksFetchedAt ? c.failedChecks : null,
+        checkComments: c.checksFetchedAt ? c.checkComments : null,
+        /** Their own verdict, beside the one derived from decline reasons. */
+        providerVerified: c.providerVerified,
         declineReasons: c.declineReasons,
+        /**
+         * The person, now that the desk holds it.
+         *
+         * `taxIdNumber` and `walletAddress` are masked on the way out rather
+         * than on the screen: a value that never leaves the API cannot be
+         * copied out of a browser's network tab, and the desk's question is
+         * "does this match the document", which the last four answer.
+         */
+        applicantName: c.applicantName ?? null,
+        dob: c.dob ?? null,
+        email: c.email ?? null,
+        phone: c.phone ?? null,
+        taxIdNumber: maskTail(c.taxIdNumber),
+        walletAddress: maskTail(c.walletAddress),
+        telegramUsername: c.telegramUsername ?? null,
+        nationality: c.nationality ?? null,
+        residenceCountry: c.residenceCountry ?? null,
+        gender: c.gender ?? null,
+        /** Document type, masked number, issuing country, dates. */
+        documents: c.applicantFetchedAt ? c.documents : null,
+        documentExpiry: c.documentExpiry?.toISOString() ?? null,
+        /**
+         * Whether anybody has asked the provider about this row yet.
+         *
+         * The screen needs this to say "not fetched" instead of drawing a
+         * blank cell that looks like an answer.
+         */
+        detailsFetched: Boolean(c.checksFetchedAt || c.applicantFetchedAt),
         submittedAt: this.ago(c.submittedAt),
         /** The date itself. "3 months ago" cannot be read against a filter. */
         submittedOn: c.submittedAt.toISOString(),
@@ -2709,13 +2749,37 @@ export type KycCaseQuery = {
   offset?: number;
   /** A dashboard status word — `approved_kyc`, `rejected`, `in_review`… */
   status?: string;
-  /** Account reference, country or verification id, matched loosely. */
+  /** Name, account reference, country or verification id, matched loosely. */
   q?: string;
   /** Which entity's KYCAID account — "MU", "SL". */
   account?: string;
   /** Submitted on or after / before, `YYYY-MM-DD`, inclusive of both days. */
   from?: string;
   to?: string;
+  /**
+   * Which form ran it — the id as stored (`12666`), not the name.
+   *
+   * The stored value is the id and the name is configuration on top of it, so
+   * the filter takes the id and the screen shows the name. A filter that
+   * matched the display name would stop working the day a form is renamed.
+   */
+  form?: string;
+  /** Which check the provider refused — DOCUMENT, ADDRESS, FACIAL… */
+  failedCheck?: string;
+  /** A decline reason, in the provider's vocabulary. */
+  reason?: string;
+  /** Two letters. The jurisdiction the check was assessed against. */
+  country?: string;
+  /**
+   * Documents expiring within this many days — including already expired.
+   *
+   * The compliance question this table could not answer: a passport that
+   * expires next month invalidates the verification that relied on it, and
+   * nothing anywhere was watching for it.
+   */
+  expiringDays?: number;
+  /** Only rows nobody has asked the provider about yet. */
+  missingDetails?: boolean;
 };
 
 /**
@@ -2742,6 +2806,21 @@ export type KycCaseQuery = {
  * into an `IN` clause to no one's benefit — and because at that length the
  * plain `contains` match on the code column is already doing the work.
  */
+/**
+ * The last four characters, and dots for the rest.
+ *
+ * For the two fields that are identifying on their own — a tax id, a wallet
+ * address. The desk's question about both is "does this match what the document
+ * says", which the tail answers; the whole value only adds a copy of a national
+ * identifier to every browser that opens the page.
+ */
+function maskTail(value: string | null): string | null {
+  if (!value) return null;
+  const s = value.trim();
+  if (!s) return null;
+  return s.length <= 4 ? '••••' : `••••${s.slice(-4)}`;
+}
+
 export function codesFor(
   q: string | undefined,
   names: Map<string, string>,
@@ -2816,6 +2895,39 @@ function kycWhere(
    * reason. A filter that silently narrows a compliance table by a column
    * nobody populates is worse than no filter.
    */
+  /**
+   * The columns the desk asked for, as filters.
+   *
+   * Each one narrows the same clause the count uses, so "1–200 of 3,894" stays
+   * true under every combination of them.
+   */
+  const form = (opts.form ?? '').trim();
+  if (form) where.form = form;
+
+  const failedCheck = (opts.failedCheck ?? '').trim();
+  if (failedCheck) where.failedChecks = { has: failedCheck };
+
+  const reason = (opts.reason ?? '').trim();
+  if (reason) where.declineReasons = { has: reason };
+
+  const country = (opts.country ?? '').trim().toUpperCase();
+  if (country) where.country = country;
+
+  if (opts.expiringDays !== undefined && Number.isFinite(opts.expiringDays)) {
+    const until = new Date();
+    until.setUTCDate(until.getUTCDate() + Math.max(opts.expiringDays, 0));
+    // No lower bound: a document that expired last year is more urgent than
+    // one expiring next month, and a window that starts at "today" hides it.
+    where.documentExpiry = { not: null, lte: until };
+  }
+
+  if (opts.missingDetails) {
+    where.AND = [
+      ...(Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : []),
+      { OR: [{ checksFetchedAt: null }, { applicantFetchedAt: null }] },
+    ];
+  }
+
   const q = (opts.q ?? '').trim();
   if (q) {
     const like = { contains: q, mode: 'insensitive' as const };
@@ -2824,6 +2936,18 @@ function kycWhere(
       { verificationId: like },
       { client: { externalId: like } },
       { client: { country: like } },
+      /**
+       * The person, now that the table shows them.
+       *
+       * Searching a compliance table by name is the first thing anybody tries,
+       * and until these columns existed it silently matched nothing. Email and
+       * telegram are here for the same reason; the tax id and wallet are NOT,
+       * because they leave the API masked and a search that matched a value
+       * the screen will not display is a way to confirm one guess at a time.
+       */
+      { applicantName: like },
+      { email: like },
+      { telegramUsername: like },
       /**
        * The country BY NAME, now that the column shows one.
        *

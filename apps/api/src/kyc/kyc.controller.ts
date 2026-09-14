@@ -128,6 +128,30 @@ export class KycController {
   }
 
   /**
+   * Fill in which check failed and what was presented, a batch at a time.
+   *
+   * TWO REQUESTS PER VERIFICATION, against forty thousand rows — so this is
+   * deliberately a walk rather than a job: newest first, never-asked only, a
+   * budget per call, and a `remaining` count the screen can show. Call it
+   * again until `done`.
+   */
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Post('enrich')
+  enrich(
+    @Body()
+    body: {
+      from?: string;
+      to?: string;
+      account?: string;
+      limit?: number;
+      budgetMs?: number;
+    },
+  ) {
+    return this.kyc.enrich(body ?? {});
+  }
+
+  /**
    * Verifications by jurisdiction, with the provider's own accepted list.
    *
    * Separate from `summary` on purpose. The names come from `GET /countries`,
@@ -216,9 +240,28 @@ export class KycController {
   @ApiExcludeEndpoint()
   async cronSync(@Headers('authorization') auth?: string) {
     assertCronSecret(auth);
-    return {
-      ranAt: new Date().toISOString(),
-      result: await this.kyc.syncRecent(),
-    };
+    const result = await this.kyc.syncRecent();
+    /**
+     * And then fill in what the new rows are missing, with what is left of the
+     * minute.
+     *
+     * A SECOND CRON WOULD BE THE OBVIOUS SHAPE and it is the wrong one here:
+     * this account is on a plan that allows one run per day per schedule, and
+     * an over-frequent or extra cron is refused when the deployment is created
+     * — silently, with no failed build to notice. That mistake has already cost
+     * this project three days. So the enrichment rides along with the sync it
+     * follows, and a short budget keeps the pair inside the function's sixty
+     * seconds.
+     *
+     * A day's verifications are a few hundred at most, so this keeps up
+     * unattended. The backlog of forty thousand is walked from the screen,
+     * where somebody is watching it.
+     */
+    const enriched = await this.kyc
+      .enrich({ limit: 60, budgetMs: 15_000 })
+      .catch((e: unknown) => ({
+        error: e instanceof Error ? e.message : String(e),
+      }));
+    return { ranAt: new Date().toISOString(), result, enriched };
   }
 }

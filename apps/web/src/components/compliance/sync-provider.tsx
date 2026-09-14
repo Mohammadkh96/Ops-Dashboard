@@ -1,14 +1,16 @@
 "use client";
 
-import { useState } from "react";
-import { CloudDownload, Info, Loader2, RefreshCw } from "lucide-react";
+import { useRef, useState } from "react";
+import { CloudDownload, Info, Loader2, RefreshCw, ScanSearch, StopCircle } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
   useCatchUp,
+  useEnrich,
   useKycFields,
   useKycProvider,
   useSyncProvider,
+  type KycEnrichResult,
   type KycSyncResult,
 } from "@/hooks/use-kyc";
 
@@ -45,7 +47,16 @@ function daysBetween(from: string, to: string): number {
   return Math.floor((b - a) / 86_400_000) + 1;
 }
 
-export function SyncProvider({ from, to }: { from: string; to: string }) {
+export function SyncProvider({
+  from,
+  to,
+  account,
+}: {
+  from: string;
+  to: string;
+  /** The entity being shown, or "" for both — the enrichment follows it. */
+  account?: string;
+}) {
   const provider = useKycProvider();
   const [progress, setProgress] = useState<{ day: string; days: number } | null>(
     null,
@@ -61,6 +72,47 @@ export function SyncProvider({ from, to }: { from: string; to: string }) {
    * screen presented the newest row it held as the newest row there is.
    */
   const live = useCatchUp(Boolean(provider.data?.configured));
+
+  /**
+   * Filling in which check failed and what was presented.
+   *
+   * TWO REQUESTS PER VERIFICATION and neither can be asked in bulk, so this is
+   * a walk rather than a job: each call takes a budget's worth of rows, newest
+   * first, and reports how many are left. The loop here is what turns that into
+   * one button — it keeps calling until the endpoint says `done`, or until
+   * somebody presses stop.
+   *
+   * Interruptible on purpose. Forty thousand rows is a long errand, and a
+   * button that cannot be stopped is one nobody presses twice.
+   */
+  const enrich = useEnrich();
+  const [detail, setDetail] = useState<KycEnrichResult | null>(null);
+  const [walking, setWalking] = useState(false);
+  const stop = useRef(false);
+
+  const walk = async () => {
+    stop.current = false;
+    setWalking(true);
+    try {
+      for (;;) {
+        const r = await enrich.mutateAsync({
+          from: start,
+          to: end,
+          account: account || undefined,
+          limit: 200,
+        });
+        setDetail(r);
+        if (r.done || stop.current) break;
+        // No rows moved and none failed means there is nothing this pass can
+        // do — stopping beats looping on the same batch forever.
+        if (r.checksRead === 0 && r.applicantsRead === 0) break;
+      }
+    } catch {
+      // The mutation carries the error; the loop just ends.
+    } finally {
+      setWalking(false);
+    }
+  };
 
   const start = from;
   const end = to;
@@ -118,9 +170,35 @@ export function SyncProvider({ from, to }: { from: string; to: string }) {
             />
             {live.isFetching ? "Checking…" : "Check now"}
           </Button>
+          {/* The second errand this panel runs, and a different one: Fetch reads
+              the report a DAY at a time, this reads two lookups per
+              VERIFICATION. Same panel because both are "ask the provider", and
+              a separate button because one is minutes and the other can be an
+              afternoon. */}
           <Button
             size="sm"
-            disabled={busy || span < 1}
+            variant="secondary"
+            disabled={busy}
+            onClick={() => {
+              if (walking) {
+                stop.current = true;
+                return;
+              }
+              setDetail(null);
+              void walk();
+            }}
+            title="Reads which check failed and what documents were presented, newest first"
+          >
+            {walking ? (
+              <StopCircle className="size-3.5" />
+            ) : (
+              <ScanSearch className="size-3.5" />
+            )}
+            {walking ? "Stop" : "Fetch details"}
+          </Button>
+          <Button
+            size="sm"
+            disabled={busy || walking || span < 1}
             onClick={() => {
               setProgress(null);
               sync.mutate({ from: start, to: end });
@@ -214,6 +292,37 @@ export function SyncProvider({ from, to }: { from: string; to: string }) {
       ) : null}
 
       {result ? <Result result={result} /> : null}
+
+      {/* The enrichment's own line, separate from the sync's: they are two
+          different errands and a shared line would make the last one to finish
+          look like the only one that ran. */}
+      {detail || walking ? (
+        <p
+          className={`text-[11px] ${
+            walking ? "text-muted" : detail?.remaining ? "text-accent-orange" : "text-accent-green"
+          }`}
+        >
+          {walking ? "Reading verdicts and documents" : "Details"} ·{" "}
+          {(detail?.checksRead ?? 0).toLocaleString()} verdict
+          {detail?.checksRead === 1 ? "" : "s"} and{" "}
+          {(detail?.applicantsRead ?? 0).toLocaleString()} applicant
+          {detail?.applicantsRead === 1 ? "" : "s"} read
+          {detail?.failed
+            ? ` · ${detail.failed.toLocaleString()} lookup${detail.failed === 1 ? "" : "s"} failed and will be retried`
+            : ""}
+          {detail
+            ? detail.remaining
+              ? ` · ${detail.remaining.toLocaleString()} still to read`
+              : " · nothing left to read"
+            : "…"}
+        </p>
+      ) : null}
+      {enrich.isError ? (
+        <p className="flex items-start gap-1.5 text-[11px] text-accent-orange">
+          <Info className="mt-px size-3.5 shrink-0" />
+          {enrich.error.message}
+        </p>
+      ) : null}
 
       <ProviderFields />
     </div>

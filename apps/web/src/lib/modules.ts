@@ -100,6 +100,49 @@ export type KycCase = {
   /** The submission instant. `submittedAt` is "3 months ago" and cannot be
    *  read against a date filter. */
   submittedOn?: string | null;
+
+  /**
+   * WHICH checks the provider refused — not the same as which ran.
+   *
+   * `null` means nobody has asked the provider about this row yet; `[]` means
+   * it was asked and nothing failed. The screen must not render those the same
+   * way, or an un-enriched rejection reads as a clean pass.
+   */
+  failedChecks?: string[] | null;
+  /** Their note per failed check — "document expired", "faces differ". */
+  checkComments?: Record<string, string | null> | null;
+  /** The provider's own verdict, beside the one we derive from declines. */
+  providerVerified?: boolean | null;
+  /** Whether either per-verification lookup has been done for this row. */
+  detailsFetched?: boolean;
+
+  /**
+   * The person.
+   *
+   * Held since the desk asked for it — this table stored no identity data
+   * before. The tax id and wallet arrive masked from the API, never whole.
+   */
+  applicantName?: string | null;
+  dob?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  taxIdNumber?: string | null;
+  walletAddress?: string | null;
+  telegramUsername?: string | null;
+  nationality?: string | null;
+  residenceCountry?: string | null;
+  gender?: string | null;
+  /** Type, masked number, issuing country and dates, per document. */
+  documents?: {
+    type: string | null;
+    number: string | null;
+    issuedCountry: string | null;
+    issuedAt: string | null;
+    expiresAt: string | null;
+    status: string | null;
+  }[] | null;
+  /** The first document to expire — the column a renewal chase sorts by. */
+  documentExpiry?: string | null;
 };
 
 export type IncidentSeverity = "low" | "medium" | "high" | "critical";

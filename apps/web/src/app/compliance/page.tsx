@@ -44,6 +44,21 @@ const STATUS_OPTIONS: { label: string; value: KycCase["status"] }[] = [
  * id.
  */
 
+/**
+ * The document-expiry windows, as a filter.
+ *
+ * Every one of them INCLUDES what has already expired, deliberately: a
+ * passport that lapsed last year is more urgent than one lapsing next month,
+ * and a window starting at today would hide exactly the rows somebody needs to
+ * see first.
+ */
+const EXPIRY_OPTIONS = [
+  { label: "Expired or < 30 days", value: "30" },
+  { label: "Within 90 days", value: "90" },
+  { label: "Within 6 months", value: "180" },
+  { label: "Within a year", value: "365" },
+];
+
 /** How many rows one page of the table holds. */
 const PAGE_SIZE = 200;
 
@@ -153,7 +168,29 @@ function Kyc() {
     });
   };
 
-  const query = { status, q, account: entity, from: start, to: end };
+  /**
+   * The filters the desk asked for, over the columns it asked for.
+   *
+   * They live beside the status filter rather than in the URL because they are
+   * a way of reading this table, not a place to link somebody to — the entity
+   * is the one thing worth a bookmark, and it is already in the address.
+   */
+  const [form, setForm] = useState("");
+  const [failedCheck, setFailedCheck] = useState("");
+  const [reason, setReason] = useState("");
+  const [expiring, setExpiring] = useState("");
+
+  const query = {
+    status,
+    q,
+    account: entity,
+    from: start,
+    to: end,
+    form: form || undefined,
+    failedCheck: failedCheck || undefined,
+    reason: reason || undefined,
+    expiringDays: expiring ? Number(expiring) : undefined,
+  };
   const { data: kycCases, isLoading } = useKycCases({
     ...query,
     limit: PAGE_SIZE,
@@ -175,6 +212,38 @@ function Kyc() {
    * shape of a fact and nothing behind it. Verifications held is true.
    */
   const summary = useKycSummary({ from: start, to: end, account: entity });
+
+  /**
+   * The filter options, built from the period's own data.
+   *
+   * The forms come back named ("DEFAULT KYC Tradin MAU") but the filter has to
+   * send the stored id, which the summary does not carry — so the form filter
+   * offers what the breakdown shows and matches on the same string the column
+   * displays. Where a form has no name configured, that string IS the id, so
+   * both cases work.
+   */
+  const formOptions = useMemo(
+    () =>
+      (summary.data?.byForm ?? [])
+        .filter((f) => f.form)
+        .map((f) => ({ label: `${f.form} (${f.verifications})`, value: f.form as string })),
+    [summary.data],
+  );
+  const failedOptions = useMemo(
+    () =>
+      (summary.data?.failedChecks ?? []).map((f) => ({
+        label: `${f.check} (${f.count})`,
+        value: f.check,
+      })),
+    [summary.data],
+  );
+  const reasonOptions = useMemo(
+    () =>
+      (summary.data?.declineReasons ?? [])
+        .slice(0, 15)
+        .map((r) => ({ label: `${r.reason} (${r.count})`, value: r.reason })),
+    [summary.data],
+  );
   const stats: Stat[] = useMemo(() => {
     const by = new Map(
       (summary.data?.byStatus ?? []).map((s) => [s.status, s.count]),
@@ -252,6 +321,19 @@ function Kyc() {
           <span className="text-muted">{c.client}</span>
         ),
     },
+    /* THE PERSON, which this table did not hold until the desk asked for it.
+       First after the reference because it is what anybody scanning the table
+       is looking for, and because the reference alone makes every row look
+       like a database record rather than a person waiting on a decision. */
+    {
+      key: "applicantName",
+      header: "Name",
+      render: (c) => (
+        <span className={c.applicantName ? "" : "text-muted"}>
+          {c.applicantName ?? "—"}
+        </span>
+      ),
+    },
     ...(entity
       ? []
       : [
@@ -305,6 +387,53 @@ function Kyc() {
         </span>
       ),
     },
+    /* WHICH check failed, which is the column the 39% pass rate needed. The
+       one beside it says six checks ran; this says Document was refused.
+       Three states, and they must not look alike: a dash for "nobody has
+       asked the provider yet", "none" for asked-and-nothing-failed, and the
+       check names for a real failure. */
+    {
+      key: "failedChecks",
+      header: "Failed",
+      render: (c) =>
+        c.failedChecks === null || c.failedChecks === undefined ? (
+          <span className="text-muted" title="Not fetched from the provider yet">
+            —
+          </span>
+        ) : c.failedChecks.length === 0 ? (
+          <span className="text-muted">none</span>
+        ) : (
+          <span
+            className="text-accent-red"
+            title={Object.entries(c.checkComments ?? {})
+              .map(([k, v]) => `${k}: ${v}`)
+              .join("\n")}
+          >
+            {c.failedChecks.join(", ")}
+          </span>
+        ),
+    },
+    /* The renewal chase, which nothing was watching: a passport that expires
+       next month invalidates the verification that relied on it. Red once it
+       is inside ninety days, because that is when it becomes somebody's job. */
+    {
+      key: "documentExpiry",
+      header: "Doc expires",
+      align: "right",
+      render: (c) => {
+        if (!c.documentExpiry) return <span className="text-muted">—</span>;
+        const at = new Date(c.documentExpiry);
+        const days = Math.round((at.getTime() - Date.now()) / 86_400_000);
+        return (
+          <span
+            className={`tnum ${days < 0 ? "text-accent-red" : days < 90 ? "text-accent-orange" : "text-muted"}`}
+            title={days < 0 ? `Expired ${-days} days ago` : `${days} days left`}
+          >
+            {c.documentExpiry.slice(0, 10)}
+          </span>
+        );
+      },
+    },
     { key: "method", header: "Method", render: (c) => <span className="text-muted">{c.method ?? "—"}</span> },
     { key: "priceEur", header: "Cost", align: "right", render: (c) => <span className="tnum text-muted-foreground">{c.priceEur === null || c.priceEur === undefined ? "—" : `€${c.priceEur.toFixed(2)}`}</span> },
     { key: "processingMin", header: "Mins", align: "right", render: (c) => <span className="tnum text-muted">{c.processingMin ?? "—"}</span> },
@@ -356,7 +485,7 @@ function Kyc() {
           cards raise — 44% against 89% is either the form or the applicants,
           and the applicants differ by jurisdiction. */}
       <ByCountry from={start} to={end} account={entity} />
-      <SyncProvider from={start} to={end} />
+      <SyncProvider from={start} to={end} account={entity} />
 
       <div className="flex flex-col gap-4">
         <FilterBar
@@ -365,6 +494,21 @@ function Kyc() {
           searchPlaceholder="Search account reference, country or code, verification id…"
           filters={[
             { label: "Status", value: status, onChange: refilter(setStatus), options: STATUS_OPTIONS },
+            /* Every option here is built from what the data actually contains
+               over the period shown — no fixed list of checks or forms that
+               can drift from what the provider runs. A filter offering a
+               value that matches nothing is how the risk filter that used to
+               sit here ended up narrowing the table to zero in silence. */
+            ...(formOptions.length > 1
+              ? [{ label: "Form", value: form, onChange: refilter(setForm), options: formOptions }]
+              : []),
+            ...(failedOptions.length
+              ? [{ label: "Failed check", value: failedCheck, onChange: refilter(setFailedCheck), options: failedOptions }]
+              : []),
+            ...(reasonOptions.length
+              ? [{ label: "Reason", value: reason, onChange: refilter(setReason), options: reasonOptions }]
+              : []),
+            { label: "Doc expiry", value: expiring, onChange: refilter(setExpiring), options: EXPIRY_OPTIONS },
             ...(entityOptions.length > 1
               ? [
                   {
@@ -490,6 +634,22 @@ function Kyc() {
             <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
               {[
                 ["Client", selected.client],
+                /* The person, in the panel where somebody writes a decision
+                   down. The tax id and wallet arrive from the API already
+                   masked — the desk's question about both is whether they
+                   match the document, which the last four answer, and a whole
+                   national identifier in a browser tab is a copy nobody
+                   needs. */
+                ["Name", selected.applicantName ?? "—"],
+                ["Date of birth", selected.dob ?? "—"],
+                ["Gender", selected.gender ?? "—"],
+                ["Email", selected.email ?? "—"],
+                ["Phone", selected.phone ?? "—"],
+                ["Telegram", selected.telegramUsername ?? "—"],
+                ["Tax id", selected.taxIdNumber ?? "—"],
+                ["Wallet", selected.walletAddress ?? "—"],
+                ["Nationality", selected.nationality ?? "—"],
+                ["Residence", selected.residenceCountry ?? "—"],
                 [
                   "Country",
                   /* Both, here. The drawer is where somebody writes the
@@ -540,6 +700,71 @@ function Kyc() {
                 level nothing computed. This is the provider's own verdict on
                 each check it actually ran. */}
             <Checks caseId={selected.id} ran={selected.checks ?? []} />
+
+            {/* What they presented, from the stored enrichment rather than a
+                live call: type, masked number, issuer and dates. The document
+                that expires first is the one a renewal chase is about, so it
+                is coloured here as well as in the column. */}
+            {selected.documents?.length ? (
+              <div className="flex flex-col gap-2">
+                <span className="text-[10px] tracking-wider text-muted uppercase">
+                  Documents
+                </span>
+                {selected.documents.map((d, i) => {
+                  /* Measured against the provider's own "today" rather than
+                     the clock: reading the clock during render is impure, and
+                     a date the API agreed on is the better reference anyway —
+                     a browser in another timezone should not report a document
+                     as expiring a day earlier than the desk beside it. */
+                  const days = d.expiresAt
+                    ? Math.round(
+                        (Date.parse(d.expiresAt) -
+                          Date.parse(`${today}T00:00:00Z`)) /
+                          86_400_000,
+                      )
+                    : null;
+                  return (
+                    <div
+                      key={`${d.type}-${i}`}
+                      className="flex flex-col gap-0.5 rounded-lg border border-border bg-card/60 px-3 py-2 text-[12px]"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-medium">{d.type ?? "Document"}</span>
+                        <span className="tnum text-muted">{d.number ?? "—"}</span>
+                      </div>
+                      <div className="flex flex-wrap gap-x-4 text-[11px] text-muted">
+                        {d.issuedCountry ? <span>Issued {d.issuedCountry}</span> : null}
+                        {d.issuedAt ? <span>from {d.issuedAt}</span> : null}
+                        {d.expiresAt ? (
+                          <span
+                            className={
+                              days !== null && days < 0
+                                ? "text-accent-red"
+                                : days !== null && days < 90
+                                  ? "text-accent-orange"
+                                  : ""
+                            }
+                          >
+                            expires {d.expiresAt}
+                            {days !== null
+                              ? days < 0
+                                ? ` · ${-days} days ago`
+                                : ` · ${days} days left`
+                              : ""}
+                          </span>
+                        ) : null}
+                        {d.status ? <span>{d.status}</span> : null}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : selected.detailsFetched ? null : (
+              <p className="text-[11px] text-muted">
+                Documents not fetched yet — use Fetch details above, which reads
+                them newest first.
+              </p>
+            )}
 
 
             {/* The person, from the provider, at the moment you ask. */}

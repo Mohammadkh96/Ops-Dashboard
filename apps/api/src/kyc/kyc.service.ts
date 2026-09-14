@@ -128,6 +128,20 @@ export type VerificationRow = {
    */
   checks?: string[];
   /**
+   * WHO IT IS. Present since the desk asked for it; absent before.
+   *
+   * Every one of these was already in the report and thrown away. They are
+   * grouped here rather than scattered through the type so that "what personal
+   * data does this hold" is answered by reading one block.
+   */
+  name?: string | null;
+  dob?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  taxIdNumber?: string | null;
+  walletAddress?: string | null;
+  telegramUsername?: string | null;
+  /**
    * The provider's row, less the identity fields it is never given.
    *
    * Kept so the column somebody asks for next month does not cost a year of
@@ -438,6 +452,54 @@ export type SyncResult = ImportResult & {
   formNamesUnavailable: { account: string; why: string }[];
 };
 
+/**
+ * What one enrichment batch did, and how much is left.
+ *
+ * `remaining` rather than a percentage: the denominator moves as the sync
+ * brings in new verifications, and a progress bar that goes backwards is worse
+ * than a count that goes down.
+ */
+export type EnrichResult = {
+  /** Rows looked at in this batch. */
+  considered: number;
+  /** Verdict lookups that answered. */
+  checksRead: number;
+  /** Applicant lookups that answered. */
+  applicantsRead: number;
+  /**
+   * Lookups that did not.
+   *
+   * Their rows are left unstamped on purpose, so the next pass tries them
+   * again rather than recording "asked, nothing to report" about a request
+   * that never got an answer.
+   */
+  failed: number;
+  remaining: number;
+  remainingBefore: number;
+  done: boolean;
+};
+
+/**
+ * The first document to expire, as a date.
+ *
+ * Lifted out of the JSON so a column can sort by it and a filter can ask for
+ * "expiring within 90 days" — neither of which a JSON array supports without a
+ * scan. Undated and unparseable documents are skipped rather than treated as
+ * expiring today.
+ */
+function earliestExpiry(
+  documents: { expiresAt: string | null }[],
+): Date | null {
+  let earliest: Date | null = null;
+  for (const d of documents) {
+    if (!d.expiresAt) continue;
+    const at = new Date(d.expiresAt);
+    if (Number.isNaN(at.getTime())) continue;
+    if (!earliest || at < earliest) earliest = at;
+  }
+  return earliest;
+}
+
 const DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 /**
@@ -710,6 +772,22 @@ export class KycService {
         country: row.country?.trim().toUpperCase() || null,
         /** What an approval covered. The file import carries none, hence []. */
         checks: (row.checks ?? []).filter(Boolean),
+        /**
+         * The person, where the reader gives one.
+         *
+         * `?? undefined` rather than `?? null` on every one of these: undefined
+         * leaves the stored value alone on an update, null erases it. A reader
+         * that does not carry names must not blank the names another one
+         * fetched — and re-reading a day whose rows were stored before these
+         * columns existed is exactly how they get filled.
+         */
+        applicantName: row.name ?? undefined,
+        dob: row.dob ?? undefined,
+        email: row.email ?? undefined,
+        phone: row.phone ?? undefined,
+        taxIdNumber: row.taxIdNumber ?? undefined,
+        walletAddress: row.walletAddress ?? undefined,
+        telegramUsername: row.telegramUsername ?? undefined,
         /**
          * The rest of the provider's row, identity fields already removed by
          * the reader. Null rather than {} where there is nothing, so "we never
@@ -995,6 +1073,157 @@ export class KycService {
       from = back.toISOString().slice(0, 10);
     }
     return this.syncFromProvider({ from, to, budgetMs: opts.budgetMs });
+  }
+
+  /**
+   * The two per-verification lookups, for rows that have never had them.
+   *
+   * THE REPORT IS ONE REQUEST A DAY; THIS IS TWO REQUESTS A ROW. That ratio is
+   * the whole design. `GET /verifications/{id}` says which check failed and
+   * `GET /applicants/{id}` says what was presented, and neither can be asked in
+   * bulk — so forty thousand verifications is eighty thousand requests, which
+   * is hours of provider time and cannot happen inside one serverless
+   * invocation.
+   *
+   * So it walks: newest first, never-asked only, a budget at a time, resumable.
+   * `remaining` is what is left, which lets a screen show a real proportion
+   * instead of a spinner that means nothing.
+   *
+   * NULL IS NOT "CLEAN". `checksFetchedAt` and `applicantFetchedAt` exist so a
+   * row that has never been asked about is distinguishable from one that was
+   * asked and had nothing to report. Without them an un-enriched verification
+   * reads as a verification where every check passed, which is the most
+   * dangerous thing this table could say.
+   */
+  async enrich(
+    opts: KycWindow & { limit?: number; budgetMs?: number } = {},
+  ): Promise<EnrichResult> {
+    const limit = Math.min(Math.max(opts.limit ?? 200, 1), 1000);
+    const budgetMs = Math.min(Math.max(opts.budgetMs ?? 20_000, 500), 45_000);
+    const started = Date.now();
+
+    const scope = windowWhere(opts);
+    const pending: Prisma.KycCaseWhereInput = {
+      ...scope,
+      // A SERVICE row has no applicant and no checks to report; asking about
+      // one spends two requests to learn nothing twice.
+      verificationId: { not: null },
+      OR: [{ checksFetchedAt: null }, { applicantFetchedAt: null }],
+    };
+
+    const [rows, remainingBefore] = await Promise.all([
+      this.prisma.kycCase.findMany({
+        where: pending,
+        select: {
+          id: true,
+          account: true,
+          verificationId: true,
+          applicantId: true,
+          checksFetchedAt: true,
+          applicantFetchedAt: true,
+        },
+        orderBy: { submittedAt: 'desc' },
+        take: limit,
+      }),
+      this.prisma.kycCase.count({ where: pending }),
+    ]);
+
+    /** One client per account, not one per row: a token is reusable. */
+    const clients = new Map<string, KycaidClient>();
+    const clientFor = (label: string | null) => {
+      const key = (label ?? '').trim().toUpperCase();
+      const existing = clients.get(key);
+      if (existing) return existing;
+      const account = accountFor(label);
+      const client = new KycaidClient({ token: account.token });
+      clients.set(key, client);
+      return client;
+    };
+
+    let checksRead = 0;
+    let applicantsRead = 0;
+    let failed = 0;
+    let done = true;
+    const now = new Date();
+
+    for (const row of rows) {
+      if (Date.now() - started > budgetMs) {
+        done = false;
+        break;
+      }
+
+      let client: KycaidClient;
+      try {
+        client = clientFor(row.account);
+      } catch {
+        // No token for that account. Not a per-row failure worth counting
+        // eighty thousand times — the sync reports the same thing already.
+        failed++;
+        continue;
+      }
+
+      const data: Prisma.KycCaseUpdateInput = {};
+
+      if (!row.checksFetchedAt && row.verificationId) {
+        try {
+          const body = await client.verification(row.verificationId);
+          const checks = readChecks(body);
+          data.failedChecks = checks
+            .filter((c) => c.verified === false)
+            .map((c) => c.type);
+          data.checkComments = Object.fromEntries(
+            checks.filter((c) => c.comment).map((c) => [c.type, c.comment]),
+          );
+          data.providerVerified =
+            typeof body.verified === 'boolean' ? body.verified : null;
+          data.checksFetchedAt = now;
+          checksRead++;
+        } catch {
+          // Stamped anyway would mean "asked, nothing failed", which is the one
+          // thing this must never say about a row it could not read. Left null
+          // so the next pass tries again.
+          failed++;
+        }
+      }
+
+      if (!row.applicantFetchedAt && row.applicantId) {
+        try {
+          const applicant = await client.applicant(row.applicantId);
+          const narrowed = narrowApplicant(applicant);
+          data.documents = narrowed.documents;
+          data.documentExpiry = earliestExpiry(narrowed.documents);
+          data.nationality = narrowed.citizenshipCountry;
+          data.residenceCountry = narrowed.residenceCountry;
+          data.gender = narrowed.gender;
+          // The applicant object is the better source for these — it is the
+          // profile as it stands, where the report row is as it was that day —
+          // but only where it actually carries one.
+          if (narrowed.name) data.applicantName = narrowed.name;
+          if (narrowed.dob) data.dob = narrowed.dob;
+          if (narrowed.email) data.email = narrowed.email;
+          if (narrowed.phone) data.phone = narrowed.phone;
+          data.applicantFetchedAt = now;
+          applicantsRead++;
+        } catch {
+          failed++;
+        }
+      }
+
+      if (Object.keys(data).length) {
+        await this.prisma.kycCase.update({ where: { id: row.id }, data });
+      }
+    }
+
+    const remaining = await this.prisma.kycCase.count({ where: pending });
+    return {
+      considered: rows.length,
+      checksRead,
+      applicantsRead,
+      failed,
+      remaining,
+      remainingBefore,
+      done: done && remaining === 0,
+    };
   }
 
   /**
@@ -1571,33 +1800,52 @@ export class KycService {
    */
   async summary(window: KycWindow = {}) {
     const scope = windowWhere(window);
-    const [total, byStatus, byReason, cost, repeats] = await Promise.all([
-      this.prisma.kycCase.count({ where: scope }),
-      this.prisma.kycCase.groupBy({
-        by: ['status'],
-        where: scope,
-        _count: { _all: true },
-      }),
-      this.prisma.kycCase.findMany({
-        where: { ...scope, NOT: { declineReasons: { isEmpty: true } } },
-        select: { declineReasons: true },
-      }),
-      this.prisma.kycCase.aggregate({
-        where: scope,
-        _sum: { priceEur: true },
-        _avg: { processingMin: true },
-      }),
-      this.prisma.kycCase.groupBy({
-        by: ['clientId'],
-        where: { ...scope, clientId: { not: null } },
-        _count: { _all: true },
-      }),
-    ]);
+    const [total, byStatus, byReason, byFailed, cost, repeats] =
+      await Promise.all([
+        this.prisma.kycCase.count({ where: scope }),
+        this.prisma.kycCase.groupBy({
+          by: ['status'],
+          where: scope,
+          _count: { _all: true },
+        }),
+        this.prisma.kycCase.findMany({
+          where: { ...scope, NOT: { declineReasons: { isEmpty: true } } },
+          select: { declineReasons: true },
+        }),
+        /**
+         * Which checks are doing the declining, over the same window.
+         *
+         * Counted in this process rather than in the database for the same
+         * reason the decline reasons above are: `groupBy` cannot group by the
+         * elements of an array column, and a row carries several. The set is
+         * small — one row per rejection, and only the ones that have been
+         * enriched.
+         */
+        this.prisma.kycCase.findMany({
+          where: { ...scope, NOT: { failedChecks: { isEmpty: true } } },
+          select: { failedChecks: true },
+        }),
+        this.prisma.kycCase.aggregate({
+          where: scope,
+          _sum: { priceEur: true },
+          _avg: { processingMin: true },
+        }),
+        this.prisma.kycCase.groupBy({
+          by: ['clientId'],
+          where: { ...scope, clientId: { not: null } },
+          _count: { _all: true },
+        }),
+      ]);
 
     const reasons = new Map<string, number>();
     for (const r of byReason)
       for (const reason of r.declineReasons)
         reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
+
+    const failed = new Map<string, number>();
+    for (const r of byFailed)
+      for (const check of r.failedChecks)
+        failed.set(check, (failed.get(check) ?? 0) + 1);
 
     const retried = repeats.filter((r) => r._count._all > 1);
     return {
@@ -1610,6 +1858,20 @@ export class KycService {
       })),
       declineReasons: [...reasons.entries()]
         .map(([reason, count]) => ({ reason, count }))
+        .sort((a, b) => b.count - a.count),
+      /**
+       * WHICH CHECK failed, against how many verifications.
+       *
+       * The decline reasons beside it are the provider's vocabulary for WHY;
+       * this is WHICH of the checks the form ran. Both are needed: "wrong
+       * document" does not say whether the face matched, and "document" does
+       * not say what was wrong with it.
+       *
+       * Only counts rows that have been enriched, so it climbs as the
+       * enrichment walks the backlog.
+       */
+      failedChecks: [...failed.entries()]
+        .map(([check, count]) => ({ check, count }))
         .sort((a, b) => b.count - a.count),
       spentEur: cost._sum.priceEur === null ? 0 : Number(cost._sum.priceEur),
       averageMinutes:

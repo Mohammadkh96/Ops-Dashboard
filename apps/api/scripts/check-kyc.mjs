@@ -1178,6 +1178,92 @@ async function run() {
       Object.assign(process.env, before);
     }
 
+    section('the person, now that the desk holds one');
+    {
+      // A REVERSAL, AND IT IS CHECKED. This table stored no identity data at
+      // all: the report carries name, dob, email, phone, tax id, wallet and
+      // telegram, and the reader dropped every one. The desk asked for them,
+      // which changes what the database IS — so the two facts that matter are
+      // that they arrive, and that they do NOT also end up duplicated in `raw`
+      // where an erasure request could never find them.
+      const row = toVerificationRow({
+        verification_id: 'who-1',
+        applicant_id: 'app-who',
+        external_applicant_id: 'CU777',
+        created_at: '2026-09-01 10:00:00',
+        status: 'completed',
+        name: '  Keosothea Chea  ',
+        dob: '1994-09-26',
+        email: 'someone@example.com',
+        phone: '+855 12 345 678',
+        tax_id_number: '64797842176',
+        wallet_address: '1F1tAaz5x1HUXrCNLbtMDqcw6o5GNn4xqX',
+        telegram_username: 'someone',
+        country_code: 'KH',
+      });
+      ok('the name arrives, trimmed', row.name === 'Keosothea Chea', row.name);
+      ok('and the rest of the identity fields with it',
+         row.dob === '1994-09-26' && row.email === 'someone@example.com' &&
+         row.phone === '+855 12 345 678' && row.taxIdNumber === '64797842176' &&
+         row.walletAddress.startsWith('1F1t') && row.telegramUsername === 'someone',
+         row);
+      // ONE COPY, in named columns. Personal data in exactly one place is
+      // personal data that can be found, redacted and deleted; a second copy
+      // inside a JSON blob makes every one of those operations unreliable.
+      const kept = Object.keys(row.raw);
+      ok('and none of them are duplicated into raw',
+         !kept.some((k) => ['name','dob','email','phone','tax_id_number',
+                            'wallet_address','telegram_username'].includes(k)), kept);
+      ok('while the rest of the row still is',
+         kept.includes('country_code') && kept.includes('status'), kept);
+
+      await kyc.importVerifications([{ ...row, at: new Date(row.at ?? Date.now()) }]);
+      const stored = await prisma.kycCase.findFirst({ where: { verificationId: 'who-1' } });
+      ok('the name reaches the column', stored.applicantName === 'Keosothea Chea',
+         stored?.applicantName);
+      ok('and so does the date of birth', stored.dob === '1994-09-26', stored?.dob);
+
+      // A READER THAT CARRIES NO NAME MUST NOT ERASE ONE. The identity fields
+      // are written as `undefined` when absent, not null — otherwise re-reading
+      // a day through any path that lacks them would blank what another path
+      // fetched.
+      await kyc.importVerifications([
+        v({ id: 'who-1', ref: 'CU777', applicant: 'app-who', status: 'VALID',
+            at: '2026-09-01T10:00:00Z' }),
+      ]);
+      const after = await prisma.kycCase.findFirst({ where: { verificationId: 'who-1' } });
+      ok('a later read with no name leaves the stored one alone',
+         after.applicantName === 'Keosothea Chea', after?.applicantName);
+    }
+
+    section('filling in which check failed, a batch at a time');
+    {
+      // Two requests per verification, against forty thousand rows — so this
+      // walks rather than runs, and the two `…FetchedAt` stamps are what makes
+      // it resumable. NULL means "never asked", which must never render as
+      // "asked, nothing failed".
+      const pending = await prisma.kycCase.count({
+        where: { OR: [{ checksFetchedAt: null }, { applicantFetchedAt: null }] },
+      });
+      ok('every row starts un-enriched', pending > 0, pending);
+
+      const before = { ...process.env };
+      for (const k of Object.keys(process.env))
+        if (/^KYCAID_API_TOKEN/.test(k)) delete process.env[k];
+      // No token at all: every row is refused, and the refusal must leave the
+      // stamps alone so the next pass tries again rather than recording a
+      // verdict nobody read.
+      const r = await kyc.enrich({ limit: 5 });
+      ok('with no token nothing is read', r.checksRead === 0 && r.applicantsRead === 0, r);
+      ok('and the failures are counted rather than thrown', r.failed > 0, r);
+      const stillPending = await prisma.kycCase.count({
+        where: { OR: [{ checksFetchedAt: null }, { applicantFetchedAt: null }] },
+      });
+      ok('so nothing is marked as asked', stillPending === pending, { stillPending, pending });
+      ok('and the remaining count is honest', r.remaining === pending, r);
+      Object.assign(process.env, before);
+    }
+
     section('what the direct reader refuses');
     {
       let msg = '';

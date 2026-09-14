@@ -404,7 +404,7 @@ model KycCase {
   /// only record of what "approved" actually covered. The two entities run
   /// different forms with different checks, so the word alone means different
   /// things on the two sides of this table.
-  checks         String[]
+  checks         String[] @default([])
   /// Why it failed, in the provider's words. Several at once, routinely.
   declineReasons String[]
   /// What this attempt was billed. A client verified four times was billed
@@ -413,13 +413,74 @@ model KycCase {
   /// Minutes from submission to decision. Zero for automation.
   processingMin  Int?
 
-  /// The row as it arrived, MINUS the identity fields this integration
-  /// refuses: name, date of birth, email, phone, tax id, wallet, telegram.
+  // ---------- Who the person is ----------
+  //
+  // A REVERSAL, RECORDED. This table deliberately held no identity data: the
+  // report carries name, date of birth, contact details, tax id and wallet,
+  // and the reader dropped every one of them so the dashboard could not become
+  // a second copy of the CRM's identity records. The desk asked for them, which
+  // is a decision the desk is entitled to make — and it changes what this
+  // database IS. Retention, access and deletion now apply to it the way they
+  // apply to the CRM.
+  //
+  // Free, in request terms: every field here was already in the report rows
+  // the sync reads. Nothing below costs an extra call.
+
+  /// One name, as the provider sends it — not first/middle/last.
+  applicantName    String?
+  /// Kept as the provider's string. Their `dob` is ISO, but a date column
+  /// turns a partial or malformed one into an import failure rather than a
+  /// field somebody can look at and correct.
+  dob              String?
+  email            String?
+  phone            String?
+  /// Sensitive in a different way from a name: masked on screen, whole here,
+  /// because a tax id that cannot be matched against the document is no use to
+  /// the desk that is matching them.
+  taxIdNumber      String?
+  walletAddress    String?
+  telegramUsername String?
+
+  // ---------- Which check failed ----------
+  //
+  // `checks` above says which checks RAN. This says which ones the provider
+  // was satisfied by, from `GET /verifications/{id}` — one request per
+  // verification, so it is filled by an enrichment pass rather than by the
+  // sync, and null means "not asked yet", never "passed".
+
+  /// The check types that came back `verified: false`.
+  failedChecks       String[] @default([])
+  /// Their note per check — "document expired", "faces do not match".
+  checkComments      Json?
+  /// The provider's own overall verdict, beside the one we derive from
+  /// decline reasons. Where the two disagree, theirs is the one to believe.
+  providerVerified   Boolean?
+  /// When the verdicts were last read. Null = never asked.
+  checksFetchedAt    DateTime?
+
+  // ---------- What they presented ----------
+  //
+  // From `GET /applicants/{id}`, also one request per verification.
+
+  /// Documents as a list: type, masked number, issuing country, dates, status.
+  documents         Json?
+  /// The earliest expiry across those documents, lifted out so a column can
+  /// sort by it and a filter can ask "expiring within 90 days".
+  documentExpiry    DateTime?
+  /// The applicant's own countries, which need not match the verification's:
+  /// a Nigerian passport holder resident in the UAE is two different answers.
+  nationality       String?
+  residenceCountry  String?
+  gender            String?
+  /// When the applicant was last read. Null = never asked.
+  applicantFetchedAt DateTime?
+
+  /// The row as it arrived.
   ///
   /// The field nobody mapped today is the one a dispute needs next month, and
   /// a year of KYCAID history is 365 requests to re-pull. Declared since this
   /// table was created and never written to until the day somebody asked for a
-  /// column that was in the response all along.
+  /// column that was in the response all along — which has now happened twice.
   raw Json?
 
   @@unique([provider, verificationId])
@@ -428,6 +489,12 @@ model KycCase {
   @@index([clientId])
   @@index([applicantId])
   @@index([submittedAt])
+  /// For "expiring within 90 days", which is a range scan over the whole table.
+  @@index([documentExpiry])
+  /// The enrichment passes walk "never asked, newest first" — without these
+  /// that walk is a sequential scan of forty thousand rows on every batch.
+  @@index([checksFetchedAt])
+  @@index([applicantFetchedAt])
 }
 
 // ---------- Payments ----------

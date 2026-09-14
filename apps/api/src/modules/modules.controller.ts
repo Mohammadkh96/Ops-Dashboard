@@ -180,6 +180,12 @@ export class ModulesController {
     @Query('account') account?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('form') form?: string,
+    @Query('failedCheck') failedCheck?: string,
+    @Query('reason') reason?: string,
+    @Query('country') country?: string,
+    @Query('expiringDays') expiringDays?: string,
+    @Query('missingDetails') missingDetails?: string,
   ) {
     return this.modules.kycCases({
       limit: limit ? Number(limit) : undefined,
@@ -189,10 +195,25 @@ export class ModulesController {
       account,
       from,
       to,
+      ...kycFilters({
+        form,
+        failedCheck,
+        reason,
+        country,
+        expiringDays,
+        missingDetails,
+      }),
     });
   }
 
-  /** How many match, so a page can say what it is a page of. */
+  /**
+   * How many match, so a page can say what it is a page of.
+   *
+   * Takes EVERY filter the page takes. It used to take five of them, so adding
+   * a sixth to the table alone would have left the count answering a different
+   * question from the rows beneath it — "1-200 of 3,894" over a filtered set of
+   * nine.
+   */
   @Get('compliance/kyc/count')
   kycCount(
     @Query('status') status?: string,
@@ -200,8 +221,28 @@ export class ModulesController {
     @Query('account') account?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('form') form?: string,
+    @Query('failedCheck') failedCheck?: string,
+    @Query('reason') reason?: string,
+    @Query('country') country?: string,
+    @Query('expiringDays') expiringDays?: string,
+    @Query('missingDetails') missingDetails?: string,
   ) {
-    return this.modules.kycCaseCount({ status, q, account, from, to });
+    return this.modules.kycCaseCount({
+      status,
+      q,
+      account,
+      from,
+      to,
+      ...kycFilters({
+        form,
+        failedCheck,
+        reason,
+        country,
+        expiringDays,
+        missingDetails,
+      }),
+    });
   }
 
   /**
@@ -351,4 +392,41 @@ export class ModulesController {
     return this.modules.auditLog();
   }
   // (all handlers return promises where DB-backed; Nest awaits them.)
+}
+
+/**
+ * The KYC filters, parsed once for the page and the count.
+ *
+ * Written as a helper rather than repeated in both handlers because the two
+ * MUST agree: a filter the table applies and the count does not is a header
+ * that says "1-200 of 3,894" above nine rows, which is the exact bug this
+ * table already had once.
+ *
+ * Empty strings are dropped rather than passed through — a query string always
+ * carries every parameter the screen knows about, most of them blank, and
+ * `form=""` must narrow nothing.
+ */
+function kycFilters(q: {
+  form?: string;
+  failedCheck?: string;
+  reason?: string;
+  country?: string;
+  expiringDays?: string;
+  missingDetails?: string;
+}) {
+  const days = Number(q.expiringDays);
+  return {
+    form: q.form?.trim() || undefined,
+    failedCheck: q.failedCheck?.trim() || undefined,
+    reason: q.reason?.trim() || undefined,
+    country: q.country?.trim() || undefined,
+    expiringDays: Number.isFinite(days) && q.expiringDays ? days : undefined,
+    // Only ever true. "false" and absent mean the same thing here: do not
+    // narrow. A tri-state would read as "rows that HAVE details", which is a
+    // filter nobody has asked for.
+    missingDetails:
+      q.missingDetails === '1' || q.missingDetails === 'true'
+        ? true
+        : undefined,
+  };
 }

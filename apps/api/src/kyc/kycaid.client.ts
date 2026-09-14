@@ -495,21 +495,52 @@ export function toVerificationRow(
      */
     checks: readList(row.verification_types),
     /**
+     * WHO IT IS, which this file spent its whole life refusing to read.
+     *
+     * The report has always carried these. They were stripped here so the
+     * dashboard could not become a second copy of the CRM's identity records,
+     * and the compliance desk has now asked for them — a decision the desk is
+     * entitled to make, and one that changes what the database holds rather
+     * than merely what a screen shows.
+     *
+     * Read as the report writes them, in one place, so the thing to inspect
+     * when somebody asks "what personal data does this system hold" is this
+     * block and the columns it feeds — not a search of the codebase.
+     */
+    name: pickField(row, 'name', 'full_name'),
+    dob: pickField(row, 'dob', 'date_of_birth'),
+    email: pickField(row, 'email'),
+    phone: pickField(row, 'phone', 'phone_number'),
+    taxIdNumber: pickField(row, 'tax_id_number'),
+    walletAddress: pickField(row, 'wallet_address'),
+    telegramUsername: pickField(row, 'telegram_username'),
+    /**
      * The rest of the row, for the column nobody has asked for yet.
      *
-     * STRIPPED OF THE IDENTITY FIELDS, which is what makes it safe to keep.
-     * The report carries name, date of birth, email, phone, tax id, wallet
-     * address and telegram username; those are removed here rather than
-     * anywhere later, so nothing downstream can store them by accident. What
-     * is left is the provider's own record of the check, and re-pulling a year
-     * of it is 365 requests.
+     * STILL STRIPPED OF THE IDENTITY FIELDS, even though they are now stored
+     * in columns beside it — and that is the point. Personal data in exactly
+     * one place is personal data that can be found, redacted and deleted: an
+     * erasure request is an UPDATE over named columns, not a hunt through a
+     * JSON blob on forty thousand rows. Keeping a second copy here would make
+     * every one of those operations unreliable.
      */
     raw: withoutIdentity(row),
   };
 }
 
+/** One field of the report, under any spelling, trimmed, or null. */
+function pickField(row: ReportRow, ...keys: string[]): string | null {
+  const o = row as Record<string, unknown>;
+  for (const k of keys) {
+    const v = o[k];
+    if (typeof v === 'string' && v.trim()) return v.trim();
+    if (typeof v === 'number') return String(v);
+  }
+  return null;
+}
+
 /**
- * The identity fields this integration refuses to hold.
+ * The identity fields that are stored in columns, and so kept out of `raw`.
  *
  * Listed rather than inferred: a field is personal because it names a person,
  * and no rule over key spellings is going to be right about that. Anything the
