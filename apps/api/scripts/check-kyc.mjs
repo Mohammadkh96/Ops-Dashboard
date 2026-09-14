@@ -1349,6 +1349,19 @@ async function run() {
       });
       ok('an unrecognised value falls back to people', typo.length === 2, typo.length);
 
+      // A FILTER MUST CARRY THE STORED VALUE, NOT THE LABEL. The column holds
+      // `14483` and the screen shows "DEFAULT KYC" — a form filter built from
+      // the label matched the name against the id and returned nothing, so the
+      // table read "no verifications match these filters" over a period
+      // holding thousands, which looks exactly like a sync that never ran.
+      const named = await kyc.byForm(w);
+      const line = named.find((f) => f.formId);
+      ok('the breakdown carries the id beside the label', Boolean(line.formId), line);
+      const byId = await modules.kycCases({
+        from: day, to: day, limit: 50, form: line.formId,
+      });
+      ok('and filtering by that id returns rows', byId.length > 0, byId.length);
+
       // The entity cards read from the same split.
       const cards = await kyc.byForm(w);
       const people = cards.reduce((n, c) => n + c.verifications, 0);

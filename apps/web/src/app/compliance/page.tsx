@@ -250,7 +250,18 @@ function Kyc() {
     () =>
       (summary.data?.byForm ?? [])
         .filter((f) => f.form)
-        .map((f) => ({ label: `${f.form} (${f.verifications})`, value: f.form as string })),
+        .map((f) => ({
+          label: `${f.form} (${f.verifications})`,
+          /**
+           * THE ID, NOT THE LABEL. The column stores `14483` and the name is
+           * configuration applied on the way out — so a filter carrying the
+           * name matched nothing, and the table reported "no verifications
+           * match these filters" over a period holding thousands. `formId`
+           * falls back to the label for the ids nobody has named, where the
+           * two are the same string anyway.
+           */
+          value: (f.formId ?? f.form) as string,
+        })),
     [summary.data],
   );
   const failedOptions = useMemo(

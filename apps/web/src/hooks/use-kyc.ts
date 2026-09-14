@@ -46,6 +46,14 @@ export type KycFormBreakdown = {
    * folded into an entity that may not have produced it.
    */
   form: string | null;
+  /**
+   * The STORED value behind that label — `14483`, not "DEFAULT KYC".
+   *
+   * A filter has to send this: the column holds the provider's id and the name
+   * is configuration applied on the way out, so filtering by the label matches
+   * nothing at all.
+   */
+  formId?: string | null;
   /** PEOPLE checked. National-id lookups are counted separately below. */
   verifications: number;
   byStatus: Record<string, number>;

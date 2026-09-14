@@ -2243,9 +2243,22 @@ export class KycService {
    */
   async byForm(window: KycWindow = {}) {
     const rows = await this.breakdown('form', window);
-    // Named on the way out, for the same reason the table is: the stored value
-    // is the provider's own id and the name is configuration on top of it.
-    return rows.map((r) => ({ ...r, form: formLabel(r.form, null) }));
+    return rows.map((r) => ({
+      ...r,
+      // Named on the way out, for the same reason the table is: the stored
+      // value is the provider's own id and the name is configuration on top.
+      form: formLabel(r.form, null),
+      /**
+       * AND THE ID BESIDE IT, because a filter cannot use the name.
+       *
+       * The stored column holds `14483`; this returns "DEFAULT KYC". A form
+       * filter built from the label alone therefore matched the name against
+       * the id and returned nothing — the table read "no verifications match
+       * these filters" over a period holding forty thousand of them, which
+       * looks exactly like a sync that never ran.
+       */
+      formId: r.form,
+    }));
   }
 
   /**
