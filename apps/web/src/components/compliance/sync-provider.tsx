@@ -120,6 +120,17 @@ export function SyncProvider({
 
   const result = sync.data;
   const busy = sync.isPending;
+  /**
+   * Where the last walk gave up, if it did.
+   *
+   * Only within the range on screen: a resume point from a period nobody is
+   * looking at any more would silently fetch dates the panel is not
+   * describing, which is the kind of surprise a fetch button must not have.
+   */
+  const resumeFrom =
+    result?.stoppedAt && result.stoppedAt >= start && result.stoppedAt <= end
+      ? result.stoppedAt
+      : null;
 
   if (provider.isLoading) return null;
 
@@ -196,12 +207,17 @@ export function SyncProvider({
             )}
             {walking ? "Stop" : "Fetch details"}
           </Button>
+          {/* RESUMES WHERE IT STOPPED. A 365-day range is 365 calls against a
+              provider that has answered 502 and taken longer than forty
+              seconds on real days; starting again from the beginning after
+              one of those re-reads everything already stored. The button
+              carries the resume point when there is one. */}
           <Button
             size="sm"
             disabled={busy || walking || span < 1}
             onClick={() => {
               setProgress(null);
-              sync.mutate({ from: start, to: end });
+              sync.mutate({ from: resumeFrom ?? start, to: end });
             }}
           >
             {busy ? (
@@ -213,7 +229,9 @@ export function SyncProvider({
               ? progress
                 ? `Reading ${progress.day}…`
                 : "Reading…"
-              : `Fetch ${span.toLocaleString()} day${span === 1 ? "" : "s"}`}
+              : resumeFrom
+                ? `Resume from ${resumeFrom}`
+                : `Fetch ${span.toLocaleString()} day${span === 1 ? "" : "s"}`}
           </Button>
         </div>
       </div>
@@ -489,6 +507,17 @@ function Result({ result: r }: { result: KycSyncResult }) {
         {r.clientsCreated.toLocaleString()} client
         {r.clientsCreated === 1 ? "" : "s"} created.
       </p>
+      {/* STOPPED IS NOT FAILED, and the difference is everything the desk needs
+          to know: the days already read are stored, and the next press picks
+          up from here rather than starting the year again. */}
+      {r.stoppedAt ? (
+        <p className="flex items-start gap-1.5 text-[11px] text-accent-orange">
+          <Info className="mt-px size-3.5 shrink-0" />
+          Stopped at {r.stoppedAt} — everything before it is stored. The
+          provider stopped answering ({r.stoppedWhy}); press Resume to continue
+          from that day.
+        </p>
+      ) : null}
       {r.unlinked ? (
         <p className="flex items-start gap-1.5 text-[11px] text-accent-orange">
           <Info className="mt-px size-3.5 shrink-0" />

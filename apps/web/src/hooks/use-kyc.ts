@@ -520,8 +520,18 @@ export type KycSyncResult = KycImportResult & {
   to: string;
   days: number;
   fetched: number;
+  /**
+   * The day to resume from, or null when the range finished.
+   *
+   * Where a walk stopped early this is where it GOT TO, not the end of the
+   * range: pressing Fetch again continues rather than re-reading everything
+   * already stored, which on a 365-day range is an hour of repeated work.
+   */
   nextDate: string | null;
   done: boolean;
+  /** Where a walk gave up, and why. Null when it ran to the end. */
+  stoppedAt?: string | null;
+  stoppedWhy?: string | null;
   truncated: string[];
   /** Rows the provider returned in TEST mode, dropped rather than counted. */
   testSkipped: number;
@@ -560,6 +570,7 @@ async function syncUntilDone(
     clientsCreated: 0, clientsUpdated: 0, statuses: [], forms: [],
     from, to, days: 0, fetched: 0, nextDate: null, done: false, truncated: [],
     testSkipped: 0, accounts: [], formNamesUnavailable: [],
+    stoppedAt: null, stoppedWhy: null,
   };
   const statuses = new Map<string, number>();
   const forms = new Map<string, number>();
@@ -578,14 +589,41 @@ async function syncUntilDone(
      * server now stops at twelve and the browser waits forty, which leaves
      * room for the reply itself, a cold start, and the database.
      */
-    const r: KycSyncResult = await apiFetch<KycSyncResult>(
-      "/kyc/sync",
-      {
-        method: "POST",
-        body: JSON.stringify({ from: cursor, to, budgetMs: SERVER_BUDGET_MS }),
-      },
-      { timeoutMs: 40_000 },
-    );
+    /**
+     * A SLOW REPLY MUST NOT THROW THE WALK AWAY.
+     *
+     * The provider has answered 502 and taken longer than forty seconds on
+     * real days, and one of those used to end the whole run: the rows already
+     * written stayed written, but the loop threw, the panel said "the API did
+     * not answer" and the next press started again from the beginning of the
+     * range. On a 365-day fetch that is an hour of re-reading days that were
+     * already stored.
+     *
+     * So: two more attempts at the SAME day, and if it still will not answer,
+     * stop and hand back the cursor. Stopping with a resume point beats both
+     * failing outright and hammering a provider that is having a bad minute.
+     */
+    let r: KycSyncResult | null = null;
+    for (let attempt = 0; attempt < 3 && !r; attempt++) {
+      try {
+        r = await apiFetch<KycSyncResult>(
+          "/kyc/sync",
+          {
+            method: "POST",
+            body: JSON.stringify({ from: cursor, to, budgetMs: SERVER_BUDGET_MS }),
+          },
+          { timeoutMs: 40_000 },
+        );
+      } catch (e) {
+        if (attempt === 2) {
+          total.stoppedAt = cursor;
+          total.stoppedWhy = e instanceof Error ? e.message : String(e);
+          break;
+        }
+        await new Promise((done) => setTimeout(done, 2_000 * (attempt + 1)));
+      }
+    }
+    if (!r) break;
     total.read += r.read;
     total.created += r.created;
     total.updated += r.updated;
@@ -622,8 +660,11 @@ async function syncUntilDone(
     onProgress?.(cursor ?? to, total.days);
   }
 
-  total.done = cursor === null;
-  total.nextDate = cursor;
+  total.done = cursor === null && !total.stoppedAt;
+  // The day to resume from. Where the walk stopped early this is where it got
+  // to, not the end of the range — pressing Fetch again continues rather than
+  // re-reading everything already stored.
+  total.nextDate = total.stoppedAt ?? cursor;
   total.statuses = [...statuses.entries()]
     .map(([status, rows]) => ({ status, rows }))
     .sort((a, b) => b.rows - a.rows);
