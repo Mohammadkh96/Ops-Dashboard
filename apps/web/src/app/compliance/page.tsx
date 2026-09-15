@@ -588,7 +588,21 @@ function Kyc() {
           getRowKey={(c) => c.id}
           onRowClick={setSelected}
           loading={isLoading}
-          empty={`No verifications in ${start} to ${end}${entity ? ` for ${entityName(entity)}` : ""} match these filters.`}
+          /**
+           * THE PERIOD IS PART OF THE SEARCH, and that is not obvious.
+           *
+           * A search for a client reads only the range on screen, so looking
+           * for somebody verified in March from a window that starts in
+           * November returns nothing — and "no verifications match these
+           * filters" reads as "this client was never verified", which is the
+           * wrong conclusion drawn from the right sentence. Where a search is
+           * running, the empty state says which part is doing the excluding.
+           */
+          empty={
+            q
+              ? `No verification matching "${q}" was SUBMITTED between ${start} and ${end}. The search only reads the period above — widen the dates to look further back, and fetch that range first if it has never been read.`
+              : `No verifications in ${start} to ${end}${entity ? ` for ${entityName(entity)}` : ""} match these filters.`
+          }
         />
 
         {total > PAGE_SIZE ? (
