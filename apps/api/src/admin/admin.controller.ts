@@ -14,6 +14,7 @@ import { AdminUnlockGuard } from '../auth/guards/admin-unlock.guard';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AdminUsersService, ROLES } from './admin-users.service';
 import { IntegrationsService } from './integrations.service';
+import { StorageService } from './storage.service';
 
 type Req = { user?: { userId: string; email: string } };
 
@@ -33,7 +34,42 @@ export class AdminController {
   constructor(
     private readonly users: AdminUsersService,
     private readonly integrations: IntegrationsService,
+    private readonly storage: StorageService,
   ) {}
+
+  /**
+   * What the database is spending its space on.
+   *
+   * WRITTEN BECAUSE IT RAN OUT. A hosted plan has a hard ceiling and reaching
+   * it degrades nothing gracefully: every write fails with `53100 could not
+   * extend file`, the syncs read and store zero, and the screens keep showing
+   * yesterday's data as though nothing were wrong. That failure looked for
+   * hours like a provider problem and a missing client, because nothing said
+   * the disk was full.
+   */
+  @Get('storage')
+  storageReport() {
+    return this.storage.report();
+  }
+
+  /**
+   * Drop the stored provider JSON for rows older than a cutoff.
+   *
+   * DRY RUN UNLESS `apply` IS TRUE. This is irreversible without re-fetching
+   * from the providers, and the difference between "show me" and "do it" must
+   * not be one character in a query string.
+   *
+   * Every mapped column survives — amounts, states, references, verdicts,
+   * prices, dates. What goes is the unparsed original, which matters only for
+   * a field nobody has mapped yet.
+   */
+  @Post('storage/prune')
+  prune(@Body() body: { olderThanDays?: number; apply?: boolean }) {
+    return this.storage.prune({
+      olderThanDays: body?.olderThanDays ?? 90,
+      apply: body?.apply === true,
+    });
+  }
 
   /**
    * What this dashboard is actually connected to.

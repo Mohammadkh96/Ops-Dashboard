@@ -259,6 +259,23 @@ export class KycController {
       .catch((e: unknown) => {
         if (e instanceof HttpException) throw e;
         const why = e instanceof Error ? e.message : String(e);
+        /**
+         * A FULL DATABASE IS NOT A PROVIDER PROBLEM, and calling it one cost
+         * hours. Postgres answers `53100 could not extend file` when the
+         * hosting plan's size ceiling is reached; every write then fails, the
+         * sync reads and stores nothing, and this handler reported it as "the
+         * provider read failed" — which sent somebody to KYCAID, and then to a
+         * client who appeared to have no verification, when the disk was full
+         * the whole time.
+         */
+        if (/53100|project size limit|could not extend file/i.test(why)) {
+          throw new BadRequestException(
+            'The database is full, so nothing could be stored — this is not a provider problem. ' +
+              'Postgres refused the write with 53100 (size limit reached). ' +
+              'Free space or raise the plan limit, then run this again: Admin → Storage reports what is using it, ' +
+              'and pruning the stored provider payloads keeps every mapped column.',
+          );
+        }
         throw new BadRequestException(
           `The provider read failed: ${why.slice(0, 600)}`,
         );

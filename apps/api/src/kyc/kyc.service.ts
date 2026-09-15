@@ -1989,7 +1989,9 @@ export class KycService {
           clientId: null,
           applicantId: { not: null },
           ...(gte || lt
-            ? { submittedAt: { ...(gte ? { gte } : {}), ...(lt ? { lt } : {}) } }
+            ? {
+                submittedAt: { ...(gte ? { gte } : {}), ...(lt ? { lt } : {}) },
+              }
             : {}),
         },
       }),

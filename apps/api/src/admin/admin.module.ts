@@ -5,11 +5,12 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { AdminController } from './admin.controller';
 import { AdminUsersService } from './admin-users.service';
 import { IntegrationsService } from './integrations.service';
+import { StorageService } from './storage.service';
 
 @Module({
   // AuthModule for AdminUnlockGuard, so "unlocked" is defined in one place.
   imports: [AuthModule, PrismaModule],
   controllers: [AdminController],
-  providers: [AdminUsersService, IntegrationsService],
+  providers: [AdminUsersService, IntegrationsService, StorageService],
 })
 export class AdminModule {}
