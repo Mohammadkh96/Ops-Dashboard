@@ -62,12 +62,27 @@ export class AdminController {
    * Every mapped column survives — amounts, states, references, verdicts,
    * prices, dates. What goes is the unparsed original, which matters only for
    * a field nobody has mapped yet.
+   *
+   * `mode` decides how much of it goes, and defaults to the smaller loss:
+   * `slim` keeps the payload keys the screens read — so the detail drawer
+   * still shows the method, the description, the billing address and the
+   * customer — and drops the rest of what the provider sent. `null` empties
+   * the payload outright and takes the verification JSON with it; that is the
+   * one for a database that is full today.
    */
   @Post('storage/prune')
-  prune(@Body() body: { olderThanDays?: number; apply?: boolean }) {
+  prune(
+    @Body()
+    body: {
+      olderThanDays?: number;
+      apply?: boolean;
+      mode?: 'slim' | 'null';
+    },
+  ) {
     return this.storage.prune({
       olderThanDays: body?.olderThanDays ?? 90,
       apply: body?.apply === true,
+      mode: body?.mode === 'null' ? 'null' : 'slim',
     });
   }
 

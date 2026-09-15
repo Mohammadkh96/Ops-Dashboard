@@ -74,6 +74,86 @@ export const useAdminIntegrations = () =>
 export const useAdminAuditLog = () =>
   useAdminQuery<AuditEntry[]>("audit", "/admin/audit-logs");
 
+/** What the database is spending its space on. */
+export type StorageReport = {
+  databaseBytes: number;
+  /** The hosting plan's ceiling, or null when nobody has configured one. */
+  limitBytes: number | null;
+  tables: {
+    table: string;
+    totalBytes: number;
+    dataBytes: number;
+    /** Indexes and TOAST — most of it, on the two JSON tables. */
+    overheadBytes: number;
+    rows: number;
+  }[];
+  /** What the biggest column holds, key by key, sampled. */
+  payload: {
+    sampled: number;
+    keys: {
+      key: string;
+      bytes: number;
+      rows: number;
+      sharePct: number;
+      /** Whether anything in this dashboard reads it. */
+      read: boolean;
+    }[];
+    totalBytes: number;
+    averageBytesPerPayment: number;
+  } | null;
+  prunable: {
+    olderThanDays: number;
+    cutoff: string;
+    paymentEvents: { rows: number; bytes: number };
+    kycCases: { rows: number; bytes: number };
+    bytes: number;
+  };
+};
+
+export type PruneResult = {
+  applied: boolean;
+  mode: "slim" | "null";
+  olderThanDays: number;
+  paymentEventsPruned?: number;
+  kycCasesPruned?: number;
+  freedBytesEstimate?: number;
+  note?: string;
+  paymentEvents?: { rows: number; bytes: number };
+  kycCases?: { rows: number; bytes: number };
+  bytes?: number;
+};
+
+export const useStorageReport = () =>
+  useAdminQuery<StorageReport>("storage", "/admin/storage");
+
+/**
+ * The one irreversible button in this application.
+ *
+ * No `onSuccess` refetch of the report on a dry run, because a dry run changed
+ * nothing and a table that redraws implies otherwise. On a real one the report
+ * is invalidated — though the number it returns barely moves at first, which is
+ * why the screen repeats the reply's own note about reclaimed pages.
+ */
+export function useStoragePrune() {
+  const { authFetch } = useAdminLock();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: {
+      olderThanDays: number;
+      apply?: boolean;
+      mode?: "slim" | "null";
+    }) =>
+      authFetch<PruneResult>("/admin/storage/prune", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    onSuccess: (r) => {
+      if (r.applied)
+        void queryClient.invalidateQueries({ queryKey: ["admin", "storage"] });
+    },
+  });
+}
+
 /**
  * Every write the Users screen makes.
  *

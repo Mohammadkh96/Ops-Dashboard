@@ -85,6 +85,7 @@ async function run() {
   const { NotificationsService } = require_(
     '../dist/src/notifications/notifications.service',
   );
+  const { StorageService } = require_('../dist/src/admin/storage.service');
 
   const app = await createApp();
   await app.init();
@@ -1713,6 +1714,113 @@ async function run() {
       ok('an email that could not be sent is recorded as not sent',
          stuck.emailedAt === null && Boolean(stuck.emailError), stuck?.emailError);
       ok('and the caller is told why', Boolean(unconfigured.emailError), unconfigured);
+    }
+
+    section('freeing space without losing the drawer');
+    {
+      // THE ONE IRREVERSIBLE OPERATION IN THIS CODEBASE. Everything else can
+      // be re-fetched from a provider; a pruned payload for a year nobody
+      // kept cannot. It was also written against a full production database,
+      // where a mistake cannot be undone by restoring from the slack in the
+      // plan — there is none. So it is exercised here on fixtures.
+      const storage = app.get(StorageService);
+      const old = new Date(Date.now() - 400 * 86_400_000);
+      const fat = (key, when) => ({
+        provider: 'paymaxis', dedupeKey: key, paymentId: key,
+        receivedAt: when, state: 'COMPLETED', type: 'DEPOSIT',
+        amount: 10, currency: 'EUR',
+        headers: { 'x-signature': 'abc', 'user-agent': 'provider/1' },
+        payload: {
+          // Read by the detail drawer, the column picker and client search.
+          paymentMethod: 'BASIC_CARD', description: 'Deposit',
+          customer: { email: 'someone@example.com' },
+          // Sent by the provider, read by nothing here. This is the 427MB.
+          routingRules: Array.from({ length: 40 }, (_, i) => `rule-${i}`),
+          providerTrace: 'x'.repeat(2000),
+        },
+      });
+      await prisma.paymentEvent.createMany({ data: [
+        fat('prune-old-1', old), fat('prune-old-2', old),
+        // Inside the window — must survive whatever happens to the rest.
+        fat('prune-new', new Date()),
+      ] });
+
+      const keysBefore = await storage.payloadKeys(10);
+      ok('the report says what is inside the payload',
+         keysBefore.keys.length > 0, keysBefore.keys.map((k) => k.key));
+      ok('and marks a key the screens read',
+         keysBefore.keys.find((k) => k.key === 'paymentMethod')?.read === true);
+      ok('and marks one nothing reads',
+         keysBefore.keys.find((k) => k.key === 'providerTrace')?.read === false);
+
+      // A DRY RUN THAT DELETED SOMETHING would be the worst bug here, so it
+      // is the first thing asserted.
+      const dry = await storage.prune({ olderThanDays: 30 });
+      ok('a dry run says it did not apply', dry.applied === false, dry);
+      ok('and reports rows it would touch', dry.paymentEvents.rows >= 2, dry);
+      const intact = await prisma.paymentEvent.findFirst({
+        where: { dedupeKey: 'prune-old-1' },
+      });
+      ok('having changed nothing at all',
+         Boolean(intact.payload.providerTrace), Object.keys(intact.payload));
+
+      const slim = await storage.prune({ olderThanDays: 30, apply: true });
+      ok('slimming is the default mode', slim.mode === 'slim', slim.mode);
+      ok('and it touched the old rows', slim.paymentEventsPruned === 2, slim);
+      const slimmed = await prisma.paymentEvent.findFirst({
+        where: { dedupeKey: 'prune-old-1' },
+      });
+      // The whole argument for slim over null: the drawer still works.
+      ok('the keys the drawer reads survive',
+         slimmed.payload.paymentMethod === 'BASIC_CARD' &&
+         slimmed.payload.customer?.email === 'someone@example.com', slimmed.payload);
+      ok('and the ones nothing reads are gone',
+         slimmed.payload.providerTrace === undefined &&
+         slimmed.payload.routingRules === undefined, Object.keys(slimmed.payload));
+      ok('the signature headers go with them',
+         Object.keys(slimmed.headers).length === 0, slimmed.headers);
+      // Mapped columns are the record. Pruning must never reach them.
+      ok('every mapped column is untouched',
+         slimmed.amount === 10 && slimmed.state === 'COMPLETED' &&
+         slimmed.currency === 'EUR', slimmed);
+      const recent = await prisma.paymentEvent.findFirst({
+        where: { dedupeKey: 'prune-new' },
+      });
+      ok('and a row inside the window keeps everything',
+         Boolean(recent.payload.providerTrace), Object.keys(recent.payload));
+
+      // RUNNING IT TWICE MUST BE A NO-OP. The loop picks rows that still hold
+      // something to drop; a predicate that stays true after the update spins
+      // a hundred passes and reports work it never did.
+      const again = await storage.prune({ olderThanDays: 30, apply: true });
+      ok('running it again finds nothing left to slim',
+         again.paymentEventsPruned === 0, again);
+
+      // `payload` is NOT NULL and always has been, so the emergency mode
+      // empties it rather than nulling it — the difference between freeing
+      // 400MB and a failed update.
+      const emptied = await storage.prune({
+        olderThanDays: 30, apply: true, mode: 'null',
+      });
+      ok('the emergency mode empties the rest', emptied.paymentEventsPruned === 2, emptied);
+      const bare = await prisma.paymentEvent.findFirst({
+        where: { dedupeKey: 'prune-old-1' },
+      });
+      ok('leaving an empty object, not a null column',
+         bare.payload !== null && Object.keys(bare.payload).length === 0, bare.payload);
+      ok('and the amount still there to reconcile against', bare.amount === 10);
+
+      const after = await storage.report();
+      ok('the report names the database size', after.databaseBytes > 0, after.databaseBytes);
+      ok('and lists the tables largest first',
+         after.tables.length > 1 &&
+         after.tables[0].totalBytes >= after.tables[1].totalBytes);
+      ok('with nothing left prunable in the pruned window',
+         after.prunable.paymentEvents.rows === 0, after.prunable);
+
+      await prisma.paymentEvent.deleteMany({
+        where: { dedupeKey: { in: ['prune-old-1', 'prune-old-2', 'prune-new'] } },
+      });
     }
 
     section('what the direct reader refuses');

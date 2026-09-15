@@ -25,6 +25,30 @@ import { PrismaService } from '../prisma/prisma.service';
  * real loss and it is the cheapest one available, which is why this reports
  * before it deletes and never runs on its own.
  */
+/**
+ * The payload keys anything here actually reads.
+ *
+ * Listed so the report can mark the rest as droppable, and so that dropping
+ * one becomes a deliberate change to this list rather than a surprise in a
+ * drawer six weeks later. Drawn from `transactionDetail`, the column picker
+ * and the client search — the three places that read the stored payload.
+ */
+const READ_KEYS = new Set([
+  'paymentMethod',
+  'description',
+  'billingAddress',
+  'customer',
+  'errorCode',
+  'errorMessage',
+  'externalResultCode',
+  'state',
+  'type',
+  'amount',
+  'currency',
+  'createdAt',
+  'updatedAt',
+]);
+
 @Injectable()
 export class StorageService {
   private readonly log = new Logger(StorageService.name);
@@ -59,10 +83,15 @@ export class StorageService {
      * than the cutoff. A number somebody is about to make an irreversible
      * decision on should be measured.
      */
-    const prunable = await this.prunable(30);
+    const [prunable, payload] = await Promise.all([
+      this.prunable(30),
+      this.payloadKeys().catch(() => null),
+    ]);
 
     return {
       databaseBytes: Number(database[0]?.size ?? 0),
+      /** What the biggest column is spending its space on, key by key. */
+      payload,
       /**
        * The ceiling, where it is known.
        *
@@ -84,6 +113,54 @@ export class StorageService {
   }
 
   /**
+   * WHAT IS ACTUALLY IN THE PAYLOAD, by top-level key, largest first.
+   *
+   * 427MB across eighty thousand payments is five kilobytes each, and nobody
+   * can say which part that is without looking. Guessing here is expensive in
+   * both directions: cut the wrong key and the detail drawer loses the billing
+   * address it is opened for, cut nothing and the database fills again in a
+   * month.
+   *
+   * Sampled rather than summed over the table — a thousand rows is enough to
+   * rank keys, and reading eighty thousand payloads to measure them would need
+   * the memory this is trying to free.
+   */
+  async payloadKeys(sample = 1000) {
+    const rows = await this.prisma.$queryRaw<
+      { key: string; bytes: bigint; rows: bigint }[]
+    >`
+      WITH recent AS (
+        SELECT payload FROM "PaymentEvent"
+        WHERE payload <> '{}'::jsonb
+        ORDER BY "receivedAt" DESC
+        LIMIT ${sample}
+      )
+      SELECT kv.key                               AS key,
+             SUM(pg_column_size(kv.value))        AS bytes,
+             count(*)                             AS rows
+      FROM recent, jsonb_each(recent.payload) AS kv
+      GROUP BY kv.key
+      ORDER BY 2 DESC
+      LIMIT 25
+    `;
+    const total = rows.reduce((n, r) => n + Number(r.bytes), 0);
+    return {
+      sampled: sample,
+      /** Per key: what it costs, and what share of a payment it is. */
+      keys: rows.map((r) => ({
+        key: r.key,
+        bytes: Number(r.bytes),
+        rows: Number(r.rows),
+        sharePct: total ? Math.round((Number(r.bytes) / total) * 100) : 0,
+        /** Whether anything in this dashboard reads it. */
+        read: READ_KEYS.has(r.key),
+      })),
+      totalBytes: total,
+      averageBytesPerPayment: sample ? Math.round(total / sample) : 0,
+    };
+  }
+
+  /**
    * How much the two JSON columns hold, for rows older than a cutoff.
    *
    * Reported before anything is deleted, and again as a dry run, because "this
@@ -93,11 +170,20 @@ export class StorageService {
   async prunable(olderThanDays: number) {
     const cutoff = new Date(Date.now() - olderThanDays * 86_400_000);
     const [payments, kyc] = await Promise.all([
+      /**
+       * EMPTY, NOT NULL — the column forbids null and always has.
+       *
+       * `payload IS NOT NULL` looks like the right predicate and matches every
+       * row in the table, which would report the whole history as prunable
+       * however many times it had already been pruned. An emptied payload is
+       * `{}`, so that is what "nothing left to free here" looks like.
+       */
       this.prisma.$queryRaw<{ rows: bigint; bytes: bigint }[]>`
         SELECT count(*) AS rows,
                COALESCE(SUM(pg_column_size(payload) + pg_column_size(headers)), 0) AS bytes
         FROM "PaymentEvent"
-        WHERE "receivedAt" < ${cutoff} AND payload IS NOT NULL
+        WHERE "receivedAt" < ${cutoff}
+          AND (payload <> '{}'::jsonb OR headers <> '{}'::jsonb)
       `,
       this.prisma.$queryRaw<{ rows: bigint; bytes: bigint }[]>`
         SELECT count(*) AS rows,
@@ -134,10 +220,25 @@ export class StorageService {
    * is the unparsed original, which matters only for a field nobody has mapped
    * yet.
    */
-  async prune(opts: { olderThanDays: number; apply?: boolean }) {
+  async prune(opts: {
+    olderThanDays: number;
+    apply?: boolean;
+    /**
+     * `slim` keeps the keys the screens read and drops the rest; `null` drops
+     * the payload entirely.
+     *
+     * Slim is the default because the loss is smaller and usually invisible:
+     * the detail drawer still shows the billing address, the customer email,
+     * the method and the description, and what goes is whatever the provider
+     * sends that nothing here has ever read. Dropping the payload outright is
+     * for a database that is full now and needs the space today.
+     */
+    mode?: 'slim' | 'null';
+  }) {
     const olderThanDays = Math.max(1, Math.round(opts.olderThanDays));
+    const mode = opts.mode === 'null' ? 'null' : 'slim';
     const before = await this.prunable(olderThanDays);
-    if (!opts.apply) return { applied: false, ...before };
+    if (!opts.apply) return { applied: false, mode, ...before };
 
     const cutoff = new Date(Date.now() - olderThanDays * 86_400_000);
     this.log.warn(
@@ -145,30 +246,99 @@ export class StorageService {
     );
 
     /**
-     * `DbNull`, not `undefined` — the whole point is to erase.
-     *
-     * Prisma reads `undefined` as "leave this alone" on an update, which here
-     * would report success having freed nothing at all.
+     * EMPTIED, NOT NULLED. `payload` and `headers` are NOT NULL columns and
+     * have been since the table was created, so the obvious `SET payload =
+     * NULL` is not a stronger version of this — it is an update that fails.
+     * `{}` is the empty state the schema allows, and it reads back through
+     * every existing caller as "no keys", which nulling would not.
      */
-    const [payments, kyc] = await this.prisma.$transaction([
-      this.prisma.$executeRaw`
-        UPDATE "PaymentEvent"
-        SET payload = NULL, headers = '{}'::jsonb
-        WHERE "receivedAt" < ${cutoff} AND payload IS NOT NULL
-      `,
-      this.prisma.$executeRaw`
-        UPDATE "KycCase" SET raw = NULL
-        WHERE "submittedAt" < ${cutoff} AND raw IS NOT NULL
-      `,
-    ]);
+    /**
+     * IN BATCHES, AND NOT IN ONE TRANSACTION, because the database this is
+     * for is already full.
+     *
+     * An UPDATE writes a NEW version of every row it touches and only frees
+     * the old one afterwards — so rewriting eighty thousand rows at once needs
+     * more space than is left, and fails with the very error it is meant to
+     * cure. Two thousand at a time, with a vacuum between, keeps the working
+     * set small enough to fit in what has just been freed.
+     *
+     * Each pass selects rows that STILL HOLD something this mode would drop,
+     * so a row it has already done is not picked again. A predicate that stays
+     * true after the update is an endless loop that reports work it did not do.
+     */
+    const keep = [...READ_KEYS];
+    let payments = 0;
+    for (let pass = 0; pass < 100; pass++) {
+      const done: number =
+        mode === 'null'
+          ? await this.prisma.$executeRaw`
+              UPDATE "PaymentEvent"
+              SET payload = '{}'::jsonb, headers = '{}'::jsonb
+              WHERE id IN (
+                SELECT id FROM "PaymentEvent"
+                WHERE "receivedAt" < ${cutoff}
+                  AND (payload <> '{}'::jsonb OR headers <> '{}'::jsonb)
+                LIMIT 2000
+              )
+            `
+          : await this.prisma.$executeRaw`
+              UPDATE "PaymentEvent"
+              SET payload = (
+                    SELECT COALESCE(jsonb_object_agg(k, v), '{}'::jsonb)
+                    FROM jsonb_each(payload) AS e(k, v)
+                    WHERE k = ANY(${keep}::text[])
+                  ),
+                  headers = '{}'::jsonb
+              WHERE id IN (
+                SELECT id FROM "PaymentEvent"
+                WHERE "receivedAt" < ${cutoff}
+                  AND (
+                    headers <> '{}'::jsonb
+                    OR EXISTS (
+                      SELECT 1 FROM jsonb_each(payload) AS e(k, v)
+                      WHERE NOT (k = ANY(${keep}::text[]))
+                    )
+                  )
+                LIMIT 2000
+              )
+            `;
+      payments += done;
+      if (!done) break;
+      // Hand the space back for reuse before asking for more of it.
+      await this.prisma.$executeRawUnsafe('VACUUM "PaymentEvent"');
+    }
+
+    /**
+     * SLIM LEAVES THE VERIFICATIONS ALONE, because there is no equivalent list
+     * for them: `KycCase.raw` is the provider's verification row, and what the
+     * screens read out of it changes as columns are added — the last two
+     * additions came from it. Nulling it is offered because a full database is
+     * an emergency; narrowing it by guesswork is not.
+     */
+    const kyc: number =
+      mode === 'null'
+        ? await this.prisma.$executeRaw`
+            UPDATE "KycCase" SET raw = NULL
+            WHERE "submittedAt" < ${cutoff} AND raw IS NOT NULL
+          `
+        : 0;
 
     return {
       applied: true,
+      mode,
       olderThanDays,
       cutoff: cutoff.toISOString(),
       paymentEventsPruned: payments,
       kycCasesPruned: kyc,
-      freedBytesEstimate: before.bytes,
+      /**
+       * What the two columns held before this ran — an upper bound, not a
+       * measurement of what went. Slim keeps the read keys, so it frees less
+       * than this; and neither mode counts the KYC half when it did not touch
+       * it. Reported as an estimate and named as one, because the honest
+       * after-figure is `report()` run again.
+       */
+      freedBytesEstimate:
+        mode === 'null' ? before.bytes : before.paymentEvents.bytes,
       /**
        * SPACE COMES BACK SLOWLY, and saying so avoids a second panic.
        *
