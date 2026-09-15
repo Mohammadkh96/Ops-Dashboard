@@ -1823,6 +1823,73 @@ async function run() {
       });
     }
 
+    section('a failed read never becomes seven invented clients');
+    {
+      // THE WORST BUG THIS PROJECT HAS HAD. An unreachable database made
+      // `isLive()` answer zero rather than fail, which made the fallback the
+      // seven sample verifications, which `safe()` then served with HTTP 200 —
+      // fabricated clients, risk scores and assignees, on the screen that
+      // decides who may trade. Beside them a count of 0 from the same
+      // swallowed failure. Nobody chose that; three reasonable-looking
+      // decisions composed into it.
+      //
+      // Simulated the only honest way: a Prisma stand-in that refuses, as a
+      // database over its size limit does.
+      const dead = new Error('FATAL: the database is not accepting connections');
+      const brokenPrisma = new Proxy(
+        {},
+        {
+          get: (_t, model) => {
+            if (model === '$queryRaw' || model === '$executeRaw')
+              return () => Promise.reject(dead);
+            return new Proxy(
+              {},
+              { get: () => () => Promise.reject(dead) },
+            );
+          },
+        },
+      );
+      const broken = new ModulesService(brokenPrisma, app.get(KycService));
+
+      let threw = null;
+      let returned = null;
+      try {
+        returned = await broken.kycCases({ from: '2026-01-01', to: '2026-12-31' });
+      } catch (e) {
+        threw = e;
+      }
+      ok('an unreachable database fails the read', threw !== null,
+         threw === null ? returned : undefined);
+      // The specific regression, asserted on the rows themselves rather than
+      // on the throw: whatever this returns, none of it is invented.
+      const invented = (returned ?? []).filter((r) =>
+        /^Client #\d+$/.test(String(r?.client ?? '')),
+      );
+      ok('and not one sample client reaches the screen',
+         invented.length === 0, invented.map((r) => r.client));
+
+      let countThrew = null;
+      try {
+        await broken.kycCaseCount({});
+      } catch (e) {
+        countThrew = e;
+      }
+      // A zero that means "I could not look" is worse than an error, because
+      // it reads as a finding.
+      ok('and the count says it failed rather than reporting zero',
+         countThrew !== null,
+         countThrew === null ? 'it returned a total instead' : undefined);
+
+      // The legitimate case still works: a database that ANSWERS, with nothing
+      // in the window, is an empty table and not an error.
+      const empty = await app.get(ModulesService).kycCases({
+        from: '1999-01-01',
+        to: '1999-12-31',
+      });
+      ok('an empty period is still just an empty table',
+         Array.isArray(empty) && empty.length === 0, empty?.length);
+    }
+
     section('what the direct reader refuses');
     {
       let msg = '';

@@ -140,11 +140,24 @@ function kycQuery(o: KycCaseQuery): string {
  * 500 happened to be, which made a client on page four indistinguishable from
  * a client nobody had ever verified.
  */
+/**
+ * NO SAMPLE CLIENTS OUTSIDE DEMO MODE, on this screen above all others.
+ *
+ * `useApi` substitutes its bundled rows whenever the real request produces
+ * nothing — in demo mode, which is the point of them, but also on any error,
+ * which is not. On the compliance queue that put seven invented clients, with
+ * invented risk scores and invented assignees, in front of the desk that
+ * decides who may trade, at the exact moment the real answer was unavailable.
+ *
+ * A deployment with an API configured shows what the API said or shows an
+ * error. The samples stay for the standalone preview build, which has no API
+ * and no real clients to be confused with.
+ */
 export const useKycCases = (opts: KycCaseQuery = {}) =>
   useApi<KycCase[]>(
     `kyc:${kycQuery(opts)}`,
     `/compliance/kyc${kycQuery(opts)}`,
-    kycCases,
+    isDemoMode ? kycCases : [],
   );
 
 /** How many match — what the page size is measured against. */
@@ -152,7 +165,7 @@ export const useKycCaseCount = (opts: KycCaseQuery = {}) =>
   useApi<{ total: number }>(
     `kyc-count:${kycQuery({ ...opts, limit: undefined, offset: undefined })}`,
     `/compliance/kyc/count${kycQuery({ ...opts, limit: undefined, offset: undefined })}`,
-    { total: kycCases.length },
+    { total: isDemoMode ? kycCases.length : 0 },
   );
 /**
  * Every series the analytics screen draws, measured from real rows.

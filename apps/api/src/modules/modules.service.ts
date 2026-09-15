@@ -1487,8 +1487,16 @@ export class ModulesService {
    * screen previously showed the length of its own array as the total, which is
    * the one number it definitely is not.
    */
+  /**
+   * ZERO IS AN ANSWER, so this must not say it unless it is one.
+   *
+   * This returned `{ total: 0 }` on any failure, which is indistinguishable on
+   * screen from a period that genuinely holds nothing — and it sat beside a
+   * table showing seven sample rows, each failure wearing a different mask. A
+   * count that cannot be taken is an error, not a nil.
+   */
   async kycCaseCount(opts: KycCaseQuery = {}): Promise<{ total: number }> {
-    return this.safe(
+    return this.safeOrThrow(
       async () => ({
         total: await this.prisma.kycCase.count({
           // The same codes the page resolves, or the count under the table
@@ -1497,11 +1505,31 @@ export class ModulesService {
           where: kycWhere(opts, await codesNamed(opts.q)),
         }),
       }),
-      { total: 0 },
+      'Counting verifications',
     );
   }
 
   async kycCases(opts: KycCaseQuery = {}) {
+    /**
+     * A COMPLIANCE QUEUE NEVER INVENTS A CLIENT, and this one did.
+     *
+     * The chain was three ordinary-looking lines. `isLive()` decides "has this
+     * deployment got real data" by counting payments inside `safe()`, so a
+     * database that cannot be reached answers zero — not an error, zero. That
+     * made `live` false, which made the fallback seven sample verifications.
+     * The real query then threw, `safe()` caught it, and the sample rows went
+     * out with HTTP 200: seven fabricated clients, with fabricated risk scores
+     * and invented assignee names, on the screen the compliance desk works
+     * from. The count beside them read 0 from the same swallowed failure.
+     *
+     * Nobody would ship that deliberately. It was assembled out of three
+     * separate decisions that were each defensible alone, which is the only
+     * way something like this gets built.
+     *
+     * So this one asks loudly. An unreachable database is an error the screen
+     * has to show, and the empty-database case below still renders samples —
+     * but only once the database has actually answered.
+     */
     const live = await this.isLive();
     const fallback = live ? [] : this.kycFallback();
     /**
@@ -1520,7 +1548,7 @@ export class ModulesService {
       opts.status || opts.q || opts.account || opts.from || opts.to,
     );
 
-    return this.safe(async () => {
+    return this.safeOrThrow(async () => {
       /**
        * The names first, because the filter needs them.
        *
@@ -1533,7 +1561,18 @@ export class ModulesService {
       const rows = await this.prisma.kycCase.findMany({
         where,
         include: { client: true, assignedTo: true },
-        orderBy: { submittedAt: 'desc' },
+        /**
+         * A TIEBREAK, because `submittedAt` alone is not a total order.
+         *
+         * Verifications tie constantly — the provider stamps to the second and
+         * a batch shares one — and Postgres may return tied rows in any order
+         * it likes, differently for each query. Two queries is exactly what
+         * paging is: a row tied on the page boundary can come back on page one
+         * AND page two, and another is then never shown at all. A compliance
+         * queue that silently omits a row is the failure mode to design out,
+         * and it surfaced here as a test that passed two runs in three.
+         */
+        orderBy: [{ submittedAt: 'desc' }, { id: 'desc' }],
         take,
         skip,
       });
@@ -1685,7 +1724,13 @@ export class ModulesService {
           ? `${c.assignedTo.firstName} ${c.assignedTo.lastName}`
           : 'Unassigned',
       }));
-    }, fallback);
+      /**
+       * `safeOrThrow`, not `safe` — see the note at the top of this method.
+       * A failure here reaches the screen as a failure; the sample rows are
+       * reachable only through the empty-database branch above, which requires
+       * the database to have answered first.
+       */
+    }, 'Reading verifications');
   }
 
   /**

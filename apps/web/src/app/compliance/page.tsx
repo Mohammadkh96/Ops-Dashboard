@@ -215,13 +215,23 @@ function Kyc() {
     expiringDays: expiring ? Number(expiring) : undefined,
     rows: (rows || undefined) as "lookups" | "all" | undefined,
   };
-  const { data: kycCases, isLoading } = useKycCases({
+  const {
+    data: kycCases,
+    isLoading,
+    isError: casesFailed,
+  } = useKycCases({
     ...query,
     limit: PAGE_SIZE,
     offset: page * PAGE_SIZE,
   });
-  const { data: count } = useKycCaseCount(query);
+  const { data: count, isError: countFailed } = useKycCaseCount(query);
   const total = count.total;
+  /**
+   * A FAILED READ IS NOT AN EMPTY QUEUE, and this screen could not tell the
+   * difference. Both said the same thing — nothing to see — and the second is
+   * a statement a compliance officer may act on.
+   */
+  const readFailed = casesFailed || countFailed;
 
   /**
    * The tiles count the TABLE over the period shown, not the page.
@@ -599,9 +609,11 @@ function Kyc() {
            * running, the empty state says which part is doing the excluding.
            */
           empty={
-            q
-              ? `No verification matching "${q}" was SUBMITTED between ${start} and ${end}. The search only reads the period above — widen the dates to look further back, and fetch that range first if it has never been read.`
-              : `No verifications in ${start} to ${end}${entity ? ` for ${entityName(entity)}` : ""} match these filters.`
+            readFailed
+              ? "The verifications could not be read, so this table is showing nothing rather than guessing. This is a failure to reach the data — not a period with no verifications in it. Check Admin → Storage: a database at its size limit stops answering, and the screens have no way to tell that apart from a quiet week."
+              : q
+                ? `No verification matching "${q}" was SUBMITTED between ${start} and ${end}. The search only reads the period above — widen the dates to look further back, and fetch that range first if it has never been read.`
+                : `No verifications in ${start} to ${end}${entity ? ` for ${entityName(entity)}` : ""} match these filters.`
           }
         />
 
